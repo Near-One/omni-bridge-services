@@ -1,0 +1,9 @@
+[workspace]
+members = [
+    "bridge-indexer-types",
+    "omni-relayer",
+]
+resolver = "2"
+
+[workspace.dependencies]
+omni-types = { git = "https://github.com/near-one/omni-bridge", package = "omni-types", rev = "ffbdc544c0d7f670942e8bf532c7e023c1c6bfec", features = ["abi", "__abi-generate"] }
