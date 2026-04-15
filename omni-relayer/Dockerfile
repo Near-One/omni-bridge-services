@@ -1,12 +1,11 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.86.0-bookworm AS builder
+FROM rust:1.88.0-bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    --mount=type=ssh,id=default \
-    cargo build --release && \
+    cargo build --release -p omni-relayer && \
     cp target/release/omni-relayer /tmp/
 
 

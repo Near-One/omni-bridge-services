@@ -39,17 +39,7 @@ Edit `config.toml`:
 
 The included `nats.conf` reads credentials from environment variables passed by docker-compose. Set `BRIDGE_NATS_USERNAME` and `BRIDGE_NATS_PASSWORD` in your `.env` file — these are used for both the NATS server and the relayer connection.
 
-### 4. SSH access for build
-
-The build fetches private GitHub dependencies via SSH. Make sure your SSH agent has a key with access to `github.com/near-one`:
-
-```bash
-ssh-add -l                    # check loaded keys
-ssh-add ~/.ssh/id_ed25519     # add if needed
-ssh -T git@github.com         # verify access
-```
-
-### 5. Deploy
+### 4. Deploy
 
 ```bash
 docker compose up -d
