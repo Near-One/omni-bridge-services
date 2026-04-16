@@ -1,10 +1,45 @@
+use std::{sync::OnceLock, time::Duration};
+
 use alloy::primitives::U256;
 use anyhow::{Context, Result};
 use near_sdk::json_types::U128;
 use omni_types::{Fee, OmniAddress, TransferId};
+use reqwest::{Client, Url};
 use tracing::{info, warn};
 
 use crate::{config, utils, workers::EventAction};
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .expect("Failed to build bridge_api reqwest client")
+    })
+}
+
+fn build_transfer_fee_url(
+    base_url: &str,
+    sender: &OmniAddress,
+    recipient: &OmniAddress,
+    token: &OmniAddress,
+) -> Result<Url> {
+    let mut url = Url::parse(base_url)
+        .context("Failed to parse bridge_indexer.api_url")?
+        .join("api/v3/transfer-fee")
+        .context("Failed to build transfer-fee API URL")?;
+
+    url.query_pairs_mut()
+        .append_pair("sender", &sender.to_string())
+        .append_pair("recipient", &recipient.to_string())
+        .append_pair("token", &token.to_string());
+
+    Ok(url)
+}
 
 #[allow(clippy::struct_field_names)]
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -61,18 +96,21 @@ impl TransferFee {
         recipient: &OmniAddress,
         token: &OmniAddress,
     ) -> Result<Self> {
-        let url = format!(
-            "{}/api/v1/transfer-fee?sender={}&recipient={}&token={}",
-            config
-                .bridge_indexer
-                .api_url
-                .as_ref()
-                .context("No api url was provided")?,
-            sender,
-            recipient,
-            token
-        );
-        reqwest::get(&url).await?.json().await.map_err(Into::into)
+        let base_url = config
+            .bridge_indexer
+            .api_url
+            .as_ref()
+            .context("No api url was provided")?;
+
+        let url = build_transfer_fee_url(base_url, sender, recipient, token)?;
+
+        client()
+            .get(url)
+            .send()
+            .await?
+            .json()
+            .await
+            .map_err(Into::into)
     }
 
     pub fn is_fee_sufficient(&self, config: &config::Config, provided_fee: &Fee) -> bool {
