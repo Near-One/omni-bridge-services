@@ -1,23 +1,50 @@
+use std::{sync::OnceLock, time::Duration};
+
 use anyhow::{Context, Result};
+use near_sdk::AccountId;
+use reqwest::{Client, Url};
 
 use crate::config;
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(serde::Deserialize)]
 struct BlacklistResponse {
     is_blacklisted: bool,
 }
 
-pub async fn is_blacklisted(config: &config::Config, account_id: &str) -> Result<bool> {
-    let url = format!(
-        "{}/is_blacklisted?account_id={}",
-        config
-            .near
-            .blacklist_api_url
-            .as_ref()
-            .context("blacklist_api_url is not configured")?,
-        account_id
-    );
+fn client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
 
-    let resp: BlacklistResponse = reqwest::get(&url).await?.json().await?;
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .build()
+            .expect("Failed to build blacklist reqwest client")
+    })
+}
+
+fn build_url(base_url: &str, account_id: &AccountId) -> Result<Url> {
+    let mut url = Url::parse(base_url)
+        .context("Failed to parse blacklist_api_url")?
+        .join("is_blacklisted")
+        .context("Failed to build blacklist API URL")?;
+
+    url.query_pairs_mut()
+        .append_pair("account_id", account_id.as_str());
+
+    Ok(url)
+}
+
+pub async fn is_blacklisted(config: &config::Config, account_id: &AccountId) -> Result<bool> {
+    let base_url = config
+        .near
+        .blacklist_api_url
+        .as_ref()
+        .context("blacklist_api_url is not configured")?;
+
+    let url = build_url(base_url, account_id)?;
+
+    let resp: BlacklistResponse = client().get(url).send().await?.json().await?;
     Ok(resp.is_blacklisted)
 }

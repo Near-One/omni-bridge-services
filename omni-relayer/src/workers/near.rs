@@ -83,22 +83,22 @@ pub async fn process_transfer_event(
         }
     }
 
-    if config.is_blacklist_enabled() {
-        if let OmniAddress::Near(ref account_id) = transfer_message.sender {
-            match utils::blacklist::is_blacklisted(config, account_id.as_ref()).await {
-                Ok(true) => {
-                    warn!(
-                        "Sender {account_id} is blacklisted, rejecting transfer ({origin_chain:?}:{origin_nonce})"
-                    );
-                    anyhow::bail!(
-                        "Transfer ({origin_chain:?}:{origin_nonce}) rejected: sender {account_id} is blacklisted"
-                    );
-                }
-                Ok(false) => {}
-                Err(err) => {
-                    warn!("Blacklist check failed for {account_id}: {err:?}, retrying");
-                    return Ok(EventAction::Retry);
-                }
+    if config.is_blacklist_enabled()
+        && let OmniAddress::Near(account_id) = &transfer_message.sender
+    {
+        match utils::blacklist::is_blacklisted(config, account_id).await {
+            Ok(true) => {
+                warn!(
+                    "Sender {account_id} is blacklisted, rejecting transfer ({origin_chain:?}:{origin_nonce})"
+                );
+                anyhow::bail!(
+                    "Transfer ({origin_chain:?}:{origin_nonce}) rejected: sender {account_id} is blacklisted"
+                );
+            }
+            Ok(false) => {}
+            Err(err) => {
+                warn!("Blacklist check failed for {account_id}: {err:?}, retrying");
+                return Ok(EventAction::Retry);
             }
         }
     }
@@ -322,15 +322,15 @@ pub async fn process_transfer_to_utxo_event(
                     transfer_message.origin_nonce
                 );
                 return Ok(EventAction::Retry);
-            } else if let BridgeSdkError::UtxoClientError(ref msg) = err {
-                if msg == "Failed to estimate fee_rate" {
-                    warn!(
-                        "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
-                        transfer_message.recipient.get_chain(),
-                        transfer_message.origin_nonce
-                    );
-                    return Ok(EventAction::Retry);
-                }
+            } else if let BridgeSdkError::UtxoClientError(ref msg) = err
+                && msg == "Failed to estimate fee_rate"
+            {
+                warn!(
+                    "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
+                    transfer_message.recipient.get_chain(),
+                    transfer_message.origin_nonce
+                );
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!(
@@ -495,21 +495,19 @@ pub async fn process_sign_transfer_event(
                 message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
             );
 
-            if let Some(nonce) = evm_nonce {
-                if config.is_fee_bumping_enabled(chain_kind) {
-                    if let Err(err) = store_pending_transaction(
-                        config,
-                        redis_connection_manager,
-                        chain_kind,
-                        &tx_hash,
-                        nonce,
-                        omni_bridge_event,
-                    )
-                    .await
-                    {
-                        warn!("Failed to store pending transaction {tx_hash}: {err:?}");
-                    }
-                }
+            if let Some(nonce) = evm_nonce
+                && config.is_fee_bumping_enabled(chain_kind)
+                && let Err(err) = store_pending_transaction(
+                    config,
+                    redis_connection_manager,
+                    chain_kind,
+                    &tx_hash,
+                    nonce,
+                    omni_bridge_event,
+                )
+                .await
+            {
+                warn!("Failed to store pending transaction {tx_hash}: {err:?}");
             }
 
             Ok(EventAction::Remove)
@@ -553,25 +551,22 @@ pub async fn process_sign_transfer_event(
                 return Ok(EventAction::Retry);
             }
 
-            if let BridgeSdkError::SolanaRpcError(ref client_error) = err {
-                if let ErrorKind::RpcError(RpcError::RpcResponseError {
+            if let BridgeSdkError::SolanaRpcError(ref client_error) = err
+                && let ErrorKind::RpcError(RpcError::RpcResponseError {
                     data: RpcResponseErrorData::SendTransactionPreflightFailure(ref result),
                     ..
                 }) = client_error.kind
-                {
-                    if let Some(TransactionError::InstructionError(
-                        _,
-                        InstructionError::Custom(error_code),
-                    )) = result.err
-                    {
-                        if error_code == PAUSED_ERROR {
-                            warn!("Solana bridge is paused");
-                            return Ok(EventAction::Retry);
-                        }
-
-                        anyhow::bail!("Failed to finalize deposit: {err}");
-                    }
+                && let Some(TransactionError::InstructionError(
+                    _,
+                    InstructionError::Custom(error_code),
+                )) = result.err
+            {
+                if error_code == PAUSED_ERROR {
+                    warn!("Solana bridge is paused");
+                    return Ok(EventAction::Retry);
                 }
+
+                anyhow::bail!("Failed to finalize deposit: {err}");
             }
 
             warn!("Failed to finalize deposit, retrying: {err}");
