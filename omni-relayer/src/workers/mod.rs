@@ -179,11 +179,11 @@ async fn handle_nats_ack(
     let max_message_age = Duration::from_secs(config.max_message_age_hours * 3600);
 
     match result {
-        Ok(EventAction::Retry) | Ok(EventAction::RetryAfter(_)) => {
+        Ok(EventAction::Retry | EventAction::RetryAfter(_)) => {
             if let Ok(info) = msg.info() {
                 let now = chrono::Utc::now().timestamp();
                 let published_at = info.published.unix_timestamp();
-                let age = Duration::from_secs(now.saturating_sub(published_at) as u64);
+                let age = Duration::from_secs(now.saturating_sub(published_at).unsigned_abs());
 
                 if age > max_message_age {
                     warn!("Message exceeded max age ({age:?}), terminating");
@@ -196,7 +196,8 @@ async fn handle_nats_ack(
                 let backoff = if let Ok(EventAction::RetryAfter(delay)) = result {
                     (*delay).min(max_backoff)
                 } else {
-                    Duration::from_secs(4u64.saturating_pow(info.delivered as u32)).min(max_backoff)
+                    let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
+                    Duration::from_secs(4u64.saturating_pow(delivered)).min(max_backoff)
                 };
                 msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
                     .await
@@ -261,7 +262,7 @@ pub async fn process_events(
     let consumer = nats_client.relayer_consumer(nats_config).await?;
     let mut messages = consumer
         .stream()
-        .max_messages_per_batch((nats_config.relayer_consumer.worker_count + 1) / 2)
+        .max_messages_per_batch(nats_config.relayer_consumer.worker_count.div_ceil(2))
         .messages()
         .await
         .context("Failed to start consuming NATS messages")?;
@@ -334,7 +335,7 @@ pub async fn process_events(
             if message_result.needs_evm_nonce_resync
                 && matches!(
                     message_result.action,
-                    Ok(EventAction::Retry) | Ok(EventAction::RetryAfter(_)) | Err(_)
+                    Ok(EventAction::Retry | EventAction::RetryAfter(_)) | Err(_)
                 )
             {
                 is_evm_nonce_resync_needed.store(true, Ordering::Relaxed);

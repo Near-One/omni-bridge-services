@@ -73,7 +73,7 @@ pub async fn process_transfer_event(
     if let Some(process_after) = process_after {
         let now = chrono::Utc::now().timestamp();
         if now < process_after {
-            let remaining = (process_after - now) as u64;
+            let remaining = (process_after - now).unsigned_abs();
             info!(
                 "Waiting {remaining}s for blacklist delay on transfer ({origin_chain:?}:{origin_nonce})"
             );

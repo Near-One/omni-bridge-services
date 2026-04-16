@@ -118,6 +118,7 @@ async fn build_redis_connection_manager(
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 

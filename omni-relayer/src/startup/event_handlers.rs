@@ -647,7 +647,7 @@ pub(super) async fn handle_transaction_event(
                                     amount: near_sdk::json_types::U128(a.amount.0),
                                     memo: a.memo,
                                     msg: a.msg,
-                                    gas: a.gas.map(|g| g.as_gas()),
+                                    gas: a.gas.map(near_sdk::Gas::as_gas),
                                 })
                                 .collect()
                         }),
