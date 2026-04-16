@@ -181,13 +181,22 @@ pub(super) async fn handle_transaction_event(
             if transfer_message.recipient.get_chain() != ChainKind::Near {
                 let key = near_event_key(&origin_transaction_id, transfer_message.origin_nonce);
 
+                let process_after = if config.is_blacklist_enabled() {
+                    Some(chrono::Utc::now().timestamp() + config.near.blacklist_delay_secs)
+                } else {
+                    None
+                };
+
                 add_event(
                     config,
                     redis_connection_manager,
                     nats,
                     &key,
                     ChainKind::Near,
-                    crate::workers::Transfer::Near { transfer_message },
+                    crate::workers::Transfer::Near {
+                        transfer_message,
+                        process_after,
+                    },
                 )
                 .await;
             }
@@ -643,9 +652,10 @@ pub(super) async fn handle_transaction_event(
                                 .collect()
                         }),
                         extra_msg: deposit_msg.extra_msg.clone(),
-                        safe_deposit: deposit_msg.safe_deposit.clone().map(|sd| {
-                            crate::types::SafeDepositMsg { msg: sd.msg }
-                        }),
+                        safe_deposit: deposit_msg
+                            .safe_deposit
+                            .clone()
+                            .map(|sd| crate::types::SafeDepositMsg { msg: sd.msg }),
                     },
                 },
             )

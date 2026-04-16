@@ -6,9 +6,9 @@ use std::{
     time::Duration,
 };
 
+use crate::types::DepositMsg;
 use alloy::primitives::TxHash;
 use anyhow::{Context, Result};
-use crate::types::DepositMsg;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;
@@ -71,6 +71,8 @@ struct MessageResult {
 pub enum Transfer {
     Near {
         transfer_message: TransferMessage,
+        #[serde(default)]
+        process_after: Option<i64>,
     },
     Evm {
         chain_kind: ChainKind,
@@ -364,7 +366,9 @@ async fn process_message(
         match transfer {
             Transfer::Near { .. } | Transfer::Utxo { .. } => {
                 let (is_utxo, fee_key) = match &transfer {
-                    Transfer::Near { transfer_message } => (
+                    Transfer::Near {
+                        transfer_message, ..
+                    } => (
                         transfer_message.recipient.is_utxo_chain(),
                         serde_json::to_string(&transfer_message.get_transfer_id())
                             .unwrap_or_default(),

@@ -179,6 +179,10 @@ impl Config {
         config.is_some_and(|utxo| utxo.verifying_withdraw_enabled)
     }
 
+    pub fn is_blacklist_enabled(&self) -> bool {
+        self.near.blacklist_api_url.is_some()
+    }
+
     pub fn is_fee_bumping_enabled(&self, chain_kind: ChainKind) -> bool {
         match chain_kind {
             ChainKind::Eth => self
@@ -240,6 +244,10 @@ pub struct RelayerConsumer {
 
 fn default_worker_count() -> usize {
     1
+}
+
+fn default_blacklist_delay_secs() -> i64 {
+    7
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -307,6 +315,9 @@ pub struct Near {
     pub sign_without_checking_fee: Option<Vec<OmniAddress>>,
     #[serde(default)]
     pub fast_relayer_enabled: bool,
+    pub blacklist_api_url: Option<String>,
+    #[serde(default = "default_blacklist_delay_secs")]
+    pub blacklist_delay_secs: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

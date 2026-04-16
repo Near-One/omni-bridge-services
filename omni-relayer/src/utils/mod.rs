@@ -1,3 +1,4 @@
+pub mod blacklist;
 pub mod bridge_api;
 pub mod evm;
 pub mod nats;

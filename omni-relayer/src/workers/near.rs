@@ -36,10 +36,11 @@ pub async fn process_transfer_event(
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
-    let transfer_message = match transfer {
+    let (transfer_message, process_after) = match transfer {
         Transfer::Near {
             ref transfer_message,
-        } => transfer_message.clone(),
+            process_after,
+        } => (transfer_message.clone(), process_after),
         Transfer::Utxo {
             ref new_transfer_id,
             ..
@@ -57,7 +58,7 @@ pub async fn process_transfer_event(
                 return Ok(EventAction::Retry);
             };
 
-            transfer_message
+            (transfer_message, None)
         }
         _ => {
             anyhow::bail!("Expected Transfer::Near or Transfer::Utxo variant, got: {transfer:?}");
@@ -68,6 +69,39 @@ pub async fn process_transfer_event(
     let origin_nonce = transfer_message.origin_nonce;
 
     info!("Processing transfer ({origin_chain:?}:{origin_nonce}) on NEAR");
+
+    if let Some(process_after) = process_after {
+        let now = chrono::Utc::now().timestamp();
+        if now < process_after {
+            let remaining = (process_after - now) as u64;
+            info!(
+                "Waiting {remaining}s for blacklist delay on transfer ({origin_chain:?}:{origin_nonce})"
+            );
+            return Ok(EventAction::RetryAfter(std::time::Duration::from_secs(
+                remaining,
+            )));
+        }
+    }
+
+    if config.is_blacklist_enabled() {
+        if let OmniAddress::Near(ref account_id) = transfer_message.sender {
+            match utils::blacklist::is_blacklisted(config, account_id.as_ref()).await {
+                Ok(true) => {
+                    warn!(
+                        "Sender {account_id} is blacklisted, rejecting transfer ({origin_chain:?}:{origin_nonce})"
+                    );
+                    anyhow::bail!(
+                        "Transfer ({origin_chain:?}:{origin_nonce}) rejected: sender {account_id} is blacklisted"
+                    );
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    warn!("Blacklist check failed for {account_id}: {err:?}, retrying");
+                    return Ok(EventAction::Retry);
+                }
+            }
+        }
+    }
 
     match omni_connector
         .is_transfer_finalised(
@@ -181,6 +215,7 @@ pub async fn process_transfer_to_utxo_event(
 ) -> Result<EventAction> {
     let Transfer::Near {
         ref transfer_message,
+        ..
     } = transfer
     else {
         anyhow::bail!("Expected NearTransferWithTimestamp, got: {transfer:?}");

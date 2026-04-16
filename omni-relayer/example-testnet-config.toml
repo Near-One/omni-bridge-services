@@ -58,6 +58,10 @@ zcash = "nzcash.n-bridge.testnet"
 sign_without_checking_fee = ["near:aurora"]
 # To enable fast relayer, uncomment the line below
 # fast_relayer_enabled = true
+# Uncomment to enable blacklist checking before signing NEAR transfers
+# blacklist_api_url = "https://blacklist-api.example.com"
+# Delay in seconds before checking blacklist [default: 7]
+# blacklist_delay_secs = 7
 
 [eth]
 rpc_http_url = "https://sepolia.infura.io/v3/INFURA_API_KEY"
