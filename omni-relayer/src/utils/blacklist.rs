@@ -9,6 +9,7 @@ use crate::config;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct BlacklistResponse {
     is_blacklisted: bool,
 }
@@ -25,15 +26,10 @@ fn client() -> &'static Client {
 }
 
 fn build_url(base_url: &str, account_id: &AccountId) -> Result<Url> {
-    let mut url = Url::parse(base_url)
+    Url::parse(base_url)
         .context("Failed to parse blacklist_api_url")?
-        .join("is_blacklisted")
-        .context("Failed to build blacklist API URL")?;
-
-    url.query_pairs_mut()
-        .append_pair("account_id", account_id.as_str());
-
-    Ok(url)
+        .join(account_id.as_str())
+        .context("Failed to build blacklist API URL")
 }
 
 pub async fn is_blacklisted(config: &config::Config, account_id: &AccountId) -> Result<bool> {
