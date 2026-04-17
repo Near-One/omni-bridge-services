@@ -69,8 +69,3 @@ default = ["nats-ingestion"]
 nats-ingestion = ["dep:bridge-indexer-types"]
 mongo-ingestion = ["dep:mongodb", "dep:bridge-indexer-types"]
 native-indexers = ["dep:near-lake-framework"]
-
-# The profile that 'dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"
