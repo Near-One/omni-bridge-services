@@ -386,6 +386,7 @@ async fn process_message(
 
                 let result = if is_utxo {
                     near::process_transfer_to_utxo_event(
+                        config,
                         jsonrpc_client,
                         omni_connector.clone(),
                         transfer,
