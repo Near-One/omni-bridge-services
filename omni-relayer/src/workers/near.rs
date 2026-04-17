@@ -14,9 +14,7 @@ use solana_rpc_client_api::{client_error::ErrorKind, request::RpcError};
 use solana_sdk::{instruction::InstructionError, pubkey::Pubkey, transaction::TransactionError};
 
 use omni_connector::OmniConnector;
-use omni_types::{
-    ChainKind, FastTransfer, OmniAddress, TransferId, TransferMessage, near_events::OmniBridgeEvent,
-};
+use omni_types::{ChainKind, FastTransfer, OmniAddress, TransferId, near_events::OmniBridgeEvent};
 
 use crate::{
     config, utils, utils::pending_transactions::PendingTransaction, workers::PAUSED_ERROR,
@@ -29,48 +27,42 @@ enum UTXOChainMsg {
     MaxGasFee(U64),
 }
 
-async fn check_blacklist_and_delay(
+pub(super) async fn check_blacklist_and_delay(
     config: &config::Config,
-    transfer_message: &TransferMessage,
+    sender: &OmniAddress,
     process_after: Option<i64>,
+    context: &str,
 ) -> Result<Option<EventAction>> {
-    let origin_chain = transfer_message.get_origin_chain();
-    let origin_nonce = transfer_message.origin_nonce;
-
     if let Some(process_after) = process_after {
         let now = chrono::Utc::now().timestamp();
         if now < process_after {
             let remaining = (process_after - now).unsigned_abs();
-            info!(
-                "Waiting {remaining}s for blacklist delay on transfer ({origin_chain:?}:{origin_nonce})"
-            );
+            info!("Waiting {remaining}s for blacklist delay on transfer {context}");
             return Ok(Some(EventAction::RetryAfter(
                 std::time::Duration::from_secs(remaining),
             )));
         }
     }
 
-    if config.is_blacklist_enabled()
-        && let OmniAddress::Near(account_id) = &transfer_message.sender
-    {
-        match utils::blacklist::is_blacklisted(config, account_id).await {
-            Ok(true) => {
-                warn!(
-                    "Sender {account_id} is blacklisted, rejecting transfer ({origin_chain:?}:{origin_nonce})"
-                );
-                anyhow::bail!(
-                    "Transfer ({origin_chain:?}:{origin_nonce}) rejected: sender {account_id} is blacklisted"
-                );
-            }
-            Ok(false) => {}
-            Err(err) => {
-                warn!("Blacklist check failed for {account_id}: {err:?}, retrying");
-                return Ok(Some(EventAction::Retry));
-            }
-        }
+    if !config.is_blacklist_enabled() {
+        return Ok(None);
     }
 
-    Ok(None)
+    let OmniAddress::Near(account_id) = sender else {
+        return Ok(None);
+    };
+
+    match utils::blacklist::is_blacklisted(config, account_id).await {
+        Ok(true) => {
+            warn!("Sender {account_id} is blacklisted, rejecting transfer {context}");
+            anyhow::bail!("Transfer {context} rejected: sender {account_id} is blacklisted");
+        }
+        Ok(false) => Ok(None),
+        Err(err) => {
+            warn!("Blacklist check failed for {account_id}: {err:?}, retrying");
+            Ok(Some(EventAction::Retry))
+        }
+    }
 }
 
 pub async fn process_transfer_event(
@@ -116,8 +108,9 @@ pub async fn process_transfer_event(
 
     info!("Processing transfer ({origin_chain:?}:{origin_nonce}) on NEAR");
 
+    let context = format!("({origin_chain:?}:{origin_nonce})");
     if let Some(action) =
-        check_blacklist_and_delay(config, &transfer_message, process_after).await?
+        check_blacklist_and_delay(config, &transfer_message.sender, process_after, &context).await?
     {
         return Ok(action);
     }
@@ -247,7 +240,13 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.origin_nonce
     );
 
-    if let Some(action) = check_blacklist_and_delay(config, transfer_message, process_after).await?
+    let context = format!(
+        "({:?}:{})",
+        transfer_message.get_origin_chain(),
+        transfer_message.origin_nonce
+    );
+    if let Some(action) =
+        check_blacklist_and_delay(config, &transfer_message.sender, process_after, &context).await?
     {
         return Ok(action);
     }
