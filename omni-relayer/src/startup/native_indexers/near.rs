@@ -114,11 +114,10 @@ async fn handle_streamer_message(
                     let origin_nonce = transfer_message.origin_nonce.to_string();
                     let key = utils::redis::composite_key(&[&receipt_id, &origin_nonce]);
 
-                    let process_after = if config.is_blacklist_enabled() {
-                        Some(chrono::Utc::now().timestamp() + config.near.blacklist_delay_secs)
-                    } else {
-                        None
-                    };
+                    let process_after = Some(
+                        chrono::Utc::now().timestamp()
+                            + config.near.delay_before_sign_and_submit_secs,
+                    );
 
                     utils::redis::add_event(
                         config,

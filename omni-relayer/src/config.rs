@@ -246,10 +246,6 @@ fn default_worker_count() -> usize {
     1
 }
 
-fn default_blacklist_delay_secs() -> i64 {
-    7
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct BridgeIndexer {
     pub api_url: Option<String>,
@@ -316,8 +312,8 @@ pub struct Near {
     #[serde(default)]
     pub fast_relayer_enabled: bool,
     pub blacklist_api_url: Option<String>,
-    #[serde(default = "default_blacklist_delay_secs")]
-    pub blacklist_delay_secs: i64,
+    #[serde(default)]
+    pub delay_before_sign_and_submit_secs: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

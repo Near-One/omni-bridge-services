@@ -181,11 +181,9 @@ pub(super) async fn handle_transaction_event(
             if transfer_message.recipient.get_chain() != ChainKind::Near {
                 let key = near_event_key(&origin_transaction_id, transfer_message.origin_nonce);
 
-                let process_after = if config.is_blacklist_enabled() {
-                    Some(chrono::Utc::now().timestamp() + config.near.blacklist_delay_secs)
-                } else {
-                    None
-                };
+                let process_after = Some(
+                    chrono::Utc::now().timestamp() + config.near.delay_before_sign_and_submit_secs,
+                );
 
                 add_event(
                     config,

@@ -60,8 +60,8 @@ sign_without_checking_fee = ["near:aurora"]
 # fast_relayer_enabled = true
 # Blacklist API used to reject transfers from laundering accounts
 blacklist_api_url = "https://pikespeak.ai/api/monitor/blacklist/"
-# Delay in seconds before checking blacklist [default: 7]
-# blacklist_delay_secs = 7
+# Delay in seconds before signing transfer on near or submitting utxo transfer [default: 0]
+delay_before_sign_and_submit_secs = 7
 
 [eth]
 rpc_http_url = "https://mainnet.infura.io/v3/INFURA_API_KEY"
