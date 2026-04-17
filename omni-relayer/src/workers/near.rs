@@ -35,7 +35,7 @@ pub async fn process_transfer_event(
     signer: AccountId,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
-) -> Result<EventAction> {
+) -> Result<(EventAction, Option<OmniBridgeEvent>)> {
     let transfer_message = match transfer {
         Transfer::Near {
             ref transfer_message,
@@ -46,7 +46,7 @@ pub async fn process_transfer_event(
         } => {
             let Ok(new_transfer_id) = new_transfer_id.try_into() else {
                 warn!("Failed to build TransferId from: {new_transfer_id:?}");
-                return Ok(EventAction::Retry);
+                return Ok((EventAction::Retry, None));
             };
 
             let Ok(transfer_message) = omni_connector
@@ -54,7 +54,7 @@ pub async fn process_transfer_event(
                 .await
             else {
                 warn!("Failed to get transfer message for UTXO transfer: {new_transfer_id:?}");
-                return Ok(EventAction::Retry);
+                return Ok((EventAction::Retry, None));
             };
 
             transfer_message
@@ -81,7 +81,7 @@ pub async fn process_transfer_event(
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
-            return Ok(EventAction::Retry);
+            return Ok((EventAction::Retry, None));
         }
     }
 
@@ -101,7 +101,7 @@ pub async fn process_transfer_event(
         .await
         else {
             warn!("Failed to get transfer fee for transfer: {transfer_message:?}");
-            return Ok(EventAction::Retry);
+            return Ok((EventAction::Retry, None));
         };
 
         if let Some(event_action) = needed_fee
@@ -114,7 +114,7 @@ pub async fn process_transfer_event(
             )
             .await
         {
-            return Ok(event_action);
+            return Ok((event_action, None));
         }
     }
 
@@ -139,7 +139,7 @@ pub async fn process_transfer_event(
         )
         .await
     {
-        Ok(tx_hash) => Ok(utils::near::resolve_tx_action(
+        Ok(tx_hash) => Ok(utils::near::resolve_tx_action_and_extract_sign_event(
             jsonrpc_client,
             tx_hash,
             signer,
@@ -159,7 +159,7 @@ pub async fn process_transfer_event(
                         warn!(
                             "Failed to sign transfer ({origin_chain:?}:{origin_nonce}), retrying: {near_rpc_error:?}"
                         );
-                        return Ok(EventAction::Retry);
+                        return Ok((EventAction::Retry, None));
                     }
                     _ => {
                         anyhow::bail!(

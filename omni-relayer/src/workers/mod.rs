@@ -64,6 +64,7 @@ struct MessageResult {
     action: Result<EventAction>,
     needs_evm_nonce_resync: bool,
     fee_key_to_remove: Option<String>,
+    produced_event: Option<OmniBridgeEvent>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -299,6 +300,7 @@ pub async fn process_events(
         let near_omni_nonce = near_omni_nonce.clone();
         let near_fast_nonce = near_fast_nonce.clone();
         let evm_nonces = evm_nonces.clone();
+        let nats_client = nats_client.clone();
         let is_evm_nonce_resync_needed = is_evm_nonce_resync_needed.clone();
 
         tokio::spawn(async move {
@@ -324,7 +326,7 @@ pub async fn process_events(
                 warn!("{err:?}");
             }
 
-            if let Some(fee_key) = message_result.fee_key_to_remove {
+            if let Some(ref fee_key) = message_result.fee_key_to_remove {
                 utils::redis::remove_event(&config, &mut redis, utils::redis::FEE_MAPPING, fee_key)
                     .await;
             }
@@ -336,6 +338,10 @@ pub async fn process_events(
                 )
             {
                 is_evm_nonce_resync_needed.store(true, Ordering::Relaxed);
+            }
+
+            if let Some(event) = &message_result.produced_event {
+                publish_event(&config, &nats_client, event).await;
             }
 
             handle_nats_ack(&msg, &message_result.action, &consumer_config).await;
@@ -379,16 +385,24 @@ async fn process_message(
                     _ => unreachable!(),
                 };
 
-                let result = if is_utxo {
-                    near::process_transfer_to_utxo_event(
+                if is_utxo {
+                    let result = near::process_transfer_to_utxo_event(
                         jsonrpc_client,
                         omni_connector.clone(),
                         transfer,
                         near_omni_nonce.clone(),
                     )
-                    .await
+                    .await;
+
+                    let fee_key_to_remove = result.is_err().then_some(fee_key);
+                    MessageResult {
+                        action: result,
+                        needs_evm_nonce_resync: false,
+                        fee_key_to_remove,
+                        produced_event: None,
+                    }
                 } else {
-                    near::process_transfer_event(
+                    let result = near::process_transfer_event(
                         config,
                         redis,
                         jsonrpc_client,
@@ -397,14 +411,20 @@ async fn process_message(
                         transfer,
                         near_omni_nonce.clone(),
                     )
-                    .await
-                };
+                    .await;
 
-                let fee_key_to_remove = result.is_err().then_some(fee_key);
-                MessageResult {
-                    action: result,
-                    needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    let (action, produced_event) = match result {
+                        Ok((action, event)) => (Ok(action), event),
+                        Err(err) => (Err(err), None),
+                    };
+
+                    let fee_key_to_remove = action.is_err().then_some(fee_key);
+                    MessageResult {
+                        action,
+                        needs_evm_nonce_resync: false,
+                        fee_key_to_remove,
+                        produced_event,
+                    }
                 }
             }
             Transfer::Evm {
@@ -435,6 +455,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
+                    produced_event: None,
                 }
             }
             Transfer::Solana { sequence, .. } => {
@@ -461,6 +482,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
+                    produced_event: None,
                 }
             }
             Transfer::NearToUtxo { .. } => {
@@ -474,6 +496,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove: None,
+                    produced_event: None,
                 }
             }
             Transfer::UtxoToNear { .. } => {
@@ -487,6 +510,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove: None,
+                    produced_event: None,
                 }
             }
             Transfer::Starknet { origin_nonce, .. } => {
@@ -513,6 +537,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
+                    produced_event: None,
                 }
             }
             Transfer::Fast { .. } => {
@@ -523,6 +548,7 @@ async fn process_message(
                         )),
                         needs_evm_nonce_resync: false,
                         fee_key_to_remove: None,
+                        produced_event: None,
                     };
                 };
 
@@ -533,6 +559,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove: None,
+                    produced_event: None,
                 }
             }
         }
@@ -561,12 +588,14 @@ async fn process_message(
                 action: result,
                 needs_evm_nonce_resync: is_evm,
                 fee_key_to_remove,
+                produced_event: None,
             }
         } else {
             MessageResult {
                 action: Err(anyhow::anyhow!("Unhandled OmniBridgeEvent: {event}")),
                 needs_evm_nonce_resync: false,
                 fee_key_to_remove: None,
+                produced_event: None,
             }
         }
     } else if let Ok(fin_transfer_event) = serde_json::from_value::<FinTransfer>(event.clone()) {
@@ -607,6 +636,7 @@ async fn process_message(
             action: result,
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_event: None
         }
     } else if let Ok(deploy_token_event) = serde_json::from_value::<DeployToken>(event.clone()) {
         let result = match deploy_token_event {
@@ -640,6 +670,7 @@ async fn process_message(
             action: result,
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_event: None
         }
     } else if let Ok(sign_utxo_transaction_event) =
         serde_json::from_value::<utxo::SignUtxoTransaction>(event.clone())
@@ -653,6 +684,7 @@ async fn process_message(
             action: result,
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_event: None
         }
     } else if let Ok(confirmed_tx_hash) =
         serde_json::from_value::<utxo::ConfirmedTxHash>(event.clone())
@@ -668,12 +700,50 @@ async fn process_message(
             action: result,
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_event: None
         }
     } else {
         MessageResult {
             action: Err(anyhow::anyhow!("Unknown event type: {event}")),
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_event: None,
         }
+    }
+}
+
+async fn publish_event(
+    config: &config::Config,
+    nats_client: &utils::nats::NatsClient,
+    event: &OmniBridgeEvent,
+) {
+    let Some(nats_config) = config.nats.as_ref() else {
+        return;
+    };
+
+    let (destination_chain, key) = match event {
+        OmniBridgeEvent::SignTransferEvent { message_payload, .. } => {
+            let chain = message_payload.recipient.get_chain();
+            let key = format!(
+                "sign:{:?}:{}",
+                message_payload.transfer_id.origin_chain,
+                message_payload.transfer_id.origin_nonce
+            );
+            (chain, key)
+        }
+        _ => return,
+    };
+
+    let Ok(payload) = serde_json::to_vec(event) else {
+        warn!("Failed to serialize produced event");
+        return;
+    };
+
+    let chain = destination_chain.as_ref().to_ascii_lowercase();
+    let subject = format!("{}.{chain}", nats_config.relayer_subject);
+    if let Err(err) = nats_client.publish(subject, &key, payload).await {
+        warn!("Failed to publish produced event to NATS: {err:?}");
+    } else {
+        info!("Published produced event to NATS: {}", event.to_log_string());
     }
 }
