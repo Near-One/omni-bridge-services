@@ -179,6 +179,10 @@ impl Config {
         config.is_some_and(|utxo| utxo.verifying_withdraw_enabled)
     }
 
+    pub fn is_blacklist_enabled(&self) -> bool {
+        self.near.blacklist_api_url.is_some()
+    }
+
     pub fn is_fee_bumping_enabled(&self, chain_kind: ChainKind) -> bool {
         match chain_kind {
             ChainKind::Eth => self
@@ -307,6 +311,9 @@ pub struct Near {
     pub sign_without_checking_fee: Option<Vec<OmniAddress>>,
     #[serde(default)]
     pub fast_relayer_enabled: bool,
+    pub blacklist_api_url: Option<String>,
+    #[serde(default)]
+    pub delay_before_sign_and_submit_secs: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

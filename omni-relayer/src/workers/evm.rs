@@ -52,7 +52,7 @@ pub async fn process_init_transfer_event(
 
     if current_timestamp < creation_timestamp + expected_finalization_time {
         let remaining =
-            (creation_timestamp + expected_finalization_time - current_timestamp) as u64;
+            (creation_timestamp + expected_finalization_time - current_timestamp).unsigned_abs();
         return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
     }
 
@@ -329,7 +329,7 @@ pub async fn process_evm_transfer_event(
 
     if current_timestamp < creation_timestamp + expected_finalization_time {
         let remaining =
-            (creation_timestamp + expected_finalization_time - current_timestamp) as u64;
+            (creation_timestamp + expected_finalization_time - current_timestamp).unsigned_abs();
         return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
     }
 
@@ -468,7 +468,7 @@ pub async fn process_deploy_token_event(
 
     if current_timestamp < creation_timestamp + expected_finalization_time {
         let remaining =
-            (creation_timestamp + expected_finalization_time - current_timestamp) as u64;
+            (creation_timestamp + expected_finalization_time - current_timestamp).unsigned_abs();
         return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
     }
 

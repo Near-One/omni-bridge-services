@@ -21,7 +21,10 @@ use tracing::{error, info, warn};
 
 use omni_types::{ChainKind, OmniAddress};
 
-use crate::{config, utils, workers::{DeployToken, FinTransfer, RetryableEvent, Transfer}};
+use crate::{
+    config, utils,
+    workers::{DeployToken, FinTransfer, RetryableEvent, Transfer},
+};
 
 pub async fn start_indexer(
     config: &config::Config,

@@ -181,13 +181,20 @@ pub(super) async fn handle_transaction_event(
             if transfer_message.recipient.get_chain() != ChainKind::Near {
                 let key = near_event_key(&origin_transaction_id, transfer_message.origin_nonce);
 
+                let process_after = Some(
+                    chrono::Utc::now().timestamp() + config.near.delay_before_sign_and_submit_secs,
+                );
+
                 add_event(
                     config,
                     redis_connection_manager,
                     nats,
                     &key,
                     ChainKind::Near,
-                    crate::workers::Transfer::Near { transfer_message },
+                    crate::workers::Transfer::Near {
+                        transfer_message,
+                        process_after,
+                    },
                 )
                 .await;
             }
@@ -563,6 +570,7 @@ pub(super) async fn handle_transaction_event(
             destination_chain,
             utxo_count,
             ref new_transfer_id,
+            ref sender,
             ..
         } => {
             let utxo_id = if let TransferIdKind::Utxo(utxo_id) = event.transfer_id.kind {
@@ -602,6 +610,7 @@ pub(super) async fn handle_transaction_event(
                             chain: destination_chain,
                             btc_pending_id: utxo_id.tx_hash.clone(),
                             sign_index,
+                            sender: sender.clone(),
                         },
                     )
                     .await;
@@ -638,14 +647,15 @@ pub(super) async fn handle_transaction_event(
                                     amount: near_sdk::json_types::U128(a.amount.0),
                                     memo: a.memo,
                                     msg: a.msg,
-                                    gas: a.gas.map(|g| g.as_gas()),
+                                    gas: a.gas.map(near_sdk::Gas::as_gas),
                                 })
                                 .collect()
                         }),
                         extra_msg: deposit_msg.extra_msg.clone(),
-                        safe_deposit: deposit_msg.safe_deposit.clone().map(|sd| {
-                            crate::types::SafeDepositMsg { msg: sd.msg }
-                        }),
+                        safe_deposit: deposit_msg
+                            .safe_deposit
+                            .clone()
+                            .map(|sd| crate::types::SafeDepositMsg { msg: sd.msg }),
                     },
                 },
             )

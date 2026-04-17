@@ -1,5 +1,5 @@
-use solana_sdk::signer::EncodableKey;
 use solana_sdk::signature::Keypair;
+use solana_sdk::signer::EncodableKey;
 use tracing::info;
 
 use omni_types::ChainKind;
