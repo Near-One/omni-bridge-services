@@ -6,9 +6,9 @@ use std::{
     time::Duration,
 };
 
+use crate::types::DepositMsg;
 use alloy::primitives::TxHash;
 use anyhow::{Context, Result};
-use crate::types::DepositMsg;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;

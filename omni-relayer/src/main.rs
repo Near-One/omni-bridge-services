@@ -326,7 +326,11 @@ async fn main() -> Result<()> {
                 let config = config.clone();
                 let mut redis_connection_manager = redis_connection_manager.clone();
                 async move {
-                    startup::native_indexers::solana::process_signature(&config, &mut redis_connection_manager).await
+                    startup::native_indexers::solana::process_signature(
+                        &config,
+                        &mut redis_connection_manager,
+                    )
+                    .await
                 }
             }));
         }

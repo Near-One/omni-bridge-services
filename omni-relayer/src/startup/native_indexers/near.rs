@@ -27,10 +27,9 @@ async fn create_lake_config(
             &utils::redis::get_last_processed_key(ChainKind::Near),
         )
         .await
-        .map_or(
-            get_final_block(jsonrpc_client).await?,
-            |block_height| block_height + 1,
-        ),
+        .map_or(get_final_block(jsonrpc_client).await?, |block_height| {
+            block_height + 1
+        }),
     };
 
     info!("NEAR Lake will start from block: {start_block_height}");
@@ -73,12 +72,8 @@ pub async fn start_indexer(
             let mut redis_connection_manager = redis_connection_manager.clone();
 
             async move {
-                handle_streamer_message(
-                    &config,
-                    &mut redis_connection_manager,
-                    &streamer_message,
-                )
-                .await;
+                handle_streamer_message(&config, &mut redis_connection_manager, &streamer_message)
+                    .await;
 
                 utils::redis::update_last_processed(
                     &config,
