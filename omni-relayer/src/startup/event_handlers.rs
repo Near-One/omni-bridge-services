@@ -643,9 +643,11 @@ pub(super) async fn handle_transaction_event(
                                 .collect()
                         }),
                         extra_msg: deposit_msg.extra_msg.clone(),
-                        safe_deposit: deposit_msg.safe_deposit.clone().map(|sd| {
-                            crate::types::SafeDepositMsg { msg: sd.msg }
-                        }),
+                        safe_deposit: deposit_msg
+                            .safe_deposit
+                            .clone()
+                            .map(|sd| crate::types::SafeDepositMsg { msg: sd.msg }),
+                        refund_address: deposit_msg.refund_address.clone(),
                     },
                 },
             )

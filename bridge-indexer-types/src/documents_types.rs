@@ -420,6 +420,7 @@ pub struct DepositMsg {
     pub post_actions: Option<Vec<PostAction>>,
     pub extra_msg: Option<String>,
     pub safe_deposit: Option<SafeDepositMsg>,
+    pub refund_address: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

@@ -184,9 +184,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                             amount: action.amount.0,
                             memo: action.memo,
                             msg: action.msg,
-                            gas: action
-                                .gas
-                                .map(near_primitives::gas::Gas::from_gas),
+                            gas: action.gas.map(near_primitives::gas::Gas::from_gas),
                         })
                         .collect()
                 }),
@@ -194,6 +192,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 safe_deposit: deposit_msg.safe_deposit.map(|safe_deposit| SafeDepositMsg {
                     msg: safe_deposit.msg,
                 }),
+                refund_address: deposit_msg.refund_address,
             },
         },
         transaction_options: TransactionOptions {
