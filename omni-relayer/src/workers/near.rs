@@ -20,7 +20,7 @@ use crate::{
     config, utils, utils::pending_transactions::PendingTransaction, workers::PAUSED_ERROR,
 };
 
-use super::{EventAction, Transfer};
+use super::{EventAction, WorkerEvent, Transfer};
 
 #[derive(Debug, serde::Deserialize)]
 enum UTXOChainMsg {
@@ -35,7 +35,7 @@ pub async fn process_transfer_event(
     signer: AccountId,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
-) -> Result<(EventAction, Option<OmniBridgeEvent>)> {
+) -> Result<(EventAction, Vec<WorkerEvent>)> {
     let transfer_message = match transfer {
         Transfer::Near {
             ref transfer_message,
@@ -46,7 +46,7 @@ pub async fn process_transfer_event(
         } => {
             let Ok(new_transfer_id) = new_transfer_id.try_into() else {
                 warn!("Failed to build TransferId from: {new_transfer_id:?}");
-                return Ok((EventAction::Retry, None));
+                return Ok((EventAction::Retry, Vec::new()));
             };
 
             let Ok(transfer_message) = omni_connector
@@ -54,7 +54,7 @@ pub async fn process_transfer_event(
                 .await
             else {
                 warn!("Failed to get transfer message for UTXO transfer: {new_transfer_id:?}");
-                return Ok((EventAction::Retry, None));
+                return Ok((EventAction::Retry, Vec::new()));
             };
 
             transfer_message
@@ -81,7 +81,7 @@ pub async fn process_transfer_event(
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
-            return Ok((EventAction::Retry, None));
+            return Ok((EventAction::Retry, Vec::new()));
         }
     }
 
@@ -101,7 +101,7 @@ pub async fn process_transfer_event(
         .await
         else {
             warn!("Failed to get transfer fee for transfer: {transfer_message:?}");
-            return Ok((EventAction::Retry, None));
+            return Ok((EventAction::Retry, Vec::new()));
         };
 
         if let Some(event_action) = needed_fee
@@ -114,7 +114,7 @@ pub async fn process_transfer_event(
             )
             .await
         {
-            return Ok((event_action, None));
+            return Ok((event_action, Vec::new()));
         }
     }
 
@@ -139,13 +139,17 @@ pub async fn process_transfer_event(
         )
         .await
     {
-        Ok(tx_hash) => Ok(utils::near::resolve_tx_action_and_extract_sign_event(
-            jsonrpc_client,
-            tx_hash,
-            signer,
-            &["Request has timed out."],
-        )
-        .await),
+        Ok(tx_hash) => {
+            let (action, receipts) = utils::near::resolve_tx_action_with_receipts(
+                jsonrpc_client,
+                tx_hash,
+                signer,
+                &["Request has timed out."],
+            )
+            .await;
+
+            Ok((action, utils::near::extract_sign_transfer_event(&receipts)))
+        }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
                 match near_rpc_error {
@@ -159,7 +163,7 @@ pub async fn process_transfer_event(
                         warn!(
                             "Failed to sign transfer ({origin_chain:?}:{origin_nonce}), retrying: {near_rpc_error:?}"
                         );
-                        return Ok((EventAction::Retry, None));
+                        return Ok((EventAction::Retry, Vec::new()));
                     }
                     _ => {
                         anyhow::bail!(
@@ -178,7 +182,7 @@ pub async fn process_transfer_to_utxo_event(
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
-) -> Result<EventAction> {
+) -> Result<(EventAction, Vec<WorkerEvent>)> {
     let Transfer::Near {
         ref transfer_message,
     } = transfer
@@ -240,13 +244,20 @@ pub async fn process_transfer_to_utxo_event(
                 .near_bridge_client()
                 .and_then(near_bridge_client::NearBridgeClient::account_id)?;
 
-            Ok(utils::near::resolve_tx_action(
+            let destination_chain = transfer_message.recipient.get_chain();
+
+            let (action, receipts) = utils::near::resolve_tx_action_with_receipts(
                 jsonrpc_client,
                 tx_hash,
                 signer,
                 &["not exist", "Previous btc tx has not been signed"],
             )
-            .await)
+            .await;
+
+            Ok((
+                action,
+                utils::near::extract_near_to_utxo(&receipts, destination_chain),
+            ))
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
@@ -263,7 +274,7 @@ pub async fn process_transfer_to_utxo_event(
                             transfer_message.recipient.get_chain(),
                             transfer_message.origin_nonce
                         );
-                        return Ok(EventAction::Retry);
+                        return Ok((EventAction::Retry, Vec::new()));
                     }
                     _ => {
                         anyhow::bail!(
@@ -279,14 +290,14 @@ pub async fn process_transfer_to_utxo_event(
                     transfer_message.recipient.get_chain(),
                     transfer_message.origin_nonce
                 );
-                return Ok(EventAction::Retry);
+                return Ok((EventAction::Retry, Vec::new()));
             } else if let BridgeSdkError::InsufficientUTXOGasFee(err) = err {
                 warn!(
                     "Gas fee is too large for {:?} transfer ({}): {err}, retrying",
                     transfer_message.recipient.get_chain(),
                     transfer_message.origin_nonce
                 );
-                return Ok(EventAction::Retry);
+                return Ok((EventAction::Retry, Vec::new()));
             } else if let BridgeSdkError::UtxoClientError(ref msg) = err {
                 if msg == "Failed to estimate fee_rate" {
                     warn!(
@@ -294,7 +305,7 @@ pub async fn process_transfer_to_utxo_event(
                         transfer_message.recipient.get_chain(),
                         transfer_message.origin_nonce
                     );
-                    return Ok(EventAction::Retry);
+                    return Ok((EventAction::Retry, Vec::new()));
                 }
             }
 

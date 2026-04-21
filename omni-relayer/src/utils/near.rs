@@ -8,7 +8,10 @@ use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{hash::CryptoHash, types::AccountId};
 use omni_types::{ChainKind, near_events::OmniBridgeEvent};
 
-use crate::{config, workers::EventAction};
+use crate::{
+    config,
+    workers::{EventAction, WorkerEvent, Transfer},
+};
 
 pub fn get_signer(
     config: &config::Config,
@@ -59,72 +62,20 @@ pub async fn resolve_tx_action(
     sender_account_id: AccountId,
     retryable_errors: &[&str],
 ) -> EventAction {
-    match get_final_tx_receipts(jsonrpc_client, tx_hash, sender_account_id).await {
-        Ok(receipts) => {
-            for receipt_outcome in receipts {
-                if let near_primitives::views::ExecutionStatusView::Failure(ref err) =
-                    receipt_outcome.outcome.status
-                {
-                    let err_str = err.to_string();
-                    if retryable_errors.iter().any(|e| err_str.contains(e)) {
-                        warn!("Transaction {tx_hash} has retryable receipt failure: {err:?}");
-                        return EventAction::Retry;
-                    }
-                }
-            }
-
-            EventAction::Remove
-        },
-        Err(err) => {
-            warn!("Failed to get transaction receipts for {tx_hash}: {err:?}");
-            EventAction::Retry
-        }
-    }
+    resolve_tx_action_with_receipts(jsonrpc_client, tx_hash, sender_account_id, retryable_errors)
+        .await
+        .0
 }
 
-pub async fn resolve_tx_action_and_extract_sign_event(
+pub async fn resolve_tx_action_with_receipts(
     jsonrpc_client: &JsonRpcClient,
     tx_hash: CryptoHash,
     sender_account_id: AccountId,
     retryable_errors: &[&str],
-) -> (EventAction, Option<OmniBridgeEvent>) {
-    match get_final_tx_receipts(jsonrpc_client, tx_hash, sender_account_id).await {
-        Ok(receipts) => {
-            let mut sign_event = None;
-            for receipt_outcome in receipts {
-                if let near_primitives::views::ExecutionStatusView::Failure(ref err) =
-                    receipt_outcome.outcome.status
-                {
-                    let err_str = err.to_string();
-                    if retryable_errors.iter().any(|e| err_str.contains(e)) {
-                        warn!("Transaction {tx_hash} has retryable receipt failure: {err:?}");
-                        return (EventAction::Retry, None);
-                    }
-                }
-
-                for log in &receipt_outcome.outcome.logs {
-                    if let Ok(event @ OmniBridgeEvent::SignTransferEvent { .. }) =
-                        serde_json::from_str::<OmniBridgeEvent>(log)
-                    {
-                        sign_event = Some(event);
-                    }
-                }
-            }
-
-            (EventAction::Remove, sign_event)
-        }
-        Err(err) => {
-            warn!("Failed to get transaction receipts for {tx_hash}: {err:?}");
-            (EventAction::Retry, None)
-        }
-    }
-}
-
-async fn get_final_tx_receipts(
-    jsonrpc_client: &JsonRpcClient,
-    tx_hash: CryptoHash,
-    sender_account_id: AccountId,
-) -> Result<Vec<near_primitives::views::ExecutionOutcomeWithIdView>> {
+) -> (
+    EventAction,
+    Vec<near_primitives::views::ExecutionOutcomeWithIdView>,
+) {
     let request = near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest {
         transaction_info: near_jsonrpc_client::methods::tx::TransactionInfo::TransactionId {
             tx_hash,
@@ -133,17 +84,99 @@ async fn get_final_tx_receipts(
         wait_until: near_primitives::views::TxExecutionStatus::Final,
     };
 
-    let response = jsonrpc_client
-        .call(request)
-        .await
-        .context(format!("Failed to get transaction status for {tx_hash}"))?;
+    let receipts = match jsonrpc_client.call(request).await {
+        Ok(response) => match response.final_execution_outcome {
+            Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
+                outcome,
+            )) => outcome.receipts_outcome,
+            _ => {
+                warn!("Receipts missing for transaction {tx_hash}");
+                return (EventAction::Retry, Vec::new());
+            }
+        },
+        Err(err) => {
+            warn!("Failed to get transaction status for {tx_hash}: {err:?}");
+            return (EventAction::Retry, Vec::new());
+        }
+    };
 
-    if let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
-        outcome,
-    )) = response.final_execution_outcome
-    {
-        Ok(outcome.receipts_outcome)
-    } else {
-        anyhow::bail!("Receipts missing for transaction {tx_hash}")
+    for receipt_outcome in &receipts {
+        if let near_primitives::views::ExecutionStatusView::Failure(ref err) =
+            receipt_outcome.outcome.status
+        {
+            let err_str = err.to_string();
+            if retryable_errors.iter().any(|e| err_str.contains(e)) {
+                warn!("Transaction {tx_hash} has retryable receipt failure: {err:?}");
+                return (EventAction::Retry, Vec::new());
+            }
+        }
     }
+
+    (EventAction::Remove, receipts)
+}
+
+pub fn extract_sign_transfer_event(
+    receipts: &[near_primitives::views::ExecutionOutcomeWithIdView],
+) -> Vec<WorkerEvent> {
+    receipts
+        .iter()
+        .flat_map(|r| &r.outcome.logs)
+        .find_map(|log| match serde_json::from_str::<OmniBridgeEvent>(log) {
+            Ok(event @ OmniBridgeEvent::SignTransferEvent { .. }) => Some(event),
+            _ => None,
+        })
+        .map(|e| WorkerEvent::OmniBridge(Box::new(e)))
+        .into_iter()
+        .collect()
+}
+
+pub fn extract_near_to_utxo(
+    receipts: &[near_primitives::views::ExecutionOutcomeWithIdView],
+    destination_chain: ChainKind,
+) -> Vec<WorkerEvent> {
+    const EVENT_JSON_PREFIX: &str = "EVENT_JSON:";
+    const GENERATE_BTC_PENDING_INFO_EVENT: &str = "generate_btc_pending_info";
+    const UTXO_REMOVED_EVENT: &str = "utxo_removed";
+
+    let mut btc_pending_id = None;
+    let mut utxo_count = None;
+
+    for log in receipts.iter().flat_map(|r| &r.outcome.logs) {
+        let log = log.strip_prefix(EVENT_JSON_PREFIX).unwrap_or(log);
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(log) else {
+            continue;
+        };
+
+        match value.get("event").and_then(|v| v.as_str()) {
+            Some(GENERATE_BTC_PENDING_INFO_EVENT) if btc_pending_id.is_none() => {
+                btc_pending_id = value
+                    .pointer("/data/0/btc_pending_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+            }
+            Some(UTXO_REMOVED_EVENT) if utxo_count.is_none() => {
+                utxo_count = value
+                    .pointer("/data/0/utxo_storage_keys")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| u32::try_from(a.len()).ok());
+            }
+            _ => {}
+        }
+    }
+
+    btc_pending_id
+        .zip(utxo_count)
+        .map(|(btc_pending_id, utxo_count)| {
+            (0..u64::from(utxo_count))
+                .map(|sign_index| {
+                    WorkerEvent::NearToUtxo(Transfer::NearToUtxo {
+                        chain: destination_chain,
+                        btc_pending_id: btc_pending_id.clone(),
+                        sign_index,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }

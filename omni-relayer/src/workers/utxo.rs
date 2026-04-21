@@ -32,6 +32,7 @@ pub struct ConfirmedTxHash {
 }
 
 pub async fn process_near_to_utxo_init_transfer_event(
+    config: &crate::config::Config,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -44,6 +45,11 @@ pub async fn process_near_to_utxo_init_transfer_event(
     else {
         anyhow::bail!("Expected NearToUtxoTransfer, got: {transfer:?}");
     };
+
+    if !config.is_signing_utxo_transaction_enabled(chain) {
+        info!("Signing UTXO transactions for {chain:?} is disabled, skipping");
+        return Ok(EventAction::Remove);
+    }
 
     let nonce = match near_nonce.reserve_nonce().await {
         Ok(nonce) => Some(nonce),
