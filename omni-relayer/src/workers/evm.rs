@@ -49,7 +49,7 @@ pub async fn process_init_transfer_event(
     };
 
     let current_timestamp = chrono::Utc::now().timestamp();
-    let effective_wait = std::cmp::max(expected_finalization_time, config.near.kyt_delay_secs);
+    let effective_wait = std::cmp::max(expected_finalization_time, config.kyt.delay_secs);
 
     if current_timestamp < creation_timestamp + effective_wait {
         let remaining = (creation_timestamp + effective_wait - current_timestamp).unsigned_abs();

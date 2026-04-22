@@ -89,9 +89,9 @@ pub async fn process_transfer_event(
     info!("Processing transfer ({origin_chain:?}:{origin_nonce}) on NEAR");
 
     let current_timestamp = chrono::Utc::now().timestamp();
-    if current_timestamp < creation_timestamp + config.near.kyt_delay_secs {
+    if current_timestamp < creation_timestamp + config.kyt.delay_secs {
         let remaining =
-            (creation_timestamp + config.near.kyt_delay_secs - current_timestamp).unsigned_abs();
+            (creation_timestamp + config.kyt.delay_secs - current_timestamp).unsigned_abs();
         return Ok(EventAction::RetryAfter(std::time::Duration::from_secs(
             remaining,
         )));
@@ -228,9 +228,9 @@ pub async fn process_transfer_to_utxo_event(
     );
 
     let current_timestamp = chrono::Utc::now().timestamp();
-    if current_timestamp < creation_timestamp + config.near.kyt_delay_secs {
+    if current_timestamp < creation_timestamp + config.kyt.delay_secs {
         let remaining =
-            (creation_timestamp + config.near.kyt_delay_secs - current_timestamp).unsigned_abs();
+            (creation_timestamp + config.kyt.delay_secs - current_timestamp).unsigned_abs();
         return Ok(EventAction::RetryAfter(std::time::Duration::from_secs(
             remaining,
         )));

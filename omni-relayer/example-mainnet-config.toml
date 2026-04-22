@@ -58,11 +58,13 @@ zcash = "nzec.bridge.near"
 sign_without_checking_fee = ["near:aurora"]
 # To enable fast relayer, uncomment the line below
 # fast_relayer_enabled = true
+
 # KYT (Know Your Transaction) checks are enabled by setting KYT_API_URL and
 # KYT_API_KEY environment variables.
+[kyt]
 # Delay in seconds before relaying a transfer, applied across all origin chains.
 # Gives KYT providers time to index fresh accounts used to launder funds [default: 0]
-kyt_delay_secs = 7
+delay_secs = 7
 
 [eth]
 rpc_http_url = "https://mainnet.infura.io/v3/INFURA_API_KEY"

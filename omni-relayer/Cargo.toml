@@ -49,7 +49,7 @@ mongodb = { version = "3.2.2", optional = true }
 redis = { version = "0.32.5", features = ["aio", "tokio-comp", "connection-manager", "json"] }
 async-nats = "0.45"
 reqwest = "0.12"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "fast-rng"] }
 
 bridge-connector-common = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "bridge-connector-common", rev = "19f6cc07f1802497aabee9c943358a16c3a6d901" }
 near-rpc-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-rpc-client", rev = "19f6cc07f1802497aabee9c943358a16c3a6d901" }
