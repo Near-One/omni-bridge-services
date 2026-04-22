@@ -27,10 +27,9 @@ async fn create_lake_config(
             &utils::redis::get_last_processed_key(ChainKind::Near),
         )
         .await
-        .map_or(
-            get_final_block(jsonrpc_client).await?,
-            |block_height| block_height + 1,
-        ),
+        .map_or(get_final_block(jsonrpc_client).await?, |block_height| {
+            block_height + 1
+        }),
     };
 
     info!("NEAR Lake will start from block: {start_block_height}");
@@ -73,12 +72,8 @@ pub async fn start_indexer(
             let mut redis_connection_manager = redis_connection_manager.clone();
 
             async move {
-                handle_streamer_message(
-                    &config,
-                    &mut redis_connection_manager,
-                    &streamer_message,
-                )
-                .await;
+                handle_streamer_message(&config, &mut redis_connection_manager, &streamer_message)
+                    .await;
 
                 utils::redis::update_last_processed(
                     &config,
@@ -103,6 +98,10 @@ async fn handle_streamer_message(
 ) {
     let nep_locker_event_outcomes = find_nep_locker_event_outcomes(config, streamer_message);
 
+    let block_timestamp_secs =
+        i64::try_from(streamer_message.block.header.timestamp_nanosec / 1_000_000_000)
+            .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+
     for outcome in nep_locker_event_outcomes {
         let receipt_id = outcome.receipt.receipt_id.to_string();
 
@@ -124,7 +123,10 @@ async fn handle_streamer_message(
                         redis_connection_manager,
                         utils::redis::EVENTS,
                         key,
-                        RetryableEvent::new(crate::workers::Transfer::Near { transfer_message }),
+                        RetryableEvent::new(crate::workers::Transfer::Near {
+                            transfer_message,
+                            creation_timestamp: block_timestamp_secs,
+                        }),
                     )
                     .await;
                 }
@@ -178,6 +180,7 @@ async fn handle_streamer_message(
                             key,
                             RetryableEvent::new(crate::workers::Transfer::Near {
                                 transfer_message,
+                                creation_timestamp: block_timestamp_secs,
                             }),
                         )
                         .await;

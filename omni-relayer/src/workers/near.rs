@@ -27,6 +27,24 @@ enum UTXOChainMsg {
     MaxGasFee(U64),
 }
 
+pub(super) async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
+    if !config::Config::is_kyt_enabled() {
+        return None;
+    }
+
+    match utils::kyt::check_sender(sender).await {
+        Ok(utils::kyt::SuggestedAction::StopRelaying) => {
+            warn!("KYT suggested STOP_RELAYING for sender {sender}, rejecting transfer {context}");
+            Some(EventAction::Remove)
+        }
+        Ok(utils::kyt::SuggestedAction::None) => None,
+        Err(err) => {
+            warn!("KYT check failed for {sender}: {err:?}, retrying");
+            Some(EventAction::Retry)
+        }
+    }
+}
+
 pub async fn process_transfer_event(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
@@ -36,10 +54,11 @@ pub async fn process_transfer_event(
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<(EventAction, Vec<WorkerEvent>)> {
-    let transfer_message = match transfer {
+    let (transfer_message, creation_timestamp) = match transfer {
         Transfer::Near {
             ref transfer_message,
-        } => transfer_message.clone(),
+            creation_timestamp,
+        } => (transfer_message.clone(), creation_timestamp),
         Transfer::Utxo {
             ref new_transfer_id,
             ..
@@ -57,7 +76,7 @@ pub async fn process_transfer_event(
                 return Ok((EventAction::Retry, Vec::new()));
             };
 
-            transfer_message
+            (transfer_message, 0)
         }
         _ => {
             anyhow::bail!("Expected Transfer::Near or Transfer::Utxo variant, got: {transfer:?}");
@@ -68,6 +87,21 @@ pub async fn process_transfer_event(
     let origin_nonce = transfer_message.origin_nonce;
 
     info!("Processing transfer ({origin_chain:?}:{origin_nonce}) on NEAR");
+
+    let current_timestamp = chrono::Utc::now().timestamp();
+    if current_timestamp < creation_timestamp + config.kyt.delay_secs {
+        let remaining =
+            (creation_timestamp + config.kyt.delay_secs - current_timestamp).unsigned_abs();
+        return Ok((
+            EventAction::RetryAfter(std::time::Duration::from_secs(remaining)),
+            Vec::new(),
+        ));
+    }
+
+    let context = format!("({origin_chain:?}:{origin_nonce})");
+    if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
+        return Ok((action, Vec::new()));
+    }
 
     match omni_connector
         .is_transfer_finalised(
@@ -183,6 +217,7 @@ pub async fn process_transfer_event(
 }
 
 pub async fn process_transfer_to_utxo_event(
+    config: &config::Config,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
@@ -190,6 +225,7 @@ pub async fn process_transfer_to_utxo_event(
 ) -> Result<(EventAction, Vec<WorkerEvent>)> {
     let Transfer::Near {
         ref transfer_message,
+        creation_timestamp,
     } = transfer
     else {
         anyhow::bail!("Expected NearTransferWithTimestamp, got: {transfer:?}");
@@ -200,6 +236,32 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.get_origin_chain(),
         transfer_message.origin_nonce
     );
+
+    let current_timestamp = chrono::Utc::now().timestamp();
+    if current_timestamp < creation_timestamp + config.kyt.delay_secs {
+        let remaining =
+            (creation_timestamp + config.kyt.delay_secs - current_timestamp).unsigned_abs();
+        return Ok((
+            EventAction::RetryAfter(std::time::Duration::from_secs(remaining)),
+            Vec::new(),
+        ));
+    }
+
+    let context = format!(
+        "({:?}:{})",
+        transfer_message.get_origin_chain(),
+        transfer_message.origin_nonce
+    );
+    if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
+        return Ok((action, Vec::new()));
+    }
+
+    let OmniAddress::Near(ref sender) = transfer_message.sender else {
+        anyhow::bail!(
+            "Expected NEAR sender for NEAR to UTXO transfer, got: {:?}",
+            transfer_message.sender
+        );
+    };
 
     let Some(recipient) = transfer_message.recipient.get_utxo_address() else {
         anyhow::bail!(
@@ -261,7 +323,7 @@ pub async fn process_transfer_to_utxo_event(
             {
                 Ok(receipts) => (
                     EventAction::Remove,
-                    utils::near::extract_near_to_utxo(&receipts, destination_chain),
+                    utils::near::extract_near_to_utxo(&receipts, destination_chain, sender),
                 ),
                 Err(action) => (action, Vec::new()),
             })
@@ -306,7 +368,8 @@ pub async fn process_transfer_to_utxo_event(
                 );
                 return Ok((EventAction::Retry, Vec::new()));
             } else if let BridgeSdkError::UtxoClientError(ref msg) = err {
-                if msg == "Failed to estimate fee_rate" {
+                if msg == "Failed to estimate fee_rate"
+                {
                     warn!(
                         "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
                         transfer_message.recipient.get_chain(),
@@ -478,21 +541,19 @@ pub async fn process_sign_transfer_event(
                 message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
             );
 
-            if let Some(nonce) = evm_nonce {
-                if config.is_fee_bumping_enabled(chain_kind) {
-                    if let Err(err) = store_pending_transaction(
-                        config,
-                        redis_connection_manager,
-                        chain_kind,
-                        &tx_hash,
-                        nonce,
-                        omni_bridge_event,
-                    )
-                    .await
-                    {
-                        warn!("Failed to store pending transaction {tx_hash}: {err:?}");
-                    }
-                }
+            if let Some(nonce) = evm_nonce
+                && config.is_fee_bumping_enabled(chain_kind)
+                && let Err(err) = store_pending_transaction(
+                    config,
+                    redis_connection_manager,
+                    chain_kind,
+                    &tx_hash,
+                    nonce,
+                    omni_bridge_event,
+                )
+                .await
+            {
+                warn!("Failed to store pending transaction {tx_hash}: {err:?}");
             }
 
             Ok(EventAction::Remove)
@@ -536,25 +597,22 @@ pub async fn process_sign_transfer_event(
                 return Ok(EventAction::Retry);
             }
 
-            if let BridgeSdkError::SolanaRpcError(ref client_error) = err {
-                if let ErrorKind::RpcError(RpcError::RpcResponseError {
+            if let BridgeSdkError::SolanaRpcError(ref client_error) = err
+                && let ErrorKind::RpcError(RpcError::RpcResponseError {
                     data: RpcResponseErrorData::SendTransactionPreflightFailure(ref result),
                     ..
                 }) = client_error.kind
-                {
-                    if let Some(TransactionError::InstructionError(
-                        _,
-                        InstructionError::Custom(error_code),
-                    )) = result.err
-                    {
-                        if error_code == PAUSED_ERROR {
-                            warn!("Solana bridge is paused");
-                            return Ok(EventAction::Retry);
-                        }
-
-                        anyhow::bail!("Failed to finalize deposit: {err}");
-                    }
+                && let Some(TransactionError::InstructionError(
+                    _,
+                    InstructionError::Custom(error_code),
+                )) = result.err
+            {
+                if error_code == PAUSED_ERROR {
+                    warn!("Solana bridge is paused");
+                    return Ok(EventAction::Retry);
                 }
+
+                anyhow::bail!("Failed to finalize deposit: {err}");
             }
 
             warn!("Failed to finalize deposit, retrying: {err}");

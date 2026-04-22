@@ -138,6 +138,7 @@ pub fn extract_sign_transfer_event(
 pub fn extract_near_to_utxo(
     receipts: &[near_primitives::views::ExecutionOutcomeWithIdView],
     destination_chain: ChainKind,
+    sender: &AccountId,
 ) -> Vec<WorkerEvent> {
     const EVENT_JSON_PREFIX: &str = "EVENT_JSON:";
     const GENERATE_BTC_PENDING_INFO_EVENT: &str = "generate_btc_pending_info";
@@ -179,6 +180,8 @@ pub fn extract_near_to_utxo(
                         chain: destination_chain,
                         btc_pending_id: btc_pending_id.clone(),
                         sign_index,
+                        sender: sender.clone(),
+                        creation_timestamp: chrono::Utc::now().timestamp(),
                     }))
                 })
                 .collect()

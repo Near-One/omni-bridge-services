@@ -21,7 +21,10 @@ use tracing::{error, info, warn};
 
 use omni_types::{ChainKind, OmniAddress};
 
-use crate::{config, utils, workers::{DeployToken, FinTransfer, RetryableEvent, Transfer}};
+use crate::{
+    config, utils,
+    workers::{DeployToken, FinTransfer, RetryableEvent, Transfer},
+};
 
 pub async fn start_indexer(
     config: &config::Config,
@@ -212,6 +215,9 @@ pub async fn process_signature(
                         .await
                     {
                         Ok(tx) => {
+                            let block_time = tx
+                                .block_time
+                                .unwrap_or_else(|| chrono::Utc::now().timestamp());
                             let transaction = tx.transaction;
 
                             if let solana_transaction_status::EncodedTransaction::Json(ref tx) =
@@ -225,6 +231,7 @@ pub async fn process_signature(
                                         &transaction,
                                         raw,
                                         signature,
+                                        block_time,
                                     )
                                     .await;
                                 }
@@ -278,6 +285,7 @@ async fn process_message(
     transaction: &EncodedTransactionWithStatusMeta,
     message: &UiRawMessage,
     signature: Signature,
+    block_time: i64,
 ) {
     for instruction in message.instructions.clone() {
         let account_keys = instruction
@@ -294,6 +302,7 @@ async fn process_message(
             transaction,
             &instruction.data,
             account_keys,
+            block_time,
         )
         .await
         {
@@ -310,6 +319,7 @@ async fn decode_instruction(
     transaction: &EncodedTransactionWithStatusMeta,
     data: &str,
     account_keys: Vec<Option<String>>,
+    block_time: i64,
 ) -> Result<()> {
     let decoded_data = bs58::decode(data).into_vec()?;
 
@@ -419,6 +429,7 @@ async fn decode_instruction(
                                 message: payload.message.clone(),
                                 emitter,
                                 sequence,
+                                creation_timestamp: block_time,
                             }),
                         )
                         .await;

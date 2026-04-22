@@ -1,5 +1,5 @@
-use solana_sdk::signer::EncodableKey;
 use solana_sdk::signature::Keypair;
+use solana_sdk::signer::EncodableKey;
 use tracing::info;
 
 use omni_types::ChainKind;
@@ -7,11 +7,11 @@ use omni_types::ChainKind;
 use crate::config;
 
 pub fn get_keypair(file: Option<&String>) -> Keypair {
-    if let Some(file) = file {
-        if let Ok(keypair) = Keypair::read_from_file(file) {
-            info!("Retrieved keypair from file");
-            return keypair;
-        }
+    if let Some(file) = file
+        && let Ok(keypair) = Keypair::read_from_file(file)
+    {
+        info!("Retrieved keypair from file");
+        return keypair;
     }
 
     info!("Retrieving Solana keypair from env");

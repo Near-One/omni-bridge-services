@@ -6,9 +6,9 @@ use std::{
     time::Duration,
 };
 
+use crate::types::DepositMsg;
 use alloy::primitives::TxHash;
 use anyhow::{Context, Result};
-use crate::types::DepositMsg;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;
@@ -78,6 +78,8 @@ struct MessageResult {
 pub enum Transfer {
     Near {
         transfer_message: TransferMessage,
+        #[serde(default)]
+        creation_timestamp: i64,
     },
     Evm {
         chain_kind: ChainKind,
@@ -96,6 +98,8 @@ pub enum Transfer {
         message: String,
         emitter: Pubkey,
         sequence: u64,
+        #[serde(default)]
+        creation_timestamp: i64,
     },
     Starknet {
         tx_hash: String,
@@ -106,6 +110,8 @@ pub enum Transfer {
         fee: Fee,
         recipient: OmniAddress,
         message: String,
+        #[serde(default)]
+        creation_timestamp: i64,
     },
     Utxo {
         utxo_transfer_message: UtxoFinTransferMsg,
@@ -115,6 +121,9 @@ pub enum Transfer {
         chain: ChainKind,
         btc_pending_id: String,
         sign_index: u64,
+        sender: AccountId,
+        #[serde(default)]
+        creation_timestamp: i64,
     },
     UtxoToNear {
         chain: ChainKind,
@@ -184,11 +193,11 @@ async fn handle_nats_ack(
     let max_message_age = Duration::from_secs(config.max_message_age_hours * 3600);
 
     match result {
-        Ok(EventAction::Retry) | Ok(EventAction::RetryAfter(_)) => {
+        Ok(EventAction::Retry | EventAction::RetryAfter(_)) => {
             if let Ok(info) = msg.info() {
                 let now = chrono::Utc::now().timestamp();
                 let published_at = info.published.unix_timestamp();
-                let age = Duration::from_secs(now.saturating_sub(published_at) as u64);
+                let age = Duration::from_secs(now.saturating_sub(published_at).unsigned_abs());
 
                 if age > max_message_age {
                     warn!("Message exceeded max age ({age:?}), terminating");
@@ -201,7 +210,8 @@ async fn handle_nats_ack(
                 let backoff = if let Ok(EventAction::RetryAfter(delay)) = result {
                     (*delay).min(max_backoff)
                 } else {
-                    Duration::from_secs(4u64.saturating_pow(info.delivered as u32)).min(max_backoff)
+                    let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
+                    Duration::from_secs(4u64.saturating_pow(delivered)).min(max_backoff)
                 };
                 msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
                     .await
@@ -266,7 +276,7 @@ pub async fn process_events(
     let consumer = nats_client.relayer_consumer(nats_config).await?;
     let mut messages = consumer
         .stream()
-        .max_messages_per_batch((nats_config.relayer_consumer.worker_count + 1) / 2)
+        .max_messages_per_batch(nats_config.relayer_consumer.worker_count.div_ceil(2))
         .messages()
         .await
         .context("Failed to start consuming NATS messages")?;
@@ -340,7 +350,7 @@ pub async fn process_events(
             if message_result.needs_evm_nonce_resync
                 && matches!(
                     message_result.action,
-                    Ok(EventAction::Retry) | Ok(EventAction::RetryAfter(_)) | Err(_)
+                    Ok(EventAction::Retry | EventAction::RetryAfter(_)) | Err(_)
                 )
             {
                 is_evm_nonce_resync_needed.store(true, Ordering::Relaxed);
@@ -376,7 +386,9 @@ async fn process_message(
         match transfer {
             Transfer::Near { .. } | Transfer::Utxo { .. } => {
                 let (is_utxo, fee_key) = match &transfer {
-                    Transfer::Near { transfer_message } => (
+                    Transfer::Near {
+                        transfer_message, ..
+                    } => (
                         transfer_message.recipient.is_utxo_chain(),
                         serde_json::to_string(&transfer_message.get_transfer_id())
                             .unwrap_or_default(),
@@ -393,6 +405,7 @@ async fn process_message(
 
                 let result = if is_utxo {
                     near::process_transfer_to_utxo_event(
+                        config,
                         jsonrpc_client,
                         omni_connector.clone(),
                         transfer,

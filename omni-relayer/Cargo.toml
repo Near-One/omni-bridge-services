@@ -1,6 +1,6 @@
 [package]
 name = "omni-relayer"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 repository = "https://github.com/Near-One/omni-bridge"
 
@@ -50,6 +50,7 @@ mongodb = { version = "3.2.2", optional = true }
 redis = { version = "0.32.5", features = ["aio", "tokio-comp", "connection-manager", "json"] }
 async-nats = "0.45"
 reqwest = "0.12"
+uuid = { version = "1", features = ["v4", "fast-rng"] }
 
 bridge-connector-common = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "bridge-connector-common", rev = "19f6cc07f1802497aabee9c943358a16c3a6d901" }
 near-rpc-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-rpc-client", rev = "19f6cc07f1802497aabee9c943358a16c3a6d901" }
@@ -70,8 +71,3 @@ default = ["nats-ingestion"]
 nats-ingestion = ["dep:bridge-indexer-types"]
 mongo-ingestion = ["dep:mongodb", "dep:bridge-indexer-types"]
 native-indexers = ["dep:near-lake-framework"]
-
-# The profile that 'dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"
