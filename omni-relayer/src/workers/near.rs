@@ -31,20 +31,20 @@ pub(super) async fn check_kyt(
     config: &config::Config,
     sender: &OmniAddress,
     context: &str,
-) -> Result<Option<EventAction>> {
+) -> Option<EventAction> {
     if !config.is_kyt_enabled() {
-        return Ok(None);
+        return None;
     }
 
     match utils::kyt::check_sender(sender).await {
         Ok(utils::kyt::SuggestedAction::StopRelaying) => {
             warn!("KYT suggested STOP_RELAYING for sender {sender}, rejecting transfer {context}");
-            anyhow::bail!("Transfer {context} rejected by KYT: sender {sender}");
+            Some(EventAction::Remove)
         }
-        Ok(utils::kyt::SuggestedAction::None) => Ok(None),
+        Ok(utils::kyt::SuggestedAction::None) => None,
         Err(err) => {
             warn!("KYT check failed for {sender}: {err:?}, retrying");
-            Ok(Some(EventAction::Retry))
+            Some(EventAction::Retry)
         }
     }
 }
@@ -102,7 +102,7 @@ pub async fn process_transfer_event(
     }
 
     let context = format!("({origin_chain:?}:{origin_nonce})");
-    if let Some(action) = check_kyt(config, &transfer_message.sender, &context).await? {
+    if let Some(action) = check_kyt(config, &transfer_message.sender, &context).await {
         return Ok(action);
     }
 
@@ -245,7 +245,7 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.get_origin_chain(),
         transfer_message.origin_nonce
     );
-    if let Some(action) = check_kyt(config, &transfer_message.sender, &context).await? {
+    if let Some(action) = check_kyt(config, &transfer_message.sender, &context).await {
         return Ok(action);
     }
 

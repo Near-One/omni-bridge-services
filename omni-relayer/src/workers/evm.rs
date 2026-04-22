@@ -76,7 +76,7 @@ pub async fn process_init_transfer_event(
         })?;
 
     let context = format!("({chain_kind:?}:{})", log.origin_nonce);
-    if let Some(action) = super::near::check_kyt(config, &sender, &context).await? {
+    if let Some(action) = super::near::check_kyt(config, &sender, &context).await {
         return Ok(action);
     }
 

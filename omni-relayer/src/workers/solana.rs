@@ -69,7 +69,7 @@ pub async fn process_init_transfer_event(
         "({:?}:{})",
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
-    if let Some(action) = super::near::check_kyt(config, sender, &context).await? {
+    if let Some(action) = super::near::check_kyt(config, sender, &context).await {
         return Ok(action);
     }
 
