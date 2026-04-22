@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use alloy::{
     primitives::Address,
     signers::{k256::ecdsa::SigningKey, local::LocalSigner},
@@ -120,6 +122,8 @@ pub struct Config {
     pub zcash: Option<Utxo>,
     pub orchard: Option<Orchard>,
     pub wormhole: Wormhole,
+    #[serde(default)]
+    pub kyt: Kyt,
 }
 
 impl Config {
@@ -177,6 +181,13 @@ impl Config {
             }
         };
         config.is_some_and(|utxo| utxo.verifying_withdraw_enabled)
+    }
+
+    pub fn is_kyt_enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var("KYT_API_URL").is_ok() && std::env::var("KYT_API_KEY").is_ok()
+        })
     }
 
     pub fn is_fee_bumping_enabled(&self, chain_kind: ChainKind) -> bool {
@@ -307,6 +318,14 @@ pub struct Near {
     pub sign_without_checking_fee: Option<Vec<OmniAddress>>,
     #[serde(default)]
     pub fast_relayer_enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Kyt {
+    /// Delay in seconds before relaying a transfer (anti-laundering).
+    /// Gives KYT providers time to index fresh accounts across all origin chains.
+    #[serde(default)]
+    pub delay_secs: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

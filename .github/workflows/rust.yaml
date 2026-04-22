@@ -1,0 +1,41 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: warp-ubuntu-2204-x64-16x
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+          components: clippy, rustfmt
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-provider: warpbuild
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Run fmt
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: |
+          cargo clippy --workspace --all-targets --no-deps --lib -- \
+            -D clippy::all -D clippy::pedantic \
+            -D clippy::as_conversions \
+            -A clippy::missing_errors_doc -A clippy::missing_panics_doc \
+            -A clippy::must_use_candidate -A clippy::unreadable_literal \
+            -A clippy::similar_names -A clippy::too_long_first_doc_paragraph
+
+      - name: Test
+        run: cargo test --workspace

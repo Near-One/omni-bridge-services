@@ -118,6 +118,7 @@ async fn build_redis_connection_manager(
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
@@ -326,7 +327,11 @@ async fn main() -> Result<()> {
                 let config = config.clone();
                 let mut redis_connection_manager = redis_connection_manager.clone();
                 async move {
-                    startup::native_indexers::solana::process_signature(&config, &mut redis_connection_manager).await
+                    startup::native_indexers::solana::process_signature(
+                        &config,
+                        &mut redis_connection_manager,
+                    )
+                    .await
                 }
             }));
         }
