@@ -605,6 +605,21 @@ pub(super) async fn handle_transaction_event(
             ref sender,
             ..
         } => {
+            let OmniTransactionOrigin::NearReceipt {
+                block_timestamp_nanosec,
+                ..
+            } = origin
+            else {
+                anyhow::bail!("Expected NearReceipt for TransferNearToUtxo: {event:?}");
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_timestamp_nanosec / 1_000_000_000)
+            else {
+                anyhow::bail!(
+                    "Failed to parse block_timestamp_nanosec as i64: {block_timestamp_nanosec}"
+                );
+            };
+
             let utxo_id = if let TransferIdKind::Utxo(utxo_id) = event.transfer_id.kind {
                 utxo_id
             } else if let Some(TransferIdKind::Utxo(utxo_id)) =
@@ -643,6 +658,7 @@ pub(super) async fn handle_transaction_event(
                             btc_pending_id: utxo_id.tx_hash.clone(),
                             sign_index,
                             sender: sender.clone(),
+                            creation_timestamp,
                         },
                     )
                     .await;

@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use omni_connector::{BtcDepositArgs, FinTransferArgs, OmniConnector};
 
-use crate::utils;
+use crate::{config, utils};
 
 use super::{EventAction, Transfer};
 
@@ -32,6 +32,7 @@ pub struct ConfirmedTxHash {
 }
 
 pub async fn process_near_to_utxo_init_transfer_event(
+    config: &config::Config,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -41,10 +42,20 @@ pub async fn process_near_to_utxo_init_transfer_event(
         btc_pending_id,
         sign_index,
         sender,
+        creation_timestamp,
     } = transfer
     else {
         anyhow::bail!("Expected NearToUtxoTransfer, got: {transfer:?}");
     };
+
+    let current_timestamp = chrono::Utc::now().timestamp();
+    if current_timestamp < creation_timestamp + config.kyt.delay_secs {
+        let remaining =
+            (creation_timestamp + config.kyt.delay_secs - current_timestamp).unsigned_abs();
+        return Ok(EventAction::RetryAfter(std::time::Duration::from_secs(
+            remaining,
+        )));
+    }
 
     let context = format!("(btc_pending_id={btc_pending_id}, sign_index={sign_index})");
     if let Some(action) = super::near::check_kyt(&OmniAddress::Near(sender), &context).await {

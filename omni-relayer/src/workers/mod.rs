@@ -115,6 +115,8 @@ pub enum Transfer {
         btc_pending_id: String,
         sign_index: u64,
         sender: AccountId,
+        #[serde(default)]
+        creation_timestamp: i64,
     },
     UtxoToNear {
         chain: ChainKind,
@@ -476,6 +478,7 @@ async fn process_message(
             }
             Transfer::NearToUtxo { .. } => {
                 let result = utxo::process_near_to_utxo_init_transfer_event(
+                    config,
                     omni_connector.clone(),
                     transfer,
                     near_omni_nonce.clone(),
