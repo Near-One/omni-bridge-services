@@ -62,20 +62,18 @@ pub async fn resolve_tx_action(
     sender_account_id: AccountId,
     retryable_errors: &[&str],
 ) -> EventAction {
-    resolve_tx_action_with_receipts(jsonrpc_client, tx_hash, sender_account_id, retryable_errors)
-        .await
-        .0
+    match resolve_tx_receipts(jsonrpc_client, tx_hash, sender_account_id, retryable_errors).await {
+        Ok(_) => EventAction::Remove,
+        Err(action) => action,
+    }
 }
 
-pub async fn resolve_tx_action_with_receipts(
+pub async fn resolve_tx_receipts(
     jsonrpc_client: &JsonRpcClient,
     tx_hash: CryptoHash,
     sender_account_id: AccountId,
     retryable_errors: &[&str],
-) -> (
-    EventAction,
-    Vec<near_primitives::views::ExecutionOutcomeWithIdView>,
-) {
+) -> Result<Vec<near_primitives::views::ExecutionOutcomeWithIdView>, EventAction> {
     let request = near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest {
         transaction_info: near_jsonrpc_client::methods::tx::TransactionInfo::TransactionId {
             tx_hash,
@@ -91,15 +89,16 @@ pub async fn resolve_tx_action_with_receipts(
             )) => outcome.receipts_outcome,
             _ => {
                 warn!("Receipts missing for transaction {tx_hash}");
-                return (EventAction::Retry, Vec::new());
+                return Err(EventAction::Retry);
             }
         },
         Err(err) => {
             warn!("Failed to get transaction status for {tx_hash}: {err:?}");
-            return (EventAction::Retry, Vec::new());
+            return Err(EventAction::Retry);
         }
     };
 
+    let mut non_retryable_failure = false;
     for receipt_outcome in &receipts {
         if let near_primitives::views::ExecutionStatusView::Failure(ref err) =
             receipt_outcome.outcome.status
@@ -107,12 +106,18 @@ pub async fn resolve_tx_action_with_receipts(
             let err_str = err.to_string();
             if retryable_errors.iter().any(|e| err_str.contains(e)) {
                 warn!("Transaction {tx_hash} has retryable receipt failure: {err:?}");
-                return (EventAction::Retry, Vec::new());
+                return Err(EventAction::Retry);
             }
+            warn!("Transaction {tx_hash} has non-retryable receipt failure: {err:?}");
+            non_retryable_failure = true;
         }
     }
 
-    (EventAction::Remove, receipts)
+    if non_retryable_failure {
+        Err(EventAction::Remove)
+    } else {
+        Ok(receipts)
+    }
 }
 
 pub fn extract_sign_transfer_event(

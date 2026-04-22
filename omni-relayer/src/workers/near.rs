@@ -139,17 +139,22 @@ pub async fn process_transfer_event(
         )
         .await
     {
-        Ok(tx_hash) => {
-            let (action, receipts) = utils::near::resolve_tx_action_with_receipts(
+        Ok(tx_hash) => Ok(
+            match utils::near::resolve_tx_receipts(
                 jsonrpc_client,
                 tx_hash,
                 signer,
                 &["Request has timed out."],
             )
-            .await;
-
-            Ok((action, utils::near::extract_sign_transfer_event(&receipts)))
-        }
+            .await
+            {
+                Ok(receipts) => (
+                    EventAction::Remove,
+                    utils::near::extract_sign_transfer_event(&receipts),
+                ),
+                Err(action) => (action, Vec::new()),
+            },
+        ),
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
                 match near_rpc_error {
@@ -246,18 +251,20 @@ pub async fn process_transfer_to_utxo_event(
 
             let destination_chain = transfer_message.recipient.get_chain();
 
-            let (action, receipts) = utils::near::resolve_tx_action_with_receipts(
+            Ok(match utils::near::resolve_tx_receipts(
                 jsonrpc_client,
                 tx_hash,
                 signer,
                 &["not exist", "Previous btc tx has not been signed"],
             )
-            .await;
-
-            Ok((
-                action,
-                utils::near::extract_near_to_utxo(&receipts, destination_chain),
-            ))
+            .await
+            {
+                Ok(receipts) => (
+                    EventAction::Remove,
+                    utils::near::extract_near_to_utxo(&receipts, destination_chain),
+                ),
+                Err(action) => (action, Vec::new()),
+            })
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
