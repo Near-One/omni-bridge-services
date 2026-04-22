@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use omni_connector::{BtcDepositArgs, FinTransferArgs, OmniConnector};
 
-use crate::{config, utils};
+use crate::utils;
 
 use super::{EventAction, Transfer};
 
@@ -32,7 +32,6 @@ pub struct ConfirmedTxHash {
 }
 
 pub async fn process_near_to_utxo_init_transfer_event(
-    config: &config::Config,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -48,8 +47,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
     };
 
     let context = format!("(btc_pending_id={btc_pending_id}, sign_index={sign_index})");
-    if let Some(action) = super::near::check_kyt(config, &OmniAddress::Near(sender), &context).await
-    {
+    if let Some(action) = super::near::check_kyt(&OmniAddress::Near(sender), &context).await {
         return Ok(action);
     }
 

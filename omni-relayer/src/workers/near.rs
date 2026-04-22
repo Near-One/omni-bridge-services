@@ -27,12 +27,8 @@ enum UTXOChainMsg {
     MaxGasFee(U64),
 }
 
-pub(super) async fn check_kyt(
-    config: &config::Config,
-    sender: &OmniAddress,
-    context: &str,
-) -> Option<EventAction> {
-    if !config.is_kyt_enabled() {
+pub(super) async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
+    if !config::Config::is_kyt_enabled() {
         return None;
     }
 
@@ -102,7 +98,7 @@ pub async fn process_transfer_event(
     }
 
     let context = format!("({origin_chain:?}:{origin_nonce})");
-    if let Some(action) = check_kyt(config, &transfer_message.sender, &context).await {
+    if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
         return Ok(action);
     }
 
@@ -245,7 +241,7 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.get_origin_chain(),
         transfer_message.origin_nonce
     );
-    if let Some(action) = check_kyt(config, &transfer_message.sender, &context).await {
+    if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
         return Ok(action);
     }
 

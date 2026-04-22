@@ -179,7 +179,7 @@ impl Config {
         config.is_some_and(|utxo| utxo.verifying_withdraw_enabled)
     }
 
-    pub fn is_kyt_enabled(&self) -> bool {
+    pub fn is_kyt_enabled() -> bool {
         std::env::var("KYT_API_URL").is_ok() && std::env::var("KYT_API_KEY").is_ok()
     }
 
