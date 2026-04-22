@@ -82,24 +82,24 @@ pub async fn resolve_tx_receipts(
         wait_until: near_primitives::views::TxExecutionStatus::Final,
     };
 
-    let receipts = match jsonrpc_client.call(request).await {
-        Ok(response) => match response.final_execution_outcome {
-            Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
-                outcome,
-            )) => outcome.receipts_outcome,
-            _ => {
-                warn!("Receipts missing for transaction {tx_hash}");
-                return Err(EventAction::Retry);
-            }
-        },
+    let response = match jsonrpc_client.call(request).await {
+        Ok(response) => response,
         Err(err) => {
             warn!("Failed to get transaction status for {tx_hash}: {err:?}");
             return Err(EventAction::Retry);
         }
     };
 
+    let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
+        outcome,
+    )) = response.final_execution_outcome
+    else {
+        warn!("Receipts missing for transaction {tx_hash}");
+        return Err(EventAction::Retry);
+    };
+
     let mut non_retryable_failure = false;
-    for receipt_outcome in &receipts {
+    for receipt_outcome in &outcome.receipts_outcome {
         if let near_primitives::views::ExecutionStatusView::Failure(ref err) =
             receipt_outcome.outcome.status
         {
@@ -116,7 +116,7 @@ pub async fn resolve_tx_receipts(
     if non_retryable_failure {
         Err(EventAction::Remove)
     } else {
-        Ok(receipts)
+        Ok(outcome.receipts_outcome)
     }
 }
 
@@ -175,11 +175,11 @@ pub fn extract_near_to_utxo(
         .map(|(btc_pending_id, utxo_count)| {
             (0..u64::from(utxo_count))
                 .map(|sign_index| {
-                    WorkerEvent::NearToUtxo(Transfer::NearToUtxo {
+                    WorkerEvent::NearToUtxo(Box::new(Transfer::NearToUtxo {
                         chain: destination_chain,
                         btc_pending_id: btc_pending_id.clone(),
                         sign_index,
-                    })
+                    }))
                 })
                 .collect()
         })

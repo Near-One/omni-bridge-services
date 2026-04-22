@@ -62,7 +62,7 @@ pub enum EventAction {
 
 pub enum WorkerEvent {
     OmniBridge(Box<OmniBridgeEvent>),
-    NearToUtxo(Transfer),
+    NearToUtxo(Box<Transfer>),
 }
 
 struct MessageResult {
@@ -727,7 +727,8 @@ impl WorkerEvent {
                     return None;
                 };
 
-                let payload = serde_json::to_vec(event.as_ref()).ok()?;
+                let payload = serde_json::to_vec(event.as_ref())
+                    .expect("SignTransferEvent serialization cannot fail");
                 Some(PublishInfo {
                     subject_chain: message_payload.recipient.get_chain(),
                     key: format!(
@@ -743,11 +744,12 @@ impl WorkerEvent {
                     btc_pending_id,
                     sign_index,
                     ..
-                } = transfer
+                } = transfer.as_ref()
                 else {
                     return None;
                 };
-            let payload = serde_json::to_vec(transfer).ok()?;
+                let payload = serde_json::to_vec(transfer.as_ref())
+                    .expect("NearToUtxo transfer serialization cannot fail");
                 Some(PublishInfo {
                     subject_chain: ChainKind::Near,
                     key: format!("{btc_pending_id}:{sign_index}"),
