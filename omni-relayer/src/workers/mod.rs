@@ -15,6 +15,7 @@ use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
 use near_sdk::json_types::U128;
+use sha2::{Digest, Sha256};
 use solana_sdk::pubkey::Pubkey;
 
 use omni_connector::OmniConnector;
@@ -721,7 +722,8 @@ impl WorkerEvent {
         match self {
             WorkerEvent::OmniBridge(event) => {
                 let OmniBridgeEvent::SignTransferEvent {
-                    message_payload, ..
+                    message_payload,
+                    signature,
                 } = event.as_ref()
                 else {
                     return None;
@@ -729,13 +731,10 @@ impl WorkerEvent {
 
                 let payload = serde_json::to_vec(event.as_ref())
                     .expect("SignTransferEvent serialization cannot fail");
+                let signature_hash = hex::encode(Sha256::digest(signature.to_bytes()));
                 Some(PublishInfo {
                     subject_chain: message_payload.recipient.get_chain(),
-                    key: format!(
-                        "sign:{:?}:{}",
-                        message_payload.transfer_id.origin_chain,
-                        message_payload.transfer_id.origin_nonce
-                    ),
+                    key: format!("sign:{signature_hash}"),
                     payload,
                 })
             }
