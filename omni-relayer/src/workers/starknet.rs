@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use bridge_connector_common::result::BridgeSdkError;
@@ -38,6 +38,7 @@ pub async fn process_init_transfer_event(
         ref token,
         amount: _,
         ref fee,
+        creation_timestamp,
         ..
     } = transfer
     else {
@@ -49,10 +50,25 @@ pub async fn process_init_transfer_event(
         origin_nonce,
     };
 
+    let current_timestamp = chrono::Utc::now().timestamp();
+    let effective_wait = config.near.kyt_delay_secs;
+    if current_timestamp < creation_timestamp + effective_wait {
+        let remaining = (creation_timestamp + effective_wait - current_timestamp).unsigned_abs();
+        return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
+    }
+
     info!(
         "Processing Starknet InitTransfer ({:?}:{}): {tx_hash}",
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
+
+    let context = format!(
+        "({:?}:{})",
+        transfer_id.origin_chain, transfer_id.origin_nonce
+    );
+    if let Some(action) = super::near::check_kyt(config, sender, &context).await? {
+        return Ok(action);
+    }
 
     match omni_connector
         .is_transfer_finalised(Some(ChainKind::Strk), ChainKind::Near, origin_nonce)

@@ -27,39 +27,23 @@ enum UTXOChainMsg {
     MaxGasFee(U64),
 }
 
-pub(super) async fn check_blacklist_and_delay(
+pub(super) async fn check_kyt(
     config: &config::Config,
     sender: &OmniAddress,
-    process_after: Option<i64>,
     context: &str,
 ) -> Result<Option<EventAction>> {
-    if let Some(process_after) = process_after {
-        let now = chrono::Utc::now().timestamp();
-        if now < process_after {
-            let remaining = (process_after - now).unsigned_abs();
-            info!("Waiting {remaining}s for blacklist delay on transfer {context}");
-            return Ok(Some(EventAction::RetryAfter(
-                std::time::Duration::from_secs(remaining),
-            )));
-        }
-    }
-
-    if !config.is_blacklist_enabled() {
+    if !config.is_kyt_enabled() {
         return Ok(None);
     }
 
-    let OmniAddress::Near(account_id) = sender else {
-        return Ok(None);
-    };
-
-    match utils::blacklist::is_blacklisted(config, account_id).await {
-        Ok(true) => {
-            warn!("Sender {account_id} is blacklisted, rejecting transfer {context}");
-            anyhow::bail!("Transfer {context} rejected: sender {account_id} is blacklisted");
+    match utils::kyt::check_sender(sender).await {
+        Ok(utils::kyt::SuggestedAction::StopRelaying) => {
+            warn!("KYT suggested STOP_RELAYING for sender {sender}, rejecting transfer {context}");
+            anyhow::bail!("Transfer {context} rejected by KYT: sender {sender}");
         }
-        Ok(false) => Ok(None),
+        Ok(utils::kyt::SuggestedAction::None) => Ok(None),
         Err(err) => {
-            warn!("Blacklist check failed for {account_id}: {err:?}, retrying");
+            warn!("KYT check failed for {sender}: {err:?}, retrying");
             Ok(Some(EventAction::Retry))
         }
     }
@@ -74,11 +58,11 @@ pub async fn process_transfer_event(
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
-    let (transfer_message, process_after) = match transfer {
+    let (transfer_message, creation_timestamp) = match transfer {
         Transfer::Near {
             ref transfer_message,
-            process_after,
-        } => (transfer_message.clone(), process_after),
+            creation_timestamp,
+        } => (transfer_message.clone(), creation_timestamp),
         Transfer::Utxo {
             ref new_transfer_id,
             ..
@@ -96,7 +80,7 @@ pub async fn process_transfer_event(
                 return Ok(EventAction::Retry);
             };
 
-            (transfer_message, None)
+            (transfer_message, 0)
         }
         _ => {
             anyhow::bail!("Expected Transfer::Near or Transfer::Utxo variant, got: {transfer:?}");
@@ -108,10 +92,17 @@ pub async fn process_transfer_event(
 
     info!("Processing transfer ({origin_chain:?}:{origin_nonce}) on NEAR");
 
+    let current_timestamp = chrono::Utc::now().timestamp();
+    if current_timestamp < creation_timestamp + config.near.kyt_delay_secs {
+        let remaining =
+            (creation_timestamp + config.near.kyt_delay_secs - current_timestamp).unsigned_abs();
+        return Ok(EventAction::RetryAfter(std::time::Duration::from_secs(
+            remaining,
+        )));
+    }
+
     let context = format!("({origin_chain:?}:{origin_nonce})");
-    if let Some(action) =
-        check_blacklist_and_delay(config, &transfer_message.sender, process_after, &context).await?
-    {
+    if let Some(action) = check_kyt(config, &transfer_message.sender, &context).await? {
         return Ok(action);
     }
 
@@ -228,7 +219,7 @@ pub async fn process_transfer_to_utxo_event(
 ) -> Result<EventAction> {
     let Transfer::Near {
         ref transfer_message,
-        process_after,
+        creation_timestamp,
     } = transfer
     else {
         anyhow::bail!("Expected NearTransferWithTimestamp, got: {transfer:?}");
@@ -240,14 +231,21 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.origin_nonce
     );
 
+    let current_timestamp = chrono::Utc::now().timestamp();
+    if current_timestamp < creation_timestamp + config.near.kyt_delay_secs {
+        let remaining =
+            (creation_timestamp + config.near.kyt_delay_secs - current_timestamp).unsigned_abs();
+        return Ok(EventAction::RetryAfter(std::time::Duration::from_secs(
+            remaining,
+        )));
+    }
+
     let context = format!(
         "({:?}:{})",
         transfer_message.get_origin_chain(),
         transfer_message.origin_nonce
     );
-    if let Some(action) =
-        check_blacklist_and_delay(config, &transfer_message.sender, process_after, &context).await?
-    {
+    if let Some(action) = check_kyt(config, &transfer_message.sender, &context).await? {
         return Ok(action);
     }
 

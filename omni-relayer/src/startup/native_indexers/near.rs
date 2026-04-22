@@ -98,6 +98,10 @@ async fn handle_streamer_message(
 ) {
     let nep_locker_event_outcomes = find_nep_locker_event_outcomes(config, streamer_message);
 
+    let block_timestamp_secs =
+        i64::try_from(streamer_message.block.header.timestamp_nanosec / 1_000_000_000)
+            .unwrap_or_else(|_| chrono::Utc::now().timestamp());
+
     for outcome in nep_locker_event_outcomes {
         let receipt_id = outcome.receipt.receipt_id.to_string();
 
@@ -114,11 +118,6 @@ async fn handle_streamer_message(
                     let origin_nonce = transfer_message.origin_nonce.to_string();
                     let key = utils::redis::composite_key(&[&receipt_id, &origin_nonce]);
 
-                    let process_after = Some(
-                        chrono::Utc::now().timestamp()
-                            + config.near.delay_before_sign_and_submit_secs,
-                    );
-
                     utils::redis::add_event(
                         config,
                         redis_connection_manager,
@@ -126,7 +125,7 @@ async fn handle_streamer_message(
                         key,
                         RetryableEvent::new(crate::workers::Transfer::Near {
                             transfer_message,
-                            process_after,
+                            creation_timestamp: block_timestamp_secs,
                         }),
                     )
                     .await;
@@ -181,7 +180,7 @@ async fn handle_streamer_message(
                             key,
                             RetryableEvent::new(crate::workers::Transfer::Near {
                                 transfer_message,
-                                process_after: None,
+                                creation_timestamp: block_timestamp_secs,
                             }),
                         )
                         .await;

@@ -49,8 +49,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
 
     let context = format!("(btc_pending_id={btc_pending_id}, sign_index={sign_index})");
     if let Some(action) =
-        super::near::check_blacklist_and_delay(config, &OmniAddress::Near(sender), None, &context)
-            .await?
+        super::near::check_kyt(config, &OmniAddress::Near(sender), &context).await?
     {
         return Ok(action);
     }

@@ -1,6 +1,6 @@
-pub mod blacklist;
 pub mod bridge_api;
 pub mod evm;
+pub mod kyt;
 pub mod nats;
 pub mod near;
 pub mod nonce;

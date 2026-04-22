@@ -172,6 +172,21 @@ pub(super) async fn handle_transaction_event(
 
     match event.transfer_message {
         OmniTransferMessage::NearTransferMessage(transfer_message) => {
+            let OmniTransactionOrigin::NearReceipt {
+                block_timestamp_nanosec,
+                ..
+            } = origin
+            else {
+                anyhow::bail!("Expected NearReceipt for NearTransferMessage: {transfer_message:?}");
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_timestamp_nanosec / 1_000_000_000)
+            else {
+                anyhow::bail!(
+                    "Failed to parse block_timestamp_nanosec as i64: {block_timestamp_nanosec}"
+                );
+            };
+
             info!(
                 "Received NearTransferMessage ({:?}:{}): {origin_transaction_id}",
                 transfer_message.get_origin_chain(),
@@ -181,10 +196,6 @@ pub(super) async fn handle_transaction_event(
             if transfer_message.recipient.get_chain() != ChainKind::Near {
                 let key = near_event_key(&origin_transaction_id, transfer_message.origin_nonce);
 
-                let process_after = Some(
-                    chrono::Utc::now().timestamp() + config.near.delay_before_sign_and_submit_secs,
-                );
-
                 add_event(
                     config,
                     redis_connection_manager,
@@ -193,7 +204,7 @@ pub(super) async fn handle_transaction_event(
                     ChainKind::Near,
                     crate::workers::Transfer::Near {
                         transfer_message,
-                        process_after,
+                        creation_timestamp,
                     },
                 )
                 .await;
@@ -409,12 +420,18 @@ pub(super) async fn handle_transaction_event(
         }
         OmniTransferMessage::SolanaInitTransfer(init_transfer) => {
             let OmniTransactionOrigin::SolanaTransaction {
-                instruction_index, ..
+                instruction_index,
+                block_time,
+                ..
             } = origin
             else {
                 anyhow::bail!(
                     "Expected SolanaTransaction for SolanaInitTransfer: {init_transfer:?}"
                 );
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_time) else {
+                anyhow::bail!("Failed to parse block_time as i64: {block_time}");
             };
 
             info!(
@@ -450,6 +467,7 @@ pub(super) async fn handle_transaction_event(
                     message: init_transfer.message.unwrap_or_default(),
                     emitter: Pubkey::from_str(&emitter).context("Failed to parse emitter")?,
                     sequence: init_transfer.origin_nonce,
+                    creation_timestamp,
                 },
             )
             .await;
@@ -490,6 +508,19 @@ pub(super) async fn handle_transaction_event(
             .await;
         }
         OmniTransferMessage::StarknetInitTransfer(init_transfer) => {
+            let OmniTransactionOrigin::StarknetTransaction {
+                block_timestamp, ..
+            } = origin
+            else {
+                anyhow::bail!(
+                    "Expected StarknetTransaction for StarknetInitTransfer: {init_transfer:?}"
+                );
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_timestamp) else {
+                anyhow::bail!("Failed to parse block_timestamp as i64: {block_timestamp}");
+            };
+
             info!(
                 "Received StarknetInitTransfer ({:?}:{}): {origin_transaction_id}",
                 ChainKind::Strk,
@@ -513,6 +544,7 @@ pub(super) async fn handle_transaction_event(
                     fee: init_transfer.fee,
                     recipient: init_transfer.recipient,
                     message: init_transfer.message,
+                    creation_timestamp,
                 },
             )
             .await;

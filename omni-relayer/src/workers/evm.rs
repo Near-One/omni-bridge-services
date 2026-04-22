@@ -49,10 +49,10 @@ pub async fn process_init_transfer_event(
     };
 
     let current_timestamp = chrono::Utc::now().timestamp();
+    let effective_wait = std::cmp::max(expected_finalization_time, config.near.kyt_delay_secs);
 
-    if current_timestamp < creation_timestamp + expected_finalization_time {
-        let remaining =
-            (creation_timestamp + expected_finalization_time - current_timestamp).unsigned_abs();
+    if current_timestamp < creation_timestamp + effective_wait {
+        let remaining = (creation_timestamp + effective_wait - current_timestamp).unsigned_abs();
         return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
     }
 
@@ -65,6 +65,20 @@ pub async fn process_init_transfer_event(
         origin_chain: chain_kind,
         origin_nonce: log.origin_nonce,
     };
+
+    let sender = utils::evm::string_to_evm_omniaddress(chain_kind, &log.sender.to_string())
+        .map_err(|err| {
+            anyhow::anyhow!(
+                "Failed to parse \"{}\" as `OmniAddress`: {:?}",
+                log.sender,
+                err
+            )
+        })?;
+
+    let context = format!("({chain_kind:?}:{})", log.origin_nonce);
+    if let Some(action) = super::near::check_kyt(config, &sender, &context).await? {
+        return Ok(action);
+    }
 
     match omni_connector
         .is_transfer_finalised(Some(chain_kind), ChainKind::Near, log.origin_nonce)
@@ -79,15 +93,6 @@ pub async fn process_init_transfer_event(
     }
 
     if config.is_bridge_api_enabled() {
-        let sender = utils::evm::string_to_evm_omniaddress(chain_kind, &log.sender.to_string())
-            .map_err(|err| {
-                anyhow::anyhow!(
-                    "Failed to parse \"{}\" as `OmniAddress`: {:?}",
-                    log.sender,
-                    err
-                )
-            })?;
-
         let token =
             utils::evm::string_to_evm_omniaddress(chain_kind, &log.token_address.to_string())
                 .map_err(|err| {

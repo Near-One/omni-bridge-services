@@ -6847,6 +6847,7 @@ dependencies = [
  "tracing-subscriber",
  "utxo-bridge-client",
  "utxo-utils",
+ "uuid 1.19.0",
  "wormhole-bridge-client",
 ]
 

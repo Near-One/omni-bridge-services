@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use bridge_connector_common::result::BridgeSdkError;
@@ -41,6 +41,7 @@ pub async fn process_init_transfer_event(
         native_fee,
         ref emitter,
         sequence,
+        creation_timestamp,
         ..
     } = transfer
     else {
@@ -52,10 +53,25 @@ pub async fn process_init_transfer_event(
         origin_nonce: sequence,
     };
 
+    let current_timestamp = chrono::Utc::now().timestamp();
+    let effective_wait = config.near.kyt_delay_secs;
+    if current_timestamp < creation_timestamp + effective_wait {
+        let remaining = (creation_timestamp + effective_wait - current_timestamp).unsigned_abs();
+        return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
+    }
+
     info!(
         "Processing Solana InitTransfer ({:?}:{})",
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
+
+    let context = format!(
+        "({:?}:{})",
+        transfer_id.origin_chain, transfer_id.origin_nonce
+    );
+    if let Some(action) = super::near::check_kyt(config, sender, &context).await? {
+        return Ok(action);
+    }
 
     match omni_connector
         .is_transfer_finalised(Some(sender.get_chain()), ChainKind::Near, sequence)
@@ -213,18 +229,17 @@ pub async fn process_fin_transfer_event(
         ChainKind::Sol
     );
 
-    if let Some(transfer_id) = transfer_id {
-        if let Err(BridgeSdkError::NearRpcError(NearRpcError::RpcQueryError(
+    if let Some(transfer_id) = transfer_id
+        && let Err(BridgeSdkError::NearRpcError(NearRpcError::RpcQueryError(
             JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
                 RpcQueryError::ContractExecutionError { vm_error, .. },
             )),
         ))) = omni_connector.near_get_transfer_message(transfer_id).await
-        {
-            // TODO: refactor when enum errors will become available on mainnet
-            if vm_error.contains("The transfer does not exist") {
-                info!("No fee to claim for FinTransfer ({transfer_id:?})");
-                return Ok(EventAction::Remove);
-            }
+    {
+        // TODO: refactor when enum errors will become available on mainnet
+        if vm_error.contains("The transfer does not exist") {
+            info!("No fee to claim for FinTransfer ({transfer_id:?})");
+            return Ok(EventAction::Remove);
         }
     }
 

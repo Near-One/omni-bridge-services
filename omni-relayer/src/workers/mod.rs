@@ -72,7 +72,7 @@ pub enum Transfer {
     Near {
         transfer_message: TransferMessage,
         #[serde(default)]
-        process_after: Option<i64>,
+        creation_timestamp: i64,
     },
     Evm {
         chain_kind: ChainKind,
@@ -91,6 +91,8 @@ pub enum Transfer {
         message: String,
         emitter: Pubkey,
         sequence: u64,
+        #[serde(default)]
+        creation_timestamp: i64,
     },
     Starknet {
         tx_hash: String,
@@ -101,6 +103,8 @@ pub enum Transfer {
         fee: Fee,
         recipient: OmniAddress,
         message: String,
+        #[serde(default)]
+        creation_timestamp: i64,
     },
     Utxo {
         utxo_transfer_message: UtxoFinTransferMsg,
