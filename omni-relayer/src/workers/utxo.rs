@@ -48,6 +48,11 @@ pub async fn process_near_to_utxo_init_transfer_event(
         anyhow::bail!("Expected NearToUtxoTransfer, got: {transfer:?}");
     };
 
+    if !config.is_signing_utxo_transaction_enabled(chain) {
+        info!("Signing UTXO transactions for {chain:?} is disabled, skipping");
+        return Ok(EventAction::Remove);
+    }
+
     let current_timestamp = chrono::Utc::now().timestamp();
     if current_timestamp < creation_timestamp + config.kyt.delay_secs {
         let remaining =

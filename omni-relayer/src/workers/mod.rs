@@ -15,6 +15,7 @@ use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
 use near_sdk::json_types::U128;
+use sha2::{Digest, Sha256};
 use solana_sdk::pubkey::Pubkey;
 
 use omni_connector::OmniConnector;
@@ -60,10 +61,16 @@ pub enum EventAction {
     Remove,
 }
 
+pub enum WorkerEvent {
+    OmniBridge(Box<OmniBridgeEvent>),
+    NearToUtxo(Box<Transfer>),
+}
+
 struct MessageResult {
     action: Result<EventAction>,
     needs_evm_nonce_resync: bool,
     fee_key_to_remove: Option<String>,
+    produced_events: Vec<WorkerEvent>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -309,6 +316,7 @@ pub async fn process_events(
         let near_omni_nonce = near_omni_nonce.clone();
         let near_fast_nonce = near_fast_nonce.clone();
         let evm_nonces = evm_nonces.clone();
+        let nats_client = nats_client.clone();
         let is_evm_nonce_resync_needed = is_evm_nonce_resync_needed.clone();
 
         tokio::spawn(async move {
@@ -334,7 +342,7 @@ pub async fn process_events(
                 warn!("{err:?}");
             }
 
-            if let Some(fee_key) = message_result.fee_key_to_remove {
+            if let Some(ref fee_key) = message_result.fee_key_to_remove {
                 utils::redis::remove_event(&config, &mut redis, utils::redis::FEE_MAPPING, fee_key)
                     .await;
             }
@@ -346,6 +354,10 @@ pub async fn process_events(
                 )
             {
                 is_evm_nonce_resync_needed.store(true, Ordering::Relaxed);
+            }
+
+            for event in &message_result.produced_events {
+                publish_event(&config, &nats_client, event).await;
             }
 
             handle_nats_ack(&msg, &message_result.action, &consumer_config).await;
@@ -413,11 +425,17 @@ async fn process_message(
                     .await
                 };
 
-                let fee_key_to_remove = result.is_err().then_some(fee_key);
+                let (action, produced_events) = match result {
+                    Ok((action, emitted)) => (Ok(action), emitted),
+                    Err(err) => (Err(err), Vec::new()),
+                };
+
+                let fee_key_to_remove = action.is_err().then_some(fee_key);
                 MessageResult {
-                    action: result,
+                    action,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
+                    produced_events,
                 }
             }
             Transfer::Evm {
@@ -448,6 +466,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
+                    produced_events: Vec::new(),
                 }
             }
             Transfer::Solana { sequence, .. } => {
@@ -474,6 +493,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
+                    produced_events: Vec::new(),
                 }
             }
             Transfer::NearToUtxo { .. } => {
@@ -488,6 +508,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove: None,
+                    produced_events: Vec::new(),
                 }
             }
             Transfer::UtxoToNear { .. } => {
@@ -501,6 +522,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove: None,
+                    produced_events: Vec::new(),
                 }
             }
             Transfer::Starknet { origin_nonce, .. } => {
@@ -527,6 +549,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
+                    produced_events: Vec::new(),
                 }
             }
             Transfer::Fast { .. } => {
@@ -537,6 +560,7 @@ async fn process_message(
                         )),
                         needs_evm_nonce_resync: false,
                         fee_key_to_remove: None,
+                        produced_events: Vec::new(),
                     };
                 };
 
@@ -547,6 +571,7 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove: None,
+                    produced_events: Vec::new(),
                 }
             }
         }
@@ -575,12 +600,14 @@ async fn process_message(
                 action: result,
                 needs_evm_nonce_resync: is_evm,
                 fee_key_to_remove,
+                produced_events: Vec::new(),
             }
         } else {
             MessageResult {
                 action: Err(anyhow::anyhow!("Unhandled OmniBridgeEvent: {event}")),
                 needs_evm_nonce_resync: false,
                 fee_key_to_remove: None,
+                produced_events: Vec::new(),
             }
         }
     } else if let Ok(fin_transfer_event) = serde_json::from_value::<FinTransfer>(event.clone()) {
@@ -621,6 +648,7 @@ async fn process_message(
             action: result,
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_events: Vec::new(),
         }
     } else if let Ok(deploy_token_event) = serde_json::from_value::<DeployToken>(event.clone()) {
         let result = match deploy_token_event {
@@ -654,6 +682,7 @@ async fn process_message(
             action: result,
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_events: Vec::new(),
         }
     } else if let Ok(sign_utxo_transaction_event) =
         serde_json::from_value::<utxo::SignUtxoTransaction>(event.clone())
@@ -667,6 +696,7 @@ async fn process_message(
             action: result,
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_events: Vec::new(),
         }
     } else if let Ok(confirmed_tx_hash) =
         serde_json::from_value::<utxo::ConfirmedTxHash>(event.clone())
@@ -682,12 +712,82 @@ async fn process_message(
             action: result,
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_events: Vec::new(),
         }
     } else {
         MessageResult {
             action: Err(anyhow::anyhow!("Unknown event type: {event}")),
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
+            produced_events: Vec::new(),
         }
+    }
+}
+
+struct PublishInfo {
+    subject_chain: ChainKind,
+    key: String,
+    payload: Vec<u8>,
+}
+
+impl WorkerEvent {
+    fn publish_info(&self) -> Option<PublishInfo> {
+        match self {
+            WorkerEvent::OmniBridge(event) => {
+                let OmniBridgeEvent::SignTransferEvent {
+                    message_payload,
+                    signature,
+                } = event.as_ref()
+                else {
+                    return None;
+                };
+
+                let payload = serde_json::to_vec(event.as_ref())
+                    .expect("SignTransferEvent serialization cannot fail");
+                let signature_hash = hex::encode(Sha256::digest(signature.to_bytes()));
+                Some(PublishInfo {
+                    subject_chain: message_payload.recipient.get_chain(),
+                    key: format!("sign:{signature_hash}"),
+                    payload,
+                })
+            }
+            WorkerEvent::NearToUtxo(transfer) => {
+                let Transfer::NearToUtxo {
+                    btc_pending_id,
+                    sign_index,
+                    ..
+                } = transfer.as_ref()
+                else {
+                    return None;
+                };
+                let payload = serde_json::to_vec(transfer.as_ref())
+                    .expect("NearToUtxo transfer serialization cannot fail");
+                Some(PublishInfo {
+                    subject_chain: ChainKind::Near,
+                    key: format!("{btc_pending_id}:{sign_index}"),
+                    payload,
+                })
+            }
+        }
+    }
+}
+
+async fn publish_event(
+    config: &config::Config,
+    nats_client: &utils::nats::NatsClient,
+    event: &WorkerEvent,
+) {
+    let Some(nats_config) = config.nats.as_ref() else {
+        return;
+    };
+
+    let Some(info) = event.publish_info() else {
+        return;
+    };
+
+    let chain = info.subject_chain.as_ref().to_ascii_lowercase();
+    let subject = format!("{}.{chain}", nats_config.relayer_subject);
+    if let Err(err) = nats_client.publish(subject, &info.key, info.payload).await {
+        warn!("Failed to publish produced event to NATS: {err:?}");
     }
 }

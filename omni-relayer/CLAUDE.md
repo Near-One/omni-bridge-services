@@ -9,7 +9,12 @@ cargo run -- --config config.toml    # Run with config file
 cargo run -- --help                  # Show CLI flags
 cargo build                          # Debug build
 cargo fmt                            # Format code
-cargo clippy -- -D warnings          # Lint (matches CI expectations)
+cargo clippy --workspace --all-targets --no-deps --lib -- \
+  -D clippy::all -D clippy::pedantic \
+  -D clippy::as_conversions \
+  -A clippy::missing_errors_doc -A clippy::missing_panics_doc \
+  -A clippy::must_use_candidate -A clippy::unreadable_literal \
+  -A clippy::similar_names -A clippy::too_long_first_doc_paragraph
 ```
 
 ## Architecture

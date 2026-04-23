@@ -6832,6 +6832,7 @@ dependencies = [
  "rustls 0.23.36",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "solana-bridge-client",
  "solana-client",
  "solana-rpc-client-api",

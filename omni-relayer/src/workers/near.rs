@@ -20,7 +20,7 @@ use crate::{
     config, utils, utils::pending_transactions::PendingTransaction, workers::PAUSED_ERROR,
 };
 
-use super::{EventAction, Transfer};
+use super::{EventAction, Transfer, WorkerEvent};
 
 #[derive(Debug, serde::Deserialize)]
 enum UTXOChainMsg {
@@ -53,7 +53,7 @@ pub async fn process_transfer_event(
     signer: AccountId,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
-) -> Result<EventAction> {
+) -> Result<(EventAction, Vec<WorkerEvent>)> {
     let (transfer_message, creation_timestamp) = match transfer {
         Transfer::Near {
             ref transfer_message,
@@ -65,7 +65,7 @@ pub async fn process_transfer_event(
         } => {
             let Ok(new_transfer_id) = new_transfer_id.try_into() else {
                 warn!("Failed to build TransferId from: {new_transfer_id:?}");
-                return Ok(EventAction::Retry);
+                return Ok((EventAction::Retry, Vec::new()));
             };
 
             let Ok(transfer_message) = omni_connector
@@ -73,7 +73,7 @@ pub async fn process_transfer_event(
                 .await
             else {
                 warn!("Failed to get transfer message for UTXO transfer: {new_transfer_id:?}");
-                return Ok(EventAction::Retry);
+                return Ok((EventAction::Retry, Vec::new()));
             };
 
             (transfer_message, 0)
@@ -92,14 +92,15 @@ pub async fn process_transfer_event(
     if current_timestamp < creation_timestamp + config.kyt.delay_secs {
         let remaining =
             (creation_timestamp + config.kyt.delay_secs - current_timestamp).unsigned_abs();
-        return Ok(EventAction::RetryAfter(std::time::Duration::from_secs(
-            remaining,
-        )));
+        return Ok((
+            EventAction::RetryAfter(std::time::Duration::from_secs(remaining)),
+            Vec::new(),
+        ));
     }
 
     let context = format!("({origin_chain:?}:{origin_nonce})");
     if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
-        return Ok(action);
+        return Ok((action, Vec::new()));
     }
 
     match omni_connector
@@ -114,7 +115,7 @@ pub async fn process_transfer_event(
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
-            return Ok(EventAction::Retry);
+            return Ok((EventAction::Retry, Vec::new()));
         }
     }
 
@@ -134,7 +135,7 @@ pub async fn process_transfer_event(
         .await
         else {
             warn!("Failed to get transfer fee for transfer: {transfer_message:?}");
-            return Ok(EventAction::Retry);
+            return Ok((EventAction::Retry, Vec::new()));
         };
 
         if let Some(event_action) = needed_fee
@@ -147,7 +148,7 @@ pub async fn process_transfer_event(
             )
             .await
         {
-            return Ok(event_action);
+            return Ok((event_action, Vec::new()));
         }
     }
 
@@ -172,13 +173,22 @@ pub async fn process_transfer_event(
         )
         .await
     {
-        Ok(tx_hash) => Ok(utils::near::resolve_tx_action(
-            jsonrpc_client,
-            tx_hash,
-            signer,
-            &["Request has timed out."],
-        )
-        .await),
+        Ok(tx_hash) => Ok(
+            match utils::near::resolve_tx_receipts(
+                jsonrpc_client,
+                tx_hash,
+                signer,
+                &["Request has timed out."],
+            )
+            .await
+            {
+                Ok(receipts) => (
+                    EventAction::Remove,
+                    utils::near::extract_sign_transfer_event(&receipts),
+                ),
+                Err(action) => (action, Vec::new()),
+            },
+        ),
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
                 match near_rpc_error {
@@ -192,7 +202,7 @@ pub async fn process_transfer_event(
                         warn!(
                             "Failed to sign transfer ({origin_chain:?}:{origin_nonce}), retrying: {near_rpc_error:?}"
                         );
-                        return Ok(EventAction::Retry);
+                        return Ok((EventAction::Retry, Vec::new()));
                     }
                     _ => {
                         anyhow::bail!(
@@ -212,7 +222,7 @@ pub async fn process_transfer_to_utxo_event(
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
-) -> Result<EventAction> {
+) -> Result<(EventAction, Vec<WorkerEvent>)> {
     let Transfer::Near {
         ref transfer_message,
         creation_timestamp,
@@ -231,9 +241,10 @@ pub async fn process_transfer_to_utxo_event(
     if current_timestamp < creation_timestamp + config.kyt.delay_secs {
         let remaining =
             (creation_timestamp + config.kyt.delay_secs - current_timestamp).unsigned_abs();
-        return Ok(EventAction::RetryAfter(std::time::Duration::from_secs(
-            remaining,
-        )));
+        return Ok((
+            EventAction::RetryAfter(std::time::Duration::from_secs(remaining)),
+            Vec::new(),
+        ));
     }
 
     let context = format!(
@@ -242,8 +253,15 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.origin_nonce
     );
     if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
-        return Ok(action);
+        return Ok((action, Vec::new()));
     }
+
+    let OmniAddress::Near(ref sender) = transfer_message.sender else {
+        anyhow::bail!(
+            "Expected NEAR sender for NEAR to UTXO transfer, got: {:?}",
+            transfer_message.sender
+        );
+    };
 
     let Some(recipient) = transfer_message.recipient.get_utxo_address() else {
         anyhow::bail!(
@@ -293,13 +311,24 @@ pub async fn process_transfer_to_utxo_event(
                 .near_bridge_client()
                 .and_then(near_bridge_client::NearBridgeClient::account_id)?;
 
-            Ok(utils::near::resolve_tx_action(
-                jsonrpc_client,
-                tx_hash,
-                signer,
-                &["not exist", "Previous btc tx has not been signed"],
+            let destination_chain = transfer_message.recipient.get_chain();
+
+            Ok(
+                match utils::near::resolve_tx_receipts(
+                    jsonrpc_client,
+                    tx_hash,
+                    signer,
+                    &["not exist", "Previous btc tx has not been signed"],
+                )
+                .await
+                {
+                    Ok(receipts) => (
+                        EventAction::Remove,
+                        utils::near::extract_near_to_utxo(&receipts, destination_chain, sender),
+                    ),
+                    Err(action) => (action, Vec::new()),
+                },
             )
-            .await)
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
@@ -316,7 +345,7 @@ pub async fn process_transfer_to_utxo_event(
                             transfer_message.recipient.get_chain(),
                             transfer_message.origin_nonce
                         );
-                        return Ok(EventAction::Retry);
+                        return Ok((EventAction::Retry, Vec::new()));
                     }
                     _ => {
                         anyhow::bail!(
@@ -332,23 +361,23 @@ pub async fn process_transfer_to_utxo_event(
                     transfer_message.recipient.get_chain(),
                     transfer_message.origin_nonce
                 );
-                return Ok(EventAction::Retry);
+                return Ok((EventAction::Retry, Vec::new()));
             } else if let BridgeSdkError::InsufficientUTXOGasFee(err) = err {
                 warn!(
                     "Gas fee is too large for {:?} transfer ({}): {err}, retrying",
                     transfer_message.recipient.get_chain(),
                     transfer_message.origin_nonce
                 );
-                return Ok(EventAction::Retry);
-            } else if let BridgeSdkError::UtxoClientError(ref msg) = err
-                && msg == "Failed to estimate fee_rate"
-            {
-                warn!(
-                    "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
-                    transfer_message.recipient.get_chain(),
-                    transfer_message.origin_nonce
-                );
-                return Ok(EventAction::Retry);
+                return Ok((EventAction::Retry, Vec::new()));
+            } else if let BridgeSdkError::UtxoClientError(ref msg) = err {
+                if msg == "Failed to estimate fee_rate" {
+                    warn!(
+                        "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
+                        transfer_message.recipient.get_chain(),
+                        transfer_message.origin_nonce
+                    );
+                    return Ok((EventAction::Retry, Vec::new()));
+                }
             }
 
             anyhow::bail!(

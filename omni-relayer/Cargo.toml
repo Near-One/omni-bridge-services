@@ -43,6 +43,7 @@ near-crypto = "0.34.2"
 near-sdk = { version = "5.24.1", features = ["unit-testing"] }
 
 hex = "0.4.3"
+sha2 = "0.10"
 alloy = { version = "1.1", features = ["node-bindings", "providers", "rpc-types", "sol-types", "provider-ws", "signers", "signer-local"] }
 
 mongodb = { version = "3.2.2", optional = true }
