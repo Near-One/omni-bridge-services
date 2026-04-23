@@ -10,7 +10,7 @@ use omni_types::{ChainKind, near_events::OmniBridgeEvent};
 
 use crate::{
     config,
-    workers::{EventAction, WorkerEvent, Transfer},
+    workers::{EventAction, Transfer, WorkerEvent},
 };
 
 pub fn get_signer(
@@ -90,9 +90,8 @@ pub async fn resolve_tx_receipts(
         }
     };
 
-    let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
-        outcome,
-    )) = response.final_execution_outcome
+    let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(outcome)) =
+        response.final_execution_outcome
     else {
         warn!("Receipts missing for transaction {tx_hash}");
         return Err(EventAction::Retry);

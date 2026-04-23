@@ -20,7 +20,7 @@ use crate::{
     config, utils, utils::pending_transactions::PendingTransaction, workers::PAUSED_ERROR,
 };
 
-use super::{EventAction, WorkerEvent, Transfer};
+use super::{EventAction, Transfer, WorkerEvent};
 
 #[derive(Debug, serde::Deserialize)]
 enum UTXOChainMsg {
@@ -313,20 +313,22 @@ pub async fn process_transfer_to_utxo_event(
 
             let destination_chain = transfer_message.recipient.get_chain();
 
-            Ok(match utils::near::resolve_tx_receipts(
-                jsonrpc_client,
-                tx_hash,
-                signer,
-                &["not exist", "Previous btc tx has not been signed"],
+            Ok(
+                match utils::near::resolve_tx_receipts(
+                    jsonrpc_client,
+                    tx_hash,
+                    signer,
+                    &["not exist", "Previous btc tx has not been signed"],
+                )
+                .await
+                {
+                    Ok(receipts) => (
+                        EventAction::Remove,
+                        utils::near::extract_near_to_utxo(&receipts, destination_chain, sender),
+                    ),
+                    Err(action) => (action, Vec::new()),
+                },
             )
-            .await
-            {
-                Ok(receipts) => (
-                    EventAction::Remove,
-                    utils::near::extract_near_to_utxo(&receipts, destination_chain, sender),
-                ),
-                Err(action) => (action, Vec::new()),
-            })
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
@@ -368,8 +370,7 @@ pub async fn process_transfer_to_utxo_event(
                 );
                 return Ok((EventAction::Retry, Vec::new()));
             } else if let BridgeSdkError::UtxoClientError(ref msg) = err {
-                if msg == "Failed to estimate fee_rate"
-                {
+                if msg == "Failed to estimate fee_rate" {
                     warn!(
                         "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
                         transfer_message.recipient.get_chain(),
