@@ -232,7 +232,7 @@ async fn handle_nats_ack(
 #[allow(clippy::too_many_arguments)]
 pub async fn process_events(
     config: Arc<config::Config>,
-    redis_connection_manager: redis::aio::ConnectionManager,
+    store: utils::redis::RelayerStore,
     nats_client: Arc<utils::nats::NatsClient>,
     omni_connector: Arc<OmniConnector>,
     fast_connector: Arc<OmniConnector>,
@@ -308,7 +308,7 @@ pub async fn process_events(
 
         let consumer_config = nats_config.relayer_consumer.clone();
         let config = config.clone();
-        let mut redis = redis_connection_manager.clone();
+        let store = store.clone();
         let jsonrpc_client = jsonrpc_client.clone();
         let omni_connector = omni_connector.clone();
         let fast_connector = fast_connector.clone();
@@ -327,7 +327,7 @@ pub async fn process_events(
             let message_result = process_message(
                 event,
                 &config,
-                &mut redis,
+                &store,
                 &jsonrpc_client,
                 omni_connector,
                 fast_connector,
@@ -343,7 +343,8 @@ pub async fn process_events(
             }
 
             if let Some(ref fee_key) = message_result.fee_key_to_remove {
-                utils::redis::remove_event(&config, &mut redis, utils::redis::FEE_MAPPING, fee_key)
+                store
+                    .remove_event(&config, utils::redis::FEE_MAPPING, fee_key)
                     .await;
             }
 
@@ -373,7 +374,7 @@ pub async fn process_events(
 async fn process_message(
     event: serde_json::Value,
     config: &config::Config,
-    redis: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     fast_connector: Arc<OmniConnector>,
@@ -415,7 +416,7 @@ async fn process_message(
                 } else {
                     near::process_transfer_event(
                         config,
-                        redis,
+                        store,
                         jsonrpc_client,
                         omni_connector.clone(),
                         signer.clone(),
@@ -451,7 +452,7 @@ async fn process_message(
 
                 let result = evm::process_init_transfer_event(
                     config,
-                    redis,
+                    store,
                     jsonrpc_client,
                     omni_connector.clone(),
                     signer,
@@ -472,7 +473,7 @@ async fn process_message(
             Transfer::Solana { sequence, .. } => {
                 let result = solana::process_init_transfer_event(
                     config,
-                    redis,
+                    store,
                     jsonrpc_client,
                     omni_connector.clone(),
                     signer,
@@ -528,7 +529,7 @@ async fn process_message(
             Transfer::Starknet { origin_nonce, .. } => {
                 let result = starknet::process_init_transfer_event(
                     config,
-                    redis,
+                    store,
                     jsonrpc_client,
                     omni_connector,
                     signer,
@@ -586,7 +587,7 @@ async fn process_message(
 
             let result = near::process_sign_transfer_event(
                 config,
-                redis,
+                store,
                 omni_connector.clone(),
                 signer.clone(),
                 omni_bridge_event,

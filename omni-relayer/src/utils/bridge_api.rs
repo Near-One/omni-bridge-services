@@ -137,7 +137,7 @@ impl TransferFee {
     pub async fn check_fee<T: std::fmt::Debug>(
         &self,
         config: &config::Config,
-        redis_connection_manager: &mut redis::aio::ConnectionManager,
+        store: &utils::redis::RelayerStore,
         transfer: &T,
         transfer_id: TransferId,
         provided_fee: &Fee,
@@ -153,9 +153,7 @@ impl TransferFee {
                 return Some(EventAction::Remove);
             };
 
-            if let Some(historical_fee) =
-                utils::redis::get_fee(config, redis_connection_manager, &transfer_id).await
-            {
+            if let Some(historical_fee) = store.get_fee(config, &transfer_id).await {
                 if historical_fee.is_fee_sufficient(config, provided_fee) {
                     info!(
                         "Historical fee is sufficient for transfer: {transfer:?}, using historical fee: {historical_fee:?}"
@@ -170,14 +168,9 @@ impl TransferFee {
                     return Some(EventAction::Retry);
                 }
             } else {
-                utils::redis::add_event(
-                    config,
-                    redis_connection_manager,
-                    utils::redis::FEE_MAPPING,
-                    transfer_id,
-                    self,
-                )
-                .await;
+                store
+                    .add_event(config, utils::redis::FEE_MAPPING, transfer_id, self)
+                    .await;
                 warn!(
                     "Insufficient fee for transfer: {transfer:?}\nGot: {provided_fee:?}, required: {:?}",
                     self.apply_discount(config.bridge_indexer.fee_discount)

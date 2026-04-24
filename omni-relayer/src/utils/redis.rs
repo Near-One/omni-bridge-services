@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use redis::{AsyncCommands, aio::ConnectionManager};
 use tracing::warn;
 
@@ -13,208 +14,209 @@ pub fn composite_key(parts: &[&str]) -> String {
     parts.join(":")
 }
 
-pub async fn get_fee(
-    config: &config::Config,
-    redis_connection_manager: &mut ConnectionManager,
-    transfer_id: &str,
-) -> Option<TransferFee> {
-    for _ in 0..config.redis.query_retry_attempts {
-        match redis_connection_manager
-            .hget::<&str, &str, Option<String>>(FEE_MAPPING, transfer_id)
-            .await
-        {
-            Ok(Some(serialized)) => match serde_json::from_str(&serialized) {
-                Ok(fee) => return Some(fee),
-                Err(err) => {
-                    warn!("Failed to deserialize Fee for transfer_id {transfer_id}: {err:?}");
+/// Shared handle around the Redis connection manager.
+///
+/// When Redis is not configured, the inner `Option` is `None` and every
+/// operation becomes a no-op (reads return `None`, writes log a warning).
+/// Code paths that must have Redis (native indexers, mongo-ingestion, fee
+/// bumping) should validate once at startup via [`RelayerStore::require`].
+#[derive(Clone, Default)]
+pub struct RelayerStore(Option<ConnectionManager>);
+
+impl RelayerStore {
+    pub fn new(manager: Option<ConnectionManager>) -> Self {
+        Self(manager)
+    }
+
+    pub fn require(self, feature: &str) -> Result<Self> {
+        self.0
+            .as_ref()
+            .with_context(|| format!("Redis is required for {feature}"))?;
+        Ok(self)
+    }
+
+    fn conn(&self) -> Option<ConnectionManager> {
+        self.0.clone()
+    }
+
+    pub async fn get_fee(&self, config: &config::Config, transfer_id: &str) -> Option<TransferFee> {
+        let mut conn = self.conn()?;
+        let redis_config = config.redis_config();
+
+        for _ in 0..redis_config.query_retry_attempts {
+            match conn
+                .hget::<&str, &str, Option<String>>(FEE_MAPPING, transfer_id)
+                .await
+            {
+                Ok(Some(serialized)) => match serde_json::from_str(&serialized) {
+                    Ok(fee) => return Some(fee),
+                    Err(err) => {
+                        warn!("Failed to deserialize Fee for transfer_id {transfer_id}: {err:?}");
+                        return None;
+                    }
+                },
+                Ok(None) => {
                     return None;
                 }
-            },
-            Ok(None) => {
-                return None;
-            }
-            Err(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_secs(
-                    config.redis.query_retry_sleep_secs,
-                ))
-                .await;
+                Err(_) => {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(
+                        redis_config.query_retry_sleep_secs,
+                    ))
+                    .await;
+                }
             }
         }
+
+        warn!(
+            "Failed to get fee for transfer_id {transfer_id} from redis after {} attempts",
+            redis_config.query_retry_attempts
+        );
+        None
     }
 
-    warn!(
-        "Failed to get fee for transfer_id {transfer_id} from redis after {} attempts",
-        config.redis.query_retry_attempts
-    );
-    None
-}
+    pub async fn add_event<F, E>(&self, config: &config::Config, key: &str, field: F, event: E)
+    where
+        F: redis::ToRedisArgs + Clone + Send + Sync,
+        E: serde::Serialize + std::fmt::Debug + Send,
+    {
+        let Some(mut conn) = self.conn() else { return };
+        let redis_config = config.redis_config();
 
-pub async fn add_event<F, E>(
-    config: &config::Config,
-    redis_connection_manager: &mut ConnectionManager,
-    key: &str,
-    field: F,
-    event: E,
-) where
-    F: redis::ToRedisArgs + Clone + Send + Sync,
-    E: serde::Serialize + std::fmt::Debug + Send,
-{
-    let Ok(serialized_event) = serde_json::to_string(&event) else {
-        warn!("Failed to serialize event: {event:?}");
-        return;
-    };
-
-    for _ in 0..config.redis.query_retry_attempts {
-        if redis_connection_manager
-            .hset::<&str, F, String, ()>(key, field.clone(), serialized_event.clone())
-            .await
-            .is_ok()
-        {
+        let Ok(serialized_event) = serde_json::to_string(&event) else {
+            warn!("Failed to serialize event: {event:?}");
             return;
+        };
+
+        for _ in 0..redis_config.query_retry_attempts {
+            if conn
+                .hset::<&str, F, String, ()>(key, field.clone(), serialized_event.clone())
+                .await
+                .is_ok()
+            {
+                return;
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(
+                redis_config.query_retry_sleep_secs,
+            ))
+            .await;
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(
-            config.redis.query_retry_sleep_secs,
-        ))
-        .await;
+        warn!("Failed to add event to redis db");
     }
 
-    warn!("Failed to add event to redis db");
-}
+    pub async fn remove_event<F>(&self, config: &config::Config, key: &str, field: F)
+    where
+        F: redis::ToRedisArgs + Clone + Send + Sync,
+    {
+        let Some(mut conn) = self.conn() else { return };
+        let redis_config = config.redis_config();
 
-pub async fn remove_event<F>(
-    config: &config::Config,
-    redis_connection_manager: &mut ConnectionManager,
-    key: &str,
-    field: F,
-) where
-    F: redis::ToRedisArgs + Clone + Send + Sync,
-{
-    for _ in 0..config.redis.query_retry_attempts {
-        if redis_connection_manager
-            .hdel::<&str, F, ()>(key, field.clone())
-            .await
-            .is_ok()
-        {
-            return;
+        for _ in 0..redis_config.query_retry_attempts {
+            if conn.hdel::<&str, F, ()>(key, field.clone()).await.is_ok() {
+                return;
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(
+                redis_config.query_retry_sleep_secs,
+            ))
+            .await;
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(
-            config.redis.query_retry_sleep_secs,
-        ))
-        .await;
+        warn!("Failed to remove event from redis db");
     }
 
-    warn!("Failed to remove event from redis db");
-}
+    pub async fn add<T>(&self, config: &config::Config, key: &str, object: &T)
+    where
+        T: serde::Serialize + std::fmt::Debug + Sync,
+    {
+        let Some(mut conn) = self.conn() else { return };
+        let redis_config = config.redis_config();
 
-pub async fn zadd<M>(
-    config: &config::Config,
-    redis_connection_manager: &mut ConnectionManager,
-    key: &str,
-    score: u64,
-    member: M,
-) where
-    M: serde::Serialize + std::fmt::Debug + Send,
-{
-    let Ok(serialized_member) = serde_json::to_string(&member) else {
-        warn!("Failed to serialize event: {member:?}");
-        return;
-    };
-
-    for _ in 0..config.redis.query_retry_attempts {
-        if redis_connection_manager
-            .zadd::<&str, u64, String, ()>(key, serialized_member.clone(), score)
-            .await
-            .is_ok()
-        {
+        let Ok(serialized) = serde_json::to_string(object) else {
+            warn!("Failed to serialize object: {object:?}");
             return;
+        };
+
+        let score = u64::try_from(chrono::Utc::now().timestamp_micros()).unwrap_or(0);
+
+        for _ in 0..redis_config.query_retry_attempts {
+            if conn
+                .zadd::<&str, u64, String, ()>(key, serialized.clone(), score)
+                .await
+                .is_ok()
+            {
+                return;
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(
+                redis_config.query_retry_sleep_secs,
+            ))
+            .await;
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(
-            config.redis.query_retry_sleep_secs,
-        ))
-        .await;
+        warn!("Failed to add object to {key}");
     }
 
-    warn!("Failed to add event to redis sorted set");
-}
+    pub async fn remove<T>(&self, config: &config::Config, key: &str, object: &T)
+    where
+        T: serde::Serialize + std::fmt::Debug + Sync,
+    {
+        let Some(mut conn) = self.conn() else { return };
+        let redis_config = config.redis_config();
 
-pub async fn zrange<T>(
-    config: &config::Config,
-    redis_connection_manager: &mut ConnectionManager,
-    key: &str,
-    start: isize,
-    stop: isize,
-) -> Option<Vec<T>>
-where
-    T: serde::de::DeserializeOwned,
-{
-    for _ in 0..config.redis.query_retry_attempts {
-        if let Ok(members) = redis_connection_manager
-            .zrange::<&str, Vec<String>>(key, start, stop)
-            .await
-        {
-            let members: Vec<T> = members
-                .iter()
-                .filter_map(|serialized| {
+        let Ok(serialized) = serde_json::to_string(object) else {
+            warn!("Failed to serialize object: {object:?}");
+            return;
+        };
+
+        for _ in 0..redis_config.query_retry_attempts {
+            if conn
+                .zrem::<&str, String, usize>(key, serialized.clone())
+                .await
+                .is_ok()
+            {
+                return;
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(
+                redis_config.query_retry_sleep_secs,
+            ))
+            .await;
+        }
+
+        warn!("Failed to remove object from {key}");
+    }
+
+    pub async fn get_oldest<T: serde::de::DeserializeOwned>(
+        &self,
+        config: &config::Config,
+        key: &str,
+    ) -> Option<T> {
+        let mut conn = self.conn()?;
+        let redis_config = config.redis_config();
+
+        for _ in 0..redis_config.query_retry_attempts {
+            if let Ok(members) = conn.zrange::<&str, Vec<String>>(key, 0, 0).await {
+                return members.first().and_then(|serialized| {
                     serde_json::from_str(serialized)
                         .map_err(|err| {
-                            warn!("Failed to deserialize event from redis: {err:?}");
+                            warn!("Failed to deserialize object from {key}: {err:?}");
                             err
                         })
                         .ok()
-                })
-                .collect();
+                });
+            }
 
-            return Some(members);
+            tokio::time::sleep(tokio::time::Duration::from_secs(
+                redis_config.query_retry_sleep_secs,
+            ))
+            .await;
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(
-            config.redis.query_retry_sleep_secs,
-        ))
-        .await;
+        warn!("Failed to get oldest object from {key}");
+        None
     }
-
-    warn!("Failed to get members from redis sorted set");
-    None
-}
-
-pub async fn zrem<M>(
-    config: &config::Config,
-    redis_connection_manager: &mut ConnectionManager,
-    key: &str,
-    member: M,
-) where
-    M: serde::Serialize + std::fmt::Debug + Send,
-{
-    let Ok(serialized_member) = serde_json::to_string(&member) else {
-        warn!("Failed to serialize event: {member:?}");
-        return;
-    };
-
-    for _ in 0..config.redis.query_retry_attempts {
-        match redis_connection_manager
-            .zrem::<&str, String, usize>(key, serialized_member.clone())
-            .await
-        {
-            Ok(0) => {
-                warn!("Member not found in redis sorted set");
-                return;
-            }
-            Ok(_) => {
-                return;
-            }
-            Err(_) => {
-                tokio::time::sleep(tokio::time::Duration::from_secs(
-                    config.redis.query_retry_sleep_secs,
-                ))
-                .await;
-            }
-        }
-    }
-
-    warn!("Failed to remove event from redis sorted set");
 }
 
 // --- Feature-gated helpers for indexer checkpoint tracking ---
@@ -223,52 +225,51 @@ pub async fn zrem<M>(
 pub const MONGODB_OMNI_EVENTS_RT: &str = "mongodb_omni_events_rt";
 
 #[cfg(any(feature = "native-indexers", feature = "mongo-ingestion"))]
-pub async fn get_last_processed<K, V>(
-    config: &config::Config,
-    redis_connection_manager: &mut ConnectionManager,
-    key: K,
-) -> Option<V>
-where
-    K: redis::ToRedisArgs + Copy + Send + Sync,
-    V: redis::FromRedisValue + Send + Sync,
-{
-    for _ in 0..config.redis.query_retry_attempts {
-        if let Ok(res) = redis_connection_manager.get::<K, V>(key).await {
-            return Some(res);
+impl RelayerStore {
+    pub async fn get_last_processed<K, V>(&self, config: &config::Config, key: K) -> Option<V>
+    where
+        K: redis::ToRedisArgs + Copy + Send + Sync,
+        V: redis::FromRedisValue + Send + Sync,
+    {
+        let mut conn = self.conn()?;
+        let redis_config = config.redis_config();
+
+        for _ in 0..redis_config.query_retry_attempts {
+            if let Ok(res) = conn.get::<K, V>(key).await {
+                return Some(res);
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(
+                redis_config.query_retry_sleep_secs,
+            ))
+            .await;
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(
-            config.redis.query_retry_sleep_secs,
-        ))
-        .await;
+        warn!("Failed to get last processed block from redis db");
+        None
     }
 
-    warn!("Failed to get last processed block from redis db");
-    None
-}
+    pub async fn update_last_processed<K, V>(&self, config: &config::Config, key: K, value: V)
+    where
+        K: redis::ToRedisArgs + Copy + Send + Sync,
+        V: redis::ToRedisArgs + Copy + Send + Sync,
+    {
+        let Some(mut conn) = self.conn() else { return };
+        let redis_config = config.redis_config();
 
-#[cfg(any(feature = "native-indexers", feature = "mongo-ingestion"))]
-pub async fn update_last_processed<K, V>(
-    config: &config::Config,
-    redis_connection: &mut ConnectionManager,
-    key: K,
-    value: V,
-) where
-    K: redis::ToRedisArgs + Copy + Send + Sync,
-    V: redis::ToRedisArgs + Copy + Send + Sync,
-{
-    for _ in 0..config.redis.query_retry_attempts {
-        if redis_connection.set::<K, V, ()>(key, value).await.is_ok() {
-            return;
+        for _ in 0..redis_config.query_retry_attempts {
+            if conn.set::<K, V, ()>(key, value).await.is_ok() {
+                return;
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(
+                redis_config.query_retry_sleep_secs,
+            ))
+            .await;
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(
-            config.redis.query_retry_sleep_secs,
-        ))
-        .await;
+        warn!("Failed to update last processed block in redis db");
     }
-
-    warn!("Failed to update last processed block in redis db");
 }
 
 // --- Native indexers only ---
@@ -289,50 +290,52 @@ pub fn get_last_processed_key(chain_kind: omni_types::ChainKind) -> String {
 const MAX_EVENTS_PER_BATCH: usize = 30;
 
 #[cfg(feature = "native-indexers")]
-pub async fn get_events(
-    config: &config::Config,
-    redis_connection_manager: &mut ConnectionManager,
-    key: String,
-) -> Option<Vec<(String, String)>> {
-    for _ in 0..config.redis.query_retry_attempts {
-        let mut iter = match redis_connection_manager
-            .hscan::<String, (String, String)>(key.clone())
-            .await
-        {
-            Ok(iter) => iter,
-            Err(err) => {
-                warn!("Redis hscan failed: {err:?}");
-                tokio::time::sleep(tokio::time::Duration::from_secs(
-                    config.redis.query_retry_sleep_secs,
-                ))
-                .await;
-                continue;
-            }
-        };
+impl RelayerStore {
+    pub async fn get_events(
+        &self,
+        config: &config::Config,
+        key: String,
+    ) -> Option<Vec<(String, String)>> {
+        let mut conn = self.conn()?;
+        let redis_config = config.redis_config();
 
-        let mut events = Vec::new();
-        loop {
-            if events.len() >= MAX_EVENTS_PER_BATCH {
-                break;
-            }
-            match tokio::time::timeout(
-                tokio::time::Duration::from_secs(config.redis.query_timeout_secs),
-                iter.next_item(),
-            )
-            .await
-            {
-                Ok(Some(event)) => events.push(event),
-                Ok(None) => break,
-                Err(_) => {
-                    warn!("Redis hscan iteration timed out");
+        for _ in 0..redis_config.query_retry_attempts {
+            let mut iter = match conn.hscan::<String, (String, String)>(key.clone()).await {
+                Ok(iter) => iter,
+                Err(err) => {
+                    warn!("Redis hscan failed: {err:?}");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(
+                        redis_config.query_retry_sleep_secs,
+                    ))
+                    .await;
+                    continue;
+                }
+            };
+
+            let mut events = Vec::new();
+            loop {
+                if events.len() >= MAX_EVENTS_PER_BATCH {
                     break;
                 }
+                match tokio::time::timeout(
+                    tokio::time::Duration::from_secs(redis_config.query_timeout_secs),
+                    iter.next_item(),
+                )
+                .await
+                {
+                    Ok(Some(event)) => events.push(event),
+                    Ok(None) => break,
+                    Err(_) => {
+                        warn!("Redis hscan iteration timed out");
+                        break;
+                    }
+                }
             }
+
+            return Some(events);
         }
 
-        return Some(events);
+        warn!("Failed to get events from redis db");
+        None
     }
-
-    warn!("Failed to get events from redis db");
-    None
 }

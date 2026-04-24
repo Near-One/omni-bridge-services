@@ -30,7 +30,7 @@ use super::{EventAction, Transfer};
 #[allow(clippy::too_many_lines)]
 pub async fn process_init_transfer_event(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     signer: AccountId,
@@ -121,13 +121,7 @@ pub async fn process_init_transfer_event(
         };
 
         if let Some(event_action) = needed_fee
-            .check_fee(
-                config,
-                redis_connection_manager,
-                &transfer,
-                transfer_id,
-                &provided_fee,
-            )
+            .check_fee(config, store, &transfer, transfer_id, &provided_fee)
             .await
         {
             return Ok(event_action);

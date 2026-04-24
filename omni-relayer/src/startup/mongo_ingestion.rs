@@ -13,7 +13,7 @@ const OMNI_EVENTS: &str = "omni_events";
 async fn watch_omni_events_collection(
     collection: &Collection<OmniEvent>,
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     start_timestamp: Option<u32>,
 ) -> Result<()> {
     let mut stream = if let Some(time) = start_timestamp {
@@ -24,14 +24,11 @@ async fn watch_omni_events_collection(
             .start_at_operation_time(mongodb::bson::Timestamp { time, increment: 0 })
             .await?
     } else {
-        let resume_token: Option<ResumeToken> = utils::redis::get_last_processed::<&str, String>(
-            config,
-            redis_connection_manager,
-            utils::redis::MONGODB_OMNI_EVENTS_RT,
-        )
-        .await
-        .and_then(|rt| serde_json::from_str(&rt).ok())
-        .unwrap_or_default();
+        let resume_token: Option<ResumeToken> = store
+            .get_last_processed::<&str, String>(config, utils::redis::MONGODB_OMNI_EVENTS_RT)
+            .await
+            .and_then(|rt| serde_json::from_str(&rt).ok())
+            .unwrap_or_default();
 
         info!("Resuming from token: {resume_token:?}");
 
@@ -45,13 +42,13 @@ async fn watch_omni_events_collection(
                     match event.event {
                         OmniEventData::Transaction(transaction_event) => {
                             tokio::spawn({
-                                let mut redis_connection_manager = redis_connection_manager.clone();
+                                let store = store.clone();
                                 let config = config.clone();
 
                                 async move {
                                     if let Err(err) = handle_transaction_event(
                                         &config,
-                                        &mut redis_connection_manager,
+                                        &store,
                                         None,
                                         event.transaction_id,
                                         transaction_event.transfer_id.clone(),
@@ -71,13 +68,13 @@ async fn watch_omni_events_collection(
                             }
 
                             tokio::spawn({
-                                let mut redis_connection_manager = redis_connection_manager.clone();
+                                let store = store.clone();
                                 let config = config.clone();
 
                                 async move {
                                     if let Err(err) = handle_meta_event(
                                         &config,
-                                        &mut redis_connection_manager,
+                                        &store,
                                         None,
                                         event.transaction_id,
                                         event.origin,
@@ -100,13 +97,9 @@ async fn watch_omni_events_collection(
             .resume_token()
             .and_then(|rt| serde_json::to_string(&rt).ok())
         {
-            utils::redis::update_last_processed(
-                config,
-                redis_connection_manager,
-                utils::redis::MONGODB_OMNI_EVENTS_RT,
-                resume_token,
-            )
-            .await;
+            store
+                .update_last_processed(config, utils::redis::MONGODB_OMNI_EVENTS_RT, resume_token)
+                .await;
         }
     }
 
@@ -115,7 +108,7 @@ async fn watch_omni_events_collection(
 
 pub async fn start_indexer(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     start_timestamp: Option<u32>,
 ) -> Result<()> {
     info!("Connecting to bridge-indexer");
@@ -136,13 +129,9 @@ pub async fn start_indexer(
     loop {
         info!("Starting a mongodb stream that track changes in {OMNI_EVENTS}");
 
-        if let Err(err) = watch_omni_events_collection(
-            &omni_events_collection,
-            config,
-            redis_connection_manager,
-            start_timestamp,
-        )
-        .await
+        if let Err(err) =
+            watch_omni_events_collection(&omni_events_collection, config, store, start_timestamp)
+                .await
         {
             warn!("Error watching changes: {err:?}");
         }

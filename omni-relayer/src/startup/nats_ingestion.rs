@@ -12,7 +12,7 @@ use super::event_handlers::{handle_meta_event, handle_transaction_event};
 
 async fn process_nats_message(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     nats: Option<&utils::nats::NatsClient>,
     event: OmniEvent,
 ) -> Result<()> {
@@ -20,7 +20,7 @@ async fn process_nats_message(
         OmniEventData::Transaction(transaction_event) => {
             handle_transaction_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 event.transaction_id,
                 transaction_event.transfer_id.clone(),
@@ -32,7 +32,7 @@ async fn process_nats_message(
         OmniEventData::Meta(meta_event) => {
             handle_meta_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 event.transaction_id,
                 event.origin,
@@ -48,7 +48,7 @@ async fn process_nats_message(
 async fn subscribe_to_omni_events(
     consumer: &PullConsumer,
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     nats: Option<&utils::nats::NatsClient>,
 ) -> Result<()> {
     let mut messages = consumer
@@ -70,9 +70,7 @@ async fn subscribe_to_omni_events(
             }
         };
 
-        if let Err(err) =
-            process_nats_message(config, redis_connection_manager, nats, omni_event).await
-        {
+        if let Err(err) = process_nats_message(config, store, nats, omni_event).await {
             warn!("Failed to process NATS message: {err:?}");
             continue;
         }
@@ -87,7 +85,7 @@ async fn subscribe_to_omni_events(
 
 pub async fn start_indexer_nats(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     nats_client: Arc<utils::nats::NatsClient>,
 ) -> Result<()> {
     let nats_config = config.nats.as_ref().context("NATS config is not set")?;
@@ -104,13 +102,8 @@ pub async fn start_indexer_nats(
             }
         };
 
-        if let Err(err) = subscribe_to_omni_events(
-            &consumer,
-            config,
-            redis_connection_manager,
-            Some(nats_client.as_ref()),
-        )
-        .await
+        if let Err(err) =
+            subscribe_to_omni_events(&consumer, config, store, Some(nats_client.as_ref())).await
         {
             warn!("Error in NATS subscription: {err:?}");
         }

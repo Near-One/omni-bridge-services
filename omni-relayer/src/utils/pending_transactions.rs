@@ -1,7 +1,7 @@
 use omni_types::{ChainKind, near_events::OmniBridgeEvent};
 use serde::{Deserialize, Serialize};
 
-pub const PENDING_EVM_TRANSACTIONS_KEY: &str = "pending_evm_transactions";
+const PENDING_EVM_TRANSACTIONS_KEY: &str = "pending_evm_transactions";
 
 pub fn get_pending_tx_key(chain_kind: ChainKind) -> String {
     format!("{PENDING_EVM_TRANSACTIONS_KEY}:{chain_kind:?}").to_lowercase()

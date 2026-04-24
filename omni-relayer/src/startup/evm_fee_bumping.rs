@@ -35,7 +35,7 @@ enum TransactionStatus {
 pub async fn start_evm_fee_bumping(
     config: &config::Config,
     chain_kind: ChainKind,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     nats_client: Arc<utils::nats::NatsClient>,
 ) -> anyhow::Result<()> {
     let nats_config = config
@@ -68,28 +68,14 @@ pub async fn start_evm_fee_bumping(
         provider.default_signer_address()
     );
 
-    loop {
-        let redis_key = pending_transactions::get_pending_tx_key(chain_kind);
+    let key = pending_transactions::get_pending_tx_key(chain_kind);
 
-        let Some(pending_txs) = utils::redis::zrange::<PendingTransaction>(
-            config,
-            redis_connection_manager,
-            &redis_key,
-            0,
-            0,
-        )
-        .await
+    loop {
+        let Some(mut pending_tx) = store.get_oldest::<PendingTransaction>(config, &key).await
         else {
             sleep(fee_bumping_config.check_interval_seconds).await;
             continue;
         };
-
-        if pending_txs.is_empty() {
-            sleep(fee_bumping_config.check_interval_seconds).await;
-            continue;
-        }
-
-        let mut pending_tx = pending_txs[0].clone();
 
         let current_timestamp = chrono::Utc::now().timestamp();
         if current_timestamp - pending_tx.sent_timestamp
@@ -116,7 +102,7 @@ pub async fn start_evm_fee_bumping(
 
         match tx_status {
             TransactionStatus::Included(_) => {
-                utils::redis::zrem(config, redis_connection_manager, &redis_key, pending_tx).await;
+                store.remove(config, &key, &pending_tx).await;
             }
             TransactionStatus::Missing => {
                 info!(
@@ -135,7 +121,7 @@ pub async fn start_evm_fee_bumping(
                     .await
                     .context("Failed to publish replay event to NATS")?;
 
-                utils::redis::zrem(config, redis_connection_manager, &redis_key, pending_tx).await;
+                store.remove(config, &key, &pending_tx).await;
             }
             TransactionStatus::Pending(tx_data) => {
                 let original_fee = Eip1559Estimation {
@@ -188,24 +174,11 @@ pub async fn start_evm_fee_bumping(
                     new_tx_hash, pending_tx.tx_hash
                 );
 
-                utils::redis::zrem(
-                    config,
-                    redis_connection_manager,
-                    &redis_key,
-                    pending_tx.clone(),
-                )
-                .await;
+                store.remove(config, &key, &pending_tx).await;
 
                 pending_tx.bump(new_tx_hash.to_string());
 
-                utils::redis::zadd(
-                    config,
-                    redis_connection_manager,
-                    &redis_key,
-                    pending_tx.nonce,
-                    pending_tx,
-                )
-                .await;
+                store.add(config, &key, &pending_tx).await;
 
                 sleep(fee_bumping_config.check_interval_seconds).await;
             }

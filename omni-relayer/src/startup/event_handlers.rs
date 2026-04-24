@@ -57,7 +57,7 @@ fn get_evm_config(config: &config::Config, chain_kind: ChainKind) -> Result<&con
 
 async fn add_event<E: serde::Serialize + std::fmt::Debug + Sync>(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     nats: Option<&utils::nats::NatsClient>,
     key: &str,
     target_chain: ChainKind,
@@ -76,14 +76,9 @@ async fn add_event<E: serde::Serialize + std::fmt::Debug + Sync>(
     }
 
     let retryable = RetryableEvent::new(event);
-    utils::redis::add_event(
-        config,
-        redis_connection_manager,
-        utils::redis::EVENTS,
-        key,
-        &retryable,
-    )
-    .await;
+    store
+        .add_event(config, utils::redis::EVENTS, key, &retryable)
+        .await;
 }
 
 fn is_whitelisted_transaction_event(
@@ -146,7 +141,7 @@ fn get_utxo_chain_token(config: &config::Config, chain: ChainKind) -> Option<Omn
 #[allow(clippy::too_many_lines)]
 pub(super) async fn handle_transaction_event(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     nats: Option<&utils::nats::NatsClient>,
     origin_transaction_id: String,
     unified_transfer_id: UnifiedTransferId,
@@ -195,7 +190,7 @@ pub(super) async fn handle_transaction_event(
 
                 add_event(
                     config,
-                    redis_connection_manager,
+                    store,
                     nats,
                     &key,
                     ChainKind::Near,
@@ -222,7 +217,7 @@ pub(super) async fn handle_transaction_event(
 
                 add_event(
                     config,
-                    redis_connection_manager,
+                    store,
                     nats,
                     &utxo_key,
                     ChainKind::Near,
@@ -247,7 +242,7 @@ pub(super) async fn handle_transaction_event(
             let destination_chain = sign_event.message_payload.recipient.get_chain();
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &key,
                 destination_chain,
@@ -328,7 +323,7 @@ pub(super) async fn handle_transaction_event(
 
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &redis_key,
                 ChainKind::Near,
@@ -348,7 +343,7 @@ pub(super) async fn handle_transaction_event(
 
                 add_event(
                     config,
-                    redis_connection_manager,
+                    store,
                     nats,
                     &fast_key,
                     ChainKind::Near,
@@ -402,7 +397,7 @@ pub(super) async fn handle_transaction_event(
 
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &redis_key,
                 ChainKind::Near,
@@ -451,7 +446,7 @@ pub(super) async fn handle_transaction_event(
 
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &redis_key,
                 ChainKind::Near,
@@ -493,7 +488,7 @@ pub(super) async fn handle_transaction_event(
 
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &redis_key,
                 ChainKind::Near,
@@ -529,7 +524,7 @@ pub(super) async fn handle_transaction_event(
 
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &redis_key,
                 ChainKind::Near,
@@ -563,7 +558,7 @@ pub(super) async fn handle_transaction_event(
 
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &redis_key,
                 ChainKind::Near,
@@ -584,7 +579,7 @@ pub(super) async fn handle_transaction_event(
             );
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &origin_transaction_id,
                 ChainKind::Near,
@@ -644,7 +639,7 @@ pub(super) async fn handle_transaction_event(
 
                     add_event(
                         config,
-                        redis_connection_manager,
+                        store,
                         nats,
                         &key,
                         ChainKind::Near,
@@ -672,7 +667,7 @@ pub(super) async fn handle_transaction_event(
             let key = utxo_id.to_string();
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &key,
                 ChainKind::Near,
@@ -717,7 +712,7 @@ pub(super) async fn handle_transaction_event(
                 let key = utxo_id.to_string();
                 add_event(
                     config,
-                    redis_connection_manager,
+                    store,
                     nats,
                     &key,
                     ChainKind::Near,
@@ -748,7 +743,7 @@ pub(super) async fn handle_transaction_event(
 
 pub(super) async fn handle_meta_event(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     nats: Option<&utils::nats::NatsClient>,
     origin_transaction_id: String,
     origin: OmniTransactionOrigin,
@@ -783,7 +778,7 @@ pub(super) async fn handle_meta_event(
 
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &redis_key,
                 ChainKind::Near,
@@ -812,7 +807,7 @@ pub(super) async fn handle_meta_event(
 
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &redis_key,
                 ChainKind::Near,
@@ -830,7 +825,7 @@ pub(super) async fn handle_meta_event(
 
             add_event(
                 config,
-                redis_connection_manager,
+                store,
                 nats,
                 &redis_key,
                 ChainKind::Near,

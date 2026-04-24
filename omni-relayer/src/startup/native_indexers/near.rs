@@ -15,21 +15,21 @@ use crate::{config, utils, workers::RetryableEvent};
 
 async fn create_lake_config(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     jsonrpc_client: &JsonRpcClient,
     start_block: Option<u64>,
 ) -> Result<LakeConfig> {
     let start_block_height = match start_block {
         Some(block) => block,
-        None => utils::redis::get_last_processed::<&str, u64>(
-            config,
-            redis_connection_manager,
-            &utils::redis::get_last_processed_key(ChainKind::Near),
-        )
-        .await
-        .map_or(get_final_block(jsonrpc_client).await?, |block_height| {
-            block_height + 1
-        }),
+        None => store
+            .get_last_processed::<&str, u64>(
+                config,
+                &utils::redis::get_last_processed_key(ChainKind::Near),
+            )
+            .await
+            .map_or(get_final_block(jsonrpc_client).await?, |block_height| {
+                block_height + 1
+            }),
     };
 
     info!("NEAR Lake will start from block: {start_block_height}");
@@ -50,38 +50,31 @@ async fn create_lake_config(
 
 pub async fn start_indexer(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     jsonrpc_client: JsonRpcClient,
     start_block: Option<u64>,
 ) -> Result<()> {
     info!("Starting NEAR indexer");
 
-    let lake_config = create_lake_config(
-        config,
-        redis_connection_manager,
-        &jsonrpc_client,
-        start_block,
-    )
-    .await?;
+    let lake_config = create_lake_config(config, store, &jsonrpc_client, start_block).await?;
     let (_, stream) = near_lake_framework::streamer(lake_config);
     let stream = tokio_stream::wrappers::ReceiverStream::new(stream);
 
     stream
         .map(move |streamer_message| {
             let config = config.clone();
-            let mut redis_connection_manager = redis_connection_manager.clone();
+            let store = store.clone();
 
             async move {
-                handle_streamer_message(&config, &mut redis_connection_manager, &streamer_message)
-                    .await;
+                handle_streamer_message(&config, &store, &streamer_message).await;
 
-                utils::redis::update_last_processed(
-                    &config,
-                    &mut redis_connection_manager,
-                    &utils::redis::get_last_processed_key(ChainKind::Near),
-                    streamer_message.block.header.height,
-                )
-                .await;
+                store
+                    .update_last_processed(
+                        &config,
+                        &utils::redis::get_last_processed_key(ChainKind::Near),
+                        streamer_message.block.header.height,
+                    )
+                    .await;
             }
         })
         .buffer_unordered(10)
@@ -93,7 +86,7 @@ pub async fn start_indexer(
 
 async fn handle_streamer_message(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     streamer_message: &StreamerMessage,
 ) {
     let nep_locker_event_outcomes = find_nep_locker_event_outcomes(config, streamer_message);
@@ -118,17 +111,17 @@ async fn handle_streamer_message(
                     let origin_nonce = transfer_message.origin_nonce.to_string();
                     let key = utils::redis::composite_key(&[&receipt_id, &origin_nonce]);
 
-                    utils::redis::add_event(
-                        config,
-                        redis_connection_manager,
-                        utils::redis::EVENTS,
-                        key,
-                        RetryableEvent::new(crate::workers::Transfer::Near {
-                            transfer_message,
-                            creation_timestamp: block_timestamp_secs,
-                        }),
-                    )
-                    .await;
+                    store
+                        .add_event(
+                            config,
+                            utils::redis::EVENTS,
+                            key,
+                            RetryableEvent::new(crate::workers::Transfer::Near {
+                                transfer_message,
+                                creation_timestamp: block_timestamp_secs,
+                            }),
+                        )
+                        .await;
                 }
                 OmniBridgeEvent::UtxoTransferEvent {
                     utxo_transfer_message,
@@ -139,17 +132,17 @@ async fn handle_streamer_message(
                         let utxo_id = utxo_transfer_message.utxo_id.to_string();
                         let key = utils::redis::composite_key(&[&receipt_id, &utxo_id]);
 
-                        utils::redis::add_event(
-                            config,
-                            redis_connection_manager,
-                            utils::redis::EVENTS,
-                            key,
-                            RetryableEvent::new(crate::workers::Transfer::Utxo {
-                                utxo_transfer_message,
-                                new_transfer_id: new_transfer_id.into(),
-                            }),
-                        )
-                        .await;
+                        store
+                            .add_event(
+                                config,
+                                utils::redis::EVENTS,
+                                key,
+                                RetryableEvent::new(crate::workers::Transfer::Utxo {
+                                    utxo_transfer_message,
+                                    new_transfer_id: new_transfer_id.into(),
+                                }),
+                            )
+                            .await;
                     }
                 }
                 OmniBridgeEvent::SignTransferEvent {
@@ -159,31 +152,26 @@ async fn handle_streamer_message(
                     let origin_nonce = message_payload.transfer_id.origin_nonce.to_string();
                     let key = utils::redis::composite_key(&[&receipt_id, &origin_nonce]);
 
-                    utils::redis::add_event(
-                        config,
-                        redis_connection_manager,
-                        utils::redis::EVENTS,
-                        key,
-                        RetryableEvent::new(log),
-                    )
-                    .await;
+                    store
+                        .add_event(config, utils::redis::EVENTS, key, RetryableEvent::new(log))
+                        .await;
                 }
                 OmniBridgeEvent::FinTransferEvent { transfer_message } => {
                     if transfer_message.recipient.get_chain() != ChainKind::Near {
                         let origin_nonce = transfer_message.origin_nonce.to_string();
                         let key = utils::redis::composite_key(&[&receipt_id, &origin_nonce]);
 
-                        utils::redis::add_event(
-                            config,
-                            redis_connection_manager,
-                            utils::redis::EVENTS,
-                            key,
-                            RetryableEvent::new(crate::workers::Transfer::Near {
-                                transfer_message,
-                                creation_timestamp: block_timestamp_secs,
-                            }),
-                        )
-                        .await;
+                        store
+                            .add_event(
+                                config,
+                                utils::redis::EVENTS,
+                                key,
+                                RetryableEvent::new(crate::workers::Transfer::Near {
+                                    transfer_message,
+                                    creation_timestamp: block_timestamp_secs,
+                                }),
+                            )
+                            .await;
                     }
                 }
                 OmniBridgeEvent::FailedFinTransferEvent { .. }
