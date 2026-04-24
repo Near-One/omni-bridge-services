@@ -28,7 +28,7 @@ use crate::{
 
 pub async fn start_indexer(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     mut start_signature: Option<Signature>,
 ) -> Result<()> {
     let Some(solana_config) = config.solana.clone() else {
@@ -43,7 +43,7 @@ pub async fn start_indexer(
         crate::skip_fail!(
             process_recent_signatures(
                 config,
-                redis_connection_manager,
+                store,
                 rpc_http_url.clone(),
                 &program_id,
                 start_signature,
@@ -79,14 +79,14 @@ pub async fn start_indexer(
         while let Some(log) = log_stream.next().await {
             if let Ok(signature) = Signature::from_str(&log.value.signature) {
                 info!("Found a signature on Solana: {signature:?}");
-                utils::redis::add_event(
-                    config,
-                    redis_connection_manager,
-                    utils::redis::SOLANA_EVENTS,
-                    signature.to_string(),
-                    serde_json::Value::Null,
-                )
-                .await;
+                store
+                    .add_event(
+                        config,
+                        utils::redis::SOLANA_EVENTS,
+                        signature.to_string(),
+                        serde_json::Value::Null,
+                    )
+                    .await;
             } else {
                 warn!("Failed to parse signature: {:?}", log.value.signature);
             }
@@ -101,7 +101,7 @@ pub async fn start_indexer(
 
 async fn process_recent_signatures(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     rpc_http_url: String,
     program_id: &Pubkey,
     start_signature: Option<Signature>,
@@ -109,25 +109,26 @@ async fn process_recent_signatures(
     let http_client = RpcClient::new(rpc_http_url);
 
     let from_signature = if let Some(signature) = start_signature {
-        utils::redis::add_event(
-            config,
-            redis_connection_manager,
-            utils::redis::SOLANA_EVENTS,
-            signature.to_string(),
-            // TODO: It's better to come up with a solution that wouldn't require storing `Null` value
-            serde_json::Value::Null,
-        )
-        .await;
+        store
+            .add_event(
+                config,
+                utils::redis::SOLANA_EVENTS,
+                signature.to_string(),
+                // TODO: It's better to come up with a solution that wouldn't require storing `Null` value
+                serde_json::Value::Null,
+            )
+            .await;
 
         signature
     } else {
-        let Some(signature) = utils::redis::get_last_processed::<&str, String>(
-            config,
-            redis_connection_manager,
-            &utils::redis::get_last_processed_key(ChainKind::Sol),
-        )
-        .await
-        .and_then(|s| Signature::from_str(&s).ok()) else {
+        let Some(signature) = store
+            .get_last_processed::<&str, String>(
+                config,
+                &utils::redis::get_last_processed_key(ChainKind::Sol),
+            )
+            .await
+            .and_then(|s| Signature::from_str(&s).ok())
+        else {
             return Ok(());
         };
 
@@ -147,15 +148,15 @@ async fn process_recent_signatures(
         .await?;
 
     for signature_status in &signatures {
-        utils::redis::add_event(
-            config,
-            redis_connection_manager,
-            utils::redis::SOLANA_EVENTS,
-            signature_status.signature.clone(),
-            // TODO: It's better to come up with a solution that wouldn't require storing `Null` value
-            serde_json::Value::Null,
-        )
-        .await;
+        store
+            .add_event(
+                config,
+                utils::redis::SOLANA_EVENTS,
+                signature_status.signature.clone(),
+                // TODO: It's better to come up with a solution that wouldn't require storing `Null` value
+                serde_json::Value::Null,
+            )
+            .await;
     }
 
     Ok(())
@@ -163,7 +164,7 @@ async fn process_recent_signatures(
 
 pub async fn process_signature(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
 ) -> Result<()> {
     let Some(solana_config) = config.solana.clone() else {
         anyhow::bail!("Failed to get Solana config");
@@ -179,15 +180,12 @@ pub async fn process_signature(
     };
 
     loop {
-        let Some(events) = utils::redis::get_events(
-            config,
-            redis_connection_manager,
-            utils::redis::SOLANA_EVENTS.to_string(),
-        )
-        .await
+        let Some(events) = store
+            .get_events(config, utils::redis::SOLANA_EVENTS.to_string())
+            .await
         else {
             tokio::time::sleep(tokio::time::Duration::from_secs(
-                config.redis.sleep_time_after_events_process_secs,
+                config.redis_config().sleep_time_after_events_process_secs,
             ))
             .await;
             continue;
@@ -198,7 +196,7 @@ pub async fn process_signature(
         for (key, _) in events {
             handlers.push(tokio::spawn({
                 let config = config.clone();
-                let mut redis_connection_manager = redis_connection_manager.clone();
+                let store = store.clone();
                 let solana = solana_config.clone();
                 let http_client = http_client.clone();
 
@@ -226,7 +224,7 @@ pub async fn process_signature(
                                 if let UiMessage::Raw(ref raw) = tx.message {
                                     process_message(
                                         &config,
-                                        &mut redis_connection_manager,
+                                        &store,
                                         &solana,
                                         &transaction,
                                         raw,
@@ -237,20 +235,20 @@ pub async fn process_signature(
                                 }
                             }
 
-                            utils::redis::remove_event(
-                                &config,
-                                &mut redis_connection_manager,
-                                utils::redis::SOLANA_EVENTS,
-                                &signature.to_string(),
-                            )
-                            .await;
-                            utils::redis::update_last_processed(
-                                &config,
-                                &mut redis_connection_manager,
-                                &utils::redis::get_last_processed_key(ChainKind::Sol),
-                                &signature.to_string(),
-                            )
-                            .await;
+                            store
+                                .remove_event(
+                                    &config,
+                                    utils::redis::SOLANA_EVENTS,
+                                    &signature.to_string(),
+                                )
+                                .await;
+                            store
+                                .update_last_processed(
+                                    &config,
+                                    &utils::redis::get_last_processed_key(ChainKind::Sol),
+                                    &signature.to_string(),
+                                )
+                                .await;
                         }
                         Err(err) => {
                             warn!("Failed to fetch transaction (probably signature wasn't finalized yet): {err:?}");
@@ -263,7 +261,7 @@ pub async fn process_signature(
         join_all(handlers).await;
 
         tokio::time::sleep(tokio::time::Duration::from_secs(
-            config.redis.sleep_time_after_events_process_secs,
+            config.redis_config().sleep_time_after_events_process_secs,
         ))
         .await;
     }
@@ -280,7 +278,7 @@ struct InitTransferPayload {
 
 async fn process_message(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     solana: &config::Solana,
     transaction: &EncodedTransactionWithStatusMeta,
     message: &UiRawMessage,
@@ -296,7 +294,7 @@ async fn process_message(
 
         if let Err(err) = decode_instruction(
             config,
-            redis_connection_manager,
+            store,
             solana,
             signature,
             transaction,
@@ -313,7 +311,7 @@ async fn process_message(
 
 async fn decode_instruction(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     solana: &config::Solana,
     signature: Signature,
     transaction: &EncodedTransactionWithStatusMeta,
@@ -414,25 +412,25 @@ async fn decode_instruction(
                             continue;
                         };
 
-                        utils::redis::add_event(
-                            config,
-                            redis_connection_manager,
-                            utils::redis::EVENTS,
-                            signature.to_string(),
-                            RetryableEvent::new(Transfer::Solana {
-                                amount: payload.amount.into(),
-                                token,
-                                sender,
-                                recipient,
-                                fee: payload.fee.into(),
-                                native_fee: payload.native_fee,
-                                message: payload.message.clone(),
-                                emitter,
-                                sequence,
-                                creation_timestamp: block_time,
-                            }),
-                        )
-                        .await;
+                        store
+                            .add_event(
+                                config,
+                                utils::redis::EVENTS,
+                                signature.to_string(),
+                                RetryableEvent::new(Transfer::Solana {
+                                    amount: payload.amount.into(),
+                                    token,
+                                    sender,
+                                    recipient,
+                                    fee: payload.fee.into(),
+                                    native_fee: payload.native_fee,
+                                    message: payload.message.clone(),
+                                    emitter,
+                                    sequence,
+                                    creation_timestamp: block_time,
+                                }),
+                            )
+                            .await;
                     }
                 }
             }
@@ -479,18 +477,18 @@ async fn decode_instruction(
                         continue;
                     };
 
-                    utils::redis::add_event(
-                        config,
-                        redis_connection_manager,
-                        utils::redis::EVENTS,
-                        signature.to_string(),
-                        RetryableEvent::new(FinTransfer::Solana {
-                            emitter: emitter.clone(),
-                            sequence,
-                            transfer_id: None,
-                        }),
-                    )
-                    .await;
+                    store
+                        .add_event(
+                            config,
+                            utils::redis::EVENTS,
+                            signature.to_string(),
+                            RetryableEvent::new(FinTransfer::Solana {
+                                emitter: emitter.clone(),
+                                sequence,
+                                transfer_id: None,
+                            }),
+                        )
+                        .await;
                 }
             }
         }
@@ -515,22 +513,22 @@ async fn decode_instruction(
                         continue;
                     };
 
-                    utils::redis::add_event(
-                        config,
-                        redis_connection_manager,
-                        utils::redis::EVENTS,
-                        signature.to_string(),
-                        RetryableEvent::new(DeployToken::Solana {
-                            emitter: account_keys
-                                .get(solana.deploy_token_emitter_index)
-                                .context("Missing emitter account key")?
-                                .as_ref()
-                                .context("Emitter account key is None")?
-                                .clone(),
-                            sequence,
-                        }),
-                    )
-                    .await;
+                    store
+                        .add_event(
+                            config,
+                            utils::redis::EVENTS,
+                            signature.to_string(),
+                            RetryableEvent::new(DeployToken::Solana {
+                                emitter: account_keys
+                                    .get(solana.deploy_token_emitter_index)
+                                    .context("Missing emitter account key")?
+                                    .as_ref()
+                                    .context("Emitter account key is None")?
+                                    .clone(),
+                                sequence,
+                            }),
+                        )
+                        .await;
                 }
             }
         }

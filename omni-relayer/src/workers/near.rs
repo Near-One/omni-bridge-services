@@ -47,7 +47,7 @@ pub(super) async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<Eve
 
 pub async fn process_transfer_event(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     signer: AccountId,
@@ -141,7 +141,7 @@ pub async fn process_transfer_event(
         if let Some(event_action) = needed_fee
             .check_fee(
                 config,
-                redis_connection_manager,
+                store,
                 &transfer_message,
                 transfer_message.get_transfer_id(),
                 &transfer_message.fee,
@@ -391,7 +391,7 @@ pub async fn process_transfer_to_utxo_event(
 
 pub async fn process_sign_transfer_event(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     omni_connector: Arc<OmniConnector>,
     signer: AccountId,
     omni_bridge_event: OmniBridgeEvent,
@@ -470,7 +470,7 @@ pub async fn process_sign_transfer_event(
         if let Some(event_action) = needed_fee
             .check_fee(
                 config,
-                redis_connection_manager,
+                store,
                 &transfer_message,
                 transfer_message.get_transfer_id(),
                 &transfer_message.fee,
@@ -546,7 +546,7 @@ pub async fn process_sign_transfer_event(
                 && config.is_fee_bumping_enabled(chain_kind)
                 && let Err(err) = store_pending_transaction(
                     config,
-                    redis_connection_manager,
+                    store,
                     chain_kind,
                     &tx_hash,
                     nonce,
@@ -797,7 +797,7 @@ pub async fn initiate_fast_transfer(
 
 async fn store_pending_transaction(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     chain_kind: ChainKind,
     tx_hash: &str,
     nonce: u64,
@@ -806,14 +806,13 @@ async fn store_pending_transaction(
     let pending_tx =
         PendingTransaction::new(tx_hash.to_string(), nonce, chain_kind, omni_bridge_event);
 
-    utils::redis::zadd(
-        config,
-        redis_connection_manager,
-        &utils::pending_transactions::get_pending_tx_key(chain_kind),
-        nonce,
-        pending_tx,
-    )
-    .await;
+    store
+        .add(
+            config,
+            &utils::pending_transactions::get_pending_tx_key(chain_kind),
+            &pending_tx,
+        )
+        .await;
 
     info!("Stored pending transaction {tx_hash} (nonce: {nonce}) for {chain_kind:?}");
 

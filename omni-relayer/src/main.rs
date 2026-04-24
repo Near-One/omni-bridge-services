@@ -103,18 +103,22 @@ fn init_logging(network: Network) -> Result<()> {
     Ok(())
 }
 
-async fn build_redis_connection_manager(
-    config: &config::Config,
-) -> Result<redis::aio::ConnectionManager> {
-    let redis_client = redis::Client::open(config.redis.url.clone())?;
+async fn build_store(config: &config::Config) -> Result<utils::redis::RelayerStore> {
+    let Some(redis_config) = config.redis.as_ref() else {
+        return Ok(utils::redis::RelayerStore::default());
+    };
+
+    let redis_client = redis::Client::open(redis_config.url.clone())?;
     let redis_connection_manager = redis::aio::ConnectionManager::new_with_config(
         redis_client,
         redis::aio::ConnectionManagerConfig::new().set_response_timeout(
-            tokio::time::Duration::from_secs(config.redis.query_timeout_secs),
+            tokio::time::Duration::from_secs(redis_config.query_timeout_secs),
         ),
     )
     .await?;
-    Ok(redis_connection_manager)
+    Ok(utils::redis::RelayerStore::new(Some(
+        redis_connection_manager,
+    )))
 }
 
 #[tokio::main]
@@ -137,9 +141,9 @@ async fn main() -> Result<()> {
 
     init_logging(config.near.network).context("Failed to initialize logging")?;
 
-    let redis_connection_manager = build_redis_connection_manager(&config)
+    let store = build_store(&config)
         .await
-        .context("Failed to create Redis connection manager")?;
+        .context("Failed to build relayer store")?;
 
     let nats_client = if config.is_nats_enabled() {
         let nats_config = config.nats.as_ref().unwrap();
@@ -190,45 +194,36 @@ async fn main() -> Result<()> {
     if config.is_nats_enabled() {
         handles.push(tokio::spawn({
             let config = config.clone();
-            let mut redis_connection_manager = redis_connection_manager.clone();
+            let store = store.clone();
             let nats_client = nats_client.clone().unwrap();
             async move {
-                startup::nats_ingestion::start_indexer_nats(
-                    &config,
-                    &mut redis_connection_manager,
-                    nats_client,
-                )
-                .await
+                startup::nats_ingestion::start_indexer_nats(&config, &store, nats_client).await
             }
         }));
     }
 
     #[cfg(feature = "mongo-ingestion")]
     if config.is_bridge_indexer_enabled() {
+        let store = store.clone().require("mongo-ingestion")?;
         handles.push(tokio::spawn({
             let config = config.clone();
-            let mut redis_connection_manager = redis_connection_manager.clone();
             async move {
-                startup::mongo_ingestion::start_indexer(
-                    &config,
-                    &mut redis_connection_manager,
-                    args.start_timestamp,
-                )
-                .await
+                startup::mongo_ingestion::start_indexer(&config, &store, args.start_timestamp).await
             }
         }));
     }
 
     #[cfg(feature = "native-indexers")]
     {
+        let native_indexers_store = store.clone().require("native indexers")?;
         handles.push(tokio::spawn({
             let config = config.clone();
-            let mut redis_connection_manager = redis_connection_manager.clone();
+            let store = native_indexers_store.clone();
             let jsonrpc_client = jsonrpc_client.clone();
             async move {
                 startup::native_indexers::near::start_indexer(
                     &config,
-                    &mut redis_connection_manager,
+                    &store,
                     jsonrpc_client,
                     args.near_start_block,
                 )
@@ -238,11 +233,11 @@ async fn main() -> Result<()> {
         if config.eth.is_some() {
             handles.push(tokio::spawn({
                 let config = config.clone();
-                let mut redis_connection_manager = redis_connection_manager.clone();
+                let store = native_indexers_store.clone();
                 async move {
                     startup::native_indexers::evm::start_indexer(
                         &config,
-                        &mut redis_connection_manager,
+                        &store,
                         ChainKind::Eth,
                         args.eth_start_block,
                     )
@@ -253,11 +248,11 @@ async fn main() -> Result<()> {
         if config.base.is_some() {
             handles.push(tokio::spawn({
                 let config = config.clone();
-                let mut redis_connection_manager = redis_connection_manager.clone();
+                let store = native_indexers_store.clone();
                 async move {
                     startup::native_indexers::evm::start_indexer(
                         &config,
-                        &mut redis_connection_manager,
+                        &store,
                         ChainKind::Base,
                         args.base_start_block,
                     )
@@ -268,11 +263,11 @@ async fn main() -> Result<()> {
         if config.arb.is_some() {
             handles.push(tokio::spawn({
                 let config = config.clone();
-                let mut redis_connection_manager = redis_connection_manager.clone();
+                let store = native_indexers_store.clone();
                 async move {
                     startup::native_indexers::evm::start_indexer(
                         &config,
-                        &mut redis_connection_manager,
+                        &store,
                         ChainKind::Arb,
                         args.arb_start_block,
                     )
@@ -283,11 +278,11 @@ async fn main() -> Result<()> {
         if config.bnb.is_some() {
             handles.push(tokio::spawn({
                 let config = config.clone();
-                let mut redis_connection_manager = redis_connection_manager.clone();
+                let store = native_indexers_store.clone();
                 async move {
                     startup::native_indexers::evm::start_indexer(
                         &config,
-                        &mut redis_connection_manager,
+                        &store,
                         ChainKind::Bnb,
                         args.bnb_start_block,
                     )
@@ -298,11 +293,11 @@ async fn main() -> Result<()> {
         if config.pol.is_some() {
             handles.push(tokio::spawn({
                 let config = config.clone();
-                let mut redis_connection_manager = redis_connection_manager.clone();
+                let store = native_indexers_store.clone();
                 async move {
                     startup::native_indexers::evm::start_indexer(
                         &config,
-                        &mut redis_connection_manager,
+                        &store,
                         ChainKind::Pol,
                         args.pol_start_block,
                     )
@@ -313,11 +308,11 @@ async fn main() -> Result<()> {
         if config.solana.is_some() {
             handles.push(tokio::spawn({
                 let config = config.clone();
-                let mut redis_connection_manager = redis_connection_manager.clone();
+                let store = native_indexers_store.clone();
                 async move {
                     startup::native_indexers::solana::start_indexer(
                         &config,
-                        &mut redis_connection_manager,
+                        &store,
                         args.solana_start_signature,
                     )
                     .await
@@ -325,13 +320,9 @@ async fn main() -> Result<()> {
             }));
             handles.push(tokio::spawn({
                 let config = config.clone();
-                let mut redis_connection_manager = redis_connection_manager.clone();
+                let store = native_indexers_store.clone();
                 async move {
-                    startup::native_indexers::solana::process_signature(
-                        &config,
-                        &mut redis_connection_manager,
-                    )
-                    .await
+                    startup::native_indexers::solana::process_signature(&config, &store).await
                 }
             }));
         }
@@ -343,7 +334,7 @@ async fn main() -> Result<()> {
 
     handles.push(tokio::spawn({
         let config = config.clone();
-        let redis_connection_manager = redis_connection_manager.clone();
+        let store = store.clone();
         let nats_client = nats_client.clone();
         let omni_connector = omni_connector.clone();
         let fast_connector = fast_connector.clone();
@@ -355,7 +346,7 @@ async fn main() -> Result<()> {
         async move {
             workers::process_events(
                 config,
-                redis_connection_manager,
+                store,
                 nats_client,
                 omni_connector,
                 fast_connector,
@@ -370,14 +361,14 @@ async fn main() -> Result<()> {
 
     if config.is_fee_bumping_enabled(ChainKind::Eth) {
         let nats_client = nats_client.clone();
+        let store = store.clone().require("fee bumping")?;
         handles.push(tokio::spawn({
             let config = config.clone();
-            let mut redis_connection_manager = redis_connection_manager.clone();
             async move {
                 startup::evm_fee_bumping::start_evm_fee_bumping(
                     &config,
                     ChainKind::Eth,
-                    &mut redis_connection_manager,
+                    &store,
                     nats_client,
                 )
                 .await

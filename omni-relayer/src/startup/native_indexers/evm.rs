@@ -16,7 +16,7 @@ use crate::{
 };
 
 struct ProcessRecentBlocksParams<'a> {
-    redis_connection_manager: &'a mut redis::aio::ConnectionManager,
+    store: &'a utils::redis::RelayerStore,
     http_provider: &'a DynProvider,
     filter: &'a Filter,
     chain_kind: ChainKind,
@@ -48,7 +48,7 @@ fn extract_evm_config(evm: config::Evm) -> Result<(Url, String, Address, u64, i6
 
 pub async fn start_indexer(
     config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     chain_kind: ChainKind,
     mut start_block: Option<u64>,
 ) -> Result<()> {
@@ -106,7 +106,7 @@ pub async fn start_indexer(
             DynProvider::new(ProviderBuilder::new().connect_http(rpc_http_url.clone()));
 
         let params = ProcessRecentBlocksParams {
-            redis_connection_manager,
+            store,
             http_provider: &http_provider,
             filter: &filter,
             chain_kind,
@@ -152,7 +152,7 @@ pub async fn start_indexer(
             process_log(
                 config,
                 chain_kind,
-                redis_connection_manager,
+                store,
                 &http_provider,
                 log,
                 expected_finalization_time,
@@ -174,7 +174,7 @@ async fn process_recent_blocks(
     params: ProcessRecentBlocksParams<'_>,
 ) -> Result<()> {
     let ProcessRecentBlocksParams {
-        redis_connection_manager: redis_connection,
+        store,
         http_provider,
         filter,
         chain_kind,
@@ -190,22 +190,15 @@ async fn process_recent_blocks(
     let from_block = match start_block {
         Some(block) => block,
         None => {
-            if let Some(block) = utils::redis::get_last_processed::<&str, u64>(
-                config,
-                redis_connection,
-                &last_processed_block_key,
-            )
-            .await
+            if let Some(block) = store
+                .get_last_processed::<&str, u64>(config, &last_processed_block_key)
+                .await
             {
                 block + 1
             } else {
-                utils::redis::update_last_processed(
-                    config,
-                    redis_connection,
-                    &last_processed_block_key,
-                    latest_block + 1,
-                )
-                .await;
+                store
+                    .update_last_processed(config, &last_processed_block_key, latest_block + 1)
+                    .await;
                 latest_block + 1
             }
         }
@@ -229,7 +222,7 @@ async fn process_recent_blocks(
             process_log(
                 config,
                 chain_kind,
-                redis_connection,
+                store,
                 http_provider,
                 log,
                 expected_finalization_time,
@@ -247,7 +240,7 @@ async fn process_recent_blocks(
 async fn process_log(
     config: &config::Config,
     chain_kind: ChainKind,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    store: &utils::redis::RelayerStore,
     http_provider: &DynProvider,
     log: Log,
     expected_finalization_time: i64,
@@ -299,49 +292,49 @@ async fn process_log(
         let tx_hash_str = tx_hash.to_string();
         let key = utils::redis::composite_key(&[&tx_hash_str, &log_index_str]);
 
-        utils::redis::add_event(
-            config,
-            redis_connection_manager,
-            utils::redis::EVENTS,
-            key,
-            RetryableEvent::new(crate::workers::Transfer::Evm {
-                chain_kind,
-                tx_hash,
-                log: log.clone(),
-                creation_timestamp: timestamp,
-                expected_finalization_time,
-            }),
-        )
-        .await;
+        store
+            .add_event(
+                config,
+                utils::redis::EVENTS,
+                key,
+                RetryableEvent::new(crate::workers::Transfer::Evm {
+                    chain_kind,
+                    tx_hash,
+                    log: log.clone(),
+                    creation_timestamp: timestamp,
+                    expected_finalization_time,
+                }),
+            )
+            .await;
 
         if is_fast_relayer_enabled {
             let fast_key = utils::redis::composite_key(&["fast", &tx_hash_str, &log_index_str]);
 
-            utils::redis::add_event(
-                config,
-                redis_connection_manager,
-                utils::redis::EVENTS,
-                fast_key,
-                RetryableEvent::new(crate::workers::Transfer::Fast {
-                    block_number,
-                    tx_hash: format!("{tx_hash:?}"),
-                    token: log.token_address.to_string(),
-                    amount: log.amount,
-                    transfer_id: TransferId {
-                        origin_chain: chain_kind,
-                        origin_nonce: log.origin_nonce,
-                    },
-                    recipient,
-                    fee: Fee {
-                        fee: log.fee,
-                        native_fee: log.native_fee,
-                    },
-                    msg: log.message,
-                    storage_deposit_amount: None,
-                    safe_confirmations,
-                }),
-            )
-            .await;
+            store
+                .add_event(
+                    config,
+                    utils::redis::EVENTS,
+                    fast_key,
+                    RetryableEvent::new(crate::workers::Transfer::Fast {
+                        block_number,
+                        tx_hash: format!("{tx_hash:?}"),
+                        token: log.token_address.to_string(),
+                        amount: log.amount,
+                        transfer_id: TransferId {
+                            origin_chain: chain_kind,
+                            origin_nonce: log.origin_nonce,
+                        },
+                        recipient,
+                        fee: Fee {
+                            fee: log.fee,
+                            native_fee: log.native_fee,
+                        },
+                        msg: log.message,
+                        storage_deposit_amount: None,
+                        safe_confirmations,
+                    }),
+                )
+                .await;
         }
     } else if let Ok(event) = log.log_decode::<utils::evm::FinTransfer>() {
         info!("Received FinTransfer on {chain_kind:?} ({tx_hash:?})");
@@ -357,51 +350,51 @@ async fn process_log(
             }
         };
 
-        utils::redis::add_event(
-            config,
-            redis_connection_manager,
-            utils::redis::EVENTS,
-            key,
-            RetryableEvent::new(FinTransfer::Evm {
-                chain_kind,
-                tx_hash,
-                creation_timestamp: timestamp,
-                expected_finalization_time,
-                transfer_id: TransferId {
-                    origin_chain,
-                    origin_nonce: event.data().originNonce,
-                },
-            }),
-        )
-        .await;
+        store
+            .add_event(
+                config,
+                utils::redis::EVENTS,
+                key,
+                RetryableEvent::new(FinTransfer::Evm {
+                    chain_kind,
+                    tx_hash,
+                    creation_timestamp: timestamp,
+                    expected_finalization_time,
+                    transfer_id: TransferId {
+                        origin_chain,
+                        origin_nonce: event.data().originNonce,
+                    },
+                }),
+            )
+            .await;
     } else if log.log_decode::<utils::evm::DeployToken>().is_ok() {
         info!("Received DeployToken on {chain_kind:?} ({tx_hash:?})");
 
         let tx_hash_str = tx_hash.to_string();
         let key = utils::redis::composite_key(&[&tx_hash_str, &log_index_str]);
 
-        utils::redis::add_event(
-            config,
-            redis_connection_manager,
-            utils::redis::EVENTS,
-            key,
-            RetryableEvent::new(DeployToken::Evm {
-                chain_kind,
-                tx_hash,
-                creation_timestamp: timestamp,
-                expected_finalization_time,
-            }),
-        )
-        .await;
+        store
+            .add_event(
+                config,
+                utils::redis::EVENTS,
+                key,
+                RetryableEvent::new(DeployToken::Evm {
+                    chain_kind,
+                    tx_hash,
+                    creation_timestamp: timestamp,
+                    expected_finalization_time,
+                }),
+            )
+            .await;
     } else {
         warn!("Received unknown log on {chain_kind:?}: {log:?}");
     }
 
-    utils::redis::update_last_processed(
-        config,
-        redis_connection_manager,
-        &utils::redis::get_last_processed_key(chain_kind),
-        block_number,
-    )
-    .await;
+    store
+        .update_last_processed(
+            config,
+            &utils::redis::get_last_processed_key(chain_kind),
+            block_number,
+        )
+        .await;
 }

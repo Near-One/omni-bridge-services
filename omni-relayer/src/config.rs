@@ -105,7 +105,7 @@ where
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
-    pub redis: Redis,
+    pub redis: Option<Redis>,
     pub nats: Option<Nats>,
     pub bridge_indexer: BridgeIndexer,
     pub near: Near,
@@ -188,6 +188,12 @@ impl Config {
         *ENABLED.get_or_init(|| {
             std::env::var("KYT_API_URL").is_ok() && std::env::var("KYT_API_KEY").is_ok()
         })
+    }
+
+    pub fn redis_config(&self) -> &Redis {
+        self.redis
+            .as_ref()
+            .expect("Redis must be configured for this code path")
     }
 
     pub fn is_fee_bumping_enabled(&self, chain_kind: ChainKind) -> bool {
