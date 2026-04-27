@@ -10,6 +10,7 @@ use omni_types::{
     ChainKind, Fee, OmniAddress, TransferId, TransferIdKind, UnifiedTransferId,
     near_events::OmniBridgeEvent,
 };
+use sha2::{Digest, Sha256};
 use solana_sdk::pubkey::Pubkey;
 use tracing::{debug, info, warn};
 
@@ -31,10 +32,6 @@ fn evm_event_key(origin_transaction_id: &str, log_index: Option<u64>) -> String 
 fn solana_event_key(origin_transaction_id: &str, instruction_index: Option<usize>) -> String {
     let instruction_index = instruction_index.unwrap_or_default().to_string();
     utils::redis::composite_key(&[origin_transaction_id, &instruction_index])
-}
-
-fn near_to_utxo_event_key(origin_transaction_id: &str, utxo_id: &str, sign_index: u64) -> String {
-    utils::redis::composite_key(&[origin_transaction_id, utxo_id, &sign_index.to_string()])
 }
 
 fn get_evm_config(config: &config::Config, chain_kind: ChainKind) -> Result<&config::Evm> {
@@ -172,6 +169,21 @@ pub(super) async fn handle_transaction_event(
 
     match event.transfer_message {
         OmniTransferMessage::NearTransferMessage(transfer_message) => {
+            let OmniTransactionOrigin::NearReceipt {
+                block_timestamp_nanosec,
+                ..
+            } = origin
+            else {
+                anyhow::bail!("Expected NearReceipt for NearTransferMessage: {transfer_message:?}");
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_timestamp_nanosec / 1_000_000_000)
+            else {
+                anyhow::bail!(
+                    "Failed to parse block_timestamp_nanosec as i64: {block_timestamp_nanosec}"
+                );
+            };
+
             info!(
                 "Received NearTransferMessage ({:?}:{}): {origin_transaction_id}",
                 transfer_message.get_origin_chain(),
@@ -187,7 +199,10 @@ pub(super) async fn handle_transaction_event(
                     nats,
                     &key,
                     ChainKind::Near,
-                    crate::workers::Transfer::Near { transfer_message },
+                    crate::workers::Transfer::Near {
+                        transfer_message,
+                        creation_timestamp,
+                    },
                 )
                 .await;
             }
@@ -225,8 +240,9 @@ pub(super) async fn handle_transaction_event(
                 sign_event.message_payload.transfer_id.origin_chain,
                 sign_event.message_payload.transfer_id.origin_nonce
             );
-            let origin_nonce = sign_event.message_payload.transfer_id.origin_nonce;
-            let key = near_event_key(&origin_transaction_id, origin_nonce);
+
+            let signature_hash = hex::encode(Sha256::digest(sign_event.signature.to_bytes()));
+            let key = format!("sign:{signature_hash}");
 
             let destination_chain = sign_event.message_payload.recipient.get_chain();
             add_event(
@@ -402,12 +418,18 @@ pub(super) async fn handle_transaction_event(
         }
         OmniTransferMessage::SolanaInitTransfer(init_transfer) => {
             let OmniTransactionOrigin::SolanaTransaction {
-                instruction_index, ..
+                instruction_index,
+                block_time,
+                ..
             } = origin
             else {
                 anyhow::bail!(
                     "Expected SolanaTransaction for SolanaInitTransfer: {init_transfer:?}"
                 );
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_time) else {
+                anyhow::bail!("Failed to parse block_time as i64: {block_time}");
             };
 
             info!(
@@ -443,6 +465,7 @@ pub(super) async fn handle_transaction_event(
                     message: init_transfer.message.unwrap_or_default(),
                     emitter: Pubkey::from_str(&emitter).context("Failed to parse emitter")?,
                     sequence: init_transfer.origin_nonce,
+                    creation_timestamp,
                 },
             )
             .await;
@@ -483,6 +506,19 @@ pub(super) async fn handle_transaction_event(
             .await;
         }
         OmniTransferMessage::StarknetInitTransfer(init_transfer) => {
+            let OmniTransactionOrigin::StarknetTransaction {
+                block_timestamp, ..
+            } = origin
+            else {
+                anyhow::bail!(
+                    "Expected StarknetTransaction for StarknetInitTransfer: {init_transfer:?}"
+                );
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_timestamp) else {
+                anyhow::bail!("Failed to parse block_timestamp as i64: {block_timestamp}");
+            };
+
             info!(
                 "Received StarknetInitTransfer ({:?}:{}): {origin_transaction_id}",
                 ChainKind::Strk,
@@ -506,6 +542,7 @@ pub(super) async fn handle_transaction_event(
                     fee: init_transfer.fee,
                     recipient: init_transfer.recipient,
                     message: init_transfer.message,
+                    creation_timestamp,
                 },
             )
             .await;
@@ -563,8 +600,24 @@ pub(super) async fn handle_transaction_event(
             destination_chain,
             utxo_count,
             ref new_transfer_id,
+            ref sender,
             ..
         } => {
+            let OmniTransactionOrigin::NearReceipt {
+                block_timestamp_nanosec,
+                ..
+            } = origin
+            else {
+                anyhow::bail!("Expected NearReceipt for TransferNearToUtxo: {event:?}");
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_timestamp_nanosec / 1_000_000_000)
+            else {
+                anyhow::bail!(
+                    "Failed to parse block_timestamp_nanosec as i64: {block_timestamp_nanosec}"
+                );
+            };
+
             let utxo_id = if let TransferIdKind::Utxo(utxo_id) = event.transfer_id.kind {
                 utxo_id
             } else if let Some(TransferIdKind::Utxo(utxo_id)) =
@@ -581,27 +634,26 @@ pub(super) async fn handle_transaction_event(
                     utxo_id.tx_hash
                 );
 
-                let utxo_id_str = utxo_id.to_string();
-
                 for sign_index in 0..utxo_count {
                     info!(
                         "Received sign index {sign_index} for BTC pending ID: {}",
                         utxo_id.tx_hash
                     );
 
-                    let redis_key =
-                        near_to_utxo_event_key(&origin_transaction_id, &utxo_id_str, sign_index);
+                    let key = format!("{}:{sign_index}", utxo_id.tx_hash);
 
                     add_event(
                         config,
                         redis_connection_manager,
                         nats,
-                        &redis_key,
+                        &key,
                         ChainKind::Near,
                         workers::Transfer::NearToUtxo {
                             chain: destination_chain,
                             btc_pending_id: utxo_id.tx_hash.clone(),
                             sign_index,
+                            sender: sender.clone(),
+                            creation_timestamp,
                         },
                     )
                     .await;
