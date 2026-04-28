@@ -214,6 +214,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 safe_deposit: deposit_msg.safe_deposit.map(|safe_deposit| SafeDepositMsg {
                     msg: safe_deposit.msg,
                 }),
+                refund_address: deposit_msg.refund_address,
             },
         },
         transaction_options: TransactionOptions {

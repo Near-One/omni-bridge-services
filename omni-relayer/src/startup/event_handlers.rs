@@ -706,6 +706,7 @@ pub(super) async fn handle_transaction_event(
                             .safe_deposit
                             .clone()
                             .map(|sd| crate::types::SafeDepositMsg { msg: sd.msg }),
+                        refund_address: deposit_msg.refund_address.clone(),
                     },
                 },
             )
