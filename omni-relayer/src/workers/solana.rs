@@ -223,10 +223,22 @@ pub async fn process_fin_transfer_event(
         emitter,
         sequence,
         transfer_id,
+        creation_timestamp,
     } = fin_transfer
     else {
         anyhow::bail!("Expected Solana FinTransfer, got: {fin_transfer:?}");
     };
+
+    let expected_finalization_time = config
+        .solana
+        .as_ref()
+        .map_or(0, |solana| solana.expected_finalization_time);
+    let current_timestamp = chrono::Utc::now().timestamp();
+    if current_timestamp < creation_timestamp + expected_finalization_time {
+        let remaining =
+            (creation_timestamp + expected_finalization_time - current_timestamp).unsigned_abs();
+        return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
+    }
 
     info!(
         "Processing Solana FinTransfer ({:?}:{sequence})",
