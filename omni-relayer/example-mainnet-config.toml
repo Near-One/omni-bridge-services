@@ -166,6 +166,7 @@ error_selectors_to_remove = [
 [solana]
 rpc_http_url = "https://x-api-key:TATUM_API_KEY@solana-mainnet.gateway.tatum.io"
 rpc_ws_url = "wss://api.mainnet-beta.solana.com"
+expected_finalization_time = 15
 # Program ID on Solana is an account ID whitch the bridge contract (basically bridge_token_factory_address on Solana)
 program_id = "dahPEoZGXfyV58JqqH85okdHmpN8U2q8owgPUXSCPxe"
 # This is the wormhole contract ID on Solana (can be found here https://wormhole.com/docs/build/reference/contract-addresses/#__tabbed_1_2)
