@@ -53,8 +53,12 @@ pub async fn process_init_transfer_event(
         origin_nonce: sequence,
     };
 
+    let expected_finalization_time = config
+        .solana
+        .as_ref()
+        .map_or(0, |solana| solana.expected_finalization_time);
     let current_timestamp = chrono::Utc::now().timestamp();
-    let effective_wait = config.kyt.delay_secs;
+    let effective_wait = std::cmp::max(expected_finalization_time, config.kyt.delay_secs);
     if current_timestamp < creation_timestamp + effective_wait {
         let remaining = (creation_timestamp + effective_wait - current_timestamp).unsigned_abs();
         return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
@@ -219,10 +223,22 @@ pub async fn process_fin_transfer_event(
         emitter,
         sequence,
         transfer_id,
+        creation_timestamp,
     } = fin_transfer
     else {
         anyhow::bail!("Expected Solana FinTransfer, got: {fin_transfer:?}");
     };
+
+    let expected_finalization_time = config
+        .solana
+        .as_ref()
+        .map_or(0, |solana| solana.expected_finalization_time);
+    let current_timestamp = chrono::Utc::now().timestamp();
+    if current_timestamp < creation_timestamp + expected_finalization_time {
+        let remaining =
+            (creation_timestamp + expected_finalization_time - current_timestamp).unsigned_abs();
+        return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
+    }
 
     info!(
         "Processing Solana FinTransfer ({:?}:{sequence})",

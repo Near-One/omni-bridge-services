@@ -472,10 +472,16 @@ pub(super) async fn handle_transaction_event(
         }
         OmniTransferMessage::SolanaFinTransfer(fin_transfer) => {
             let OmniTransactionOrigin::SolanaTransaction {
-                instruction_index, ..
+                instruction_index,
+                block_time,
+                ..
             } = origin
             else {
                 anyhow::bail!("Expected SolanaTransaction for SolanaFinTransfer: {fin_transfer:?}");
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_time) else {
+                anyhow::bail!("Failed to parse block_time as i64: {block_time}");
             };
 
             let Some(emitter) = fin_transfer.emitter.clone() else {
@@ -501,6 +507,7 @@ pub(super) async fn handle_transaction_event(
                     emitter,
                     sequence,
                     transfer_id: (&unified_transfer_id).try_into().ok(),
+                    creation_timestamp,
                 },
             )
             .await;

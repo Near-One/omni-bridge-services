@@ -361,6 +361,7 @@ pub struct Solana {
     pub rpc_http_url: String,
     #[serde(deserialize_with = "replace_rpc_api_key")]
     pub rpc_ws_url: String,
+    pub expected_finalization_time: i64,
     pub program_id: String,
     pub wormhole_id: String,
     pub wormhole_post_message_shim_id: String,

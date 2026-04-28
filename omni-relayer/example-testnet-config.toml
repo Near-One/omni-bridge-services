@@ -160,6 +160,7 @@ error_selectors_to_remove = [
 [solana]
 rpc_http_url = "https://api.devnet.solana.com"
 rpc_ws_url = "wss://api.devnet.solana.com"
+expected_finalization_time = 15
 # Program ID on Solana is an account ID whitch the bridge contract (basically bridge_token_factory_address on Solana)
 program_id = "862HdJV59Vp83PbcubUnvuXc4EAXP8CDDs6LTxFpunTe"
 # This is the wormhole contract ID on Solana (can be found here https://wormhole.com/docs/build/reference/contract-addresses/#__tabbed_1_2)

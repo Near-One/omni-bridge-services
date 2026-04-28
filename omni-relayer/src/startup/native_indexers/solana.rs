@@ -488,6 +488,7 @@ async fn decode_instruction(
                             emitter: emitter.clone(),
                             sequence,
                             transfer_id: None,
+                            creation_timestamp: block_time,
                         }),
                     )
                     .await;

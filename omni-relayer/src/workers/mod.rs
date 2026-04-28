@@ -159,6 +159,8 @@ pub enum FinTransfer {
         emitter: String,
         sequence: u64,
         transfer_id: Option<TransferId>,
+        #[serde(default)]
+        creation_timestamp: i64,
     },
     Starknet {
         tx_hash: String,
@@ -211,7 +213,8 @@ async fn handle_nats_ack(
                     (*delay).min(max_backoff)
                 } else {
                     let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
-                    Duration::from_secs(3u64.saturating_pow(delivered)).min(max_backoff)
+                    Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
+                        .min(max_backoff)
                 };
                 msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
                     .await
