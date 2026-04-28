@@ -213,7 +213,7 @@ async fn handle_nats_ack(
                     (*delay).min(max_backoff)
                 } else {
                     let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
-                    Duration::from_secs(4u64.saturating_pow(delivered.saturating_sub(1)))
+                    Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
                         .min(max_backoff)
                 };
                 msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
