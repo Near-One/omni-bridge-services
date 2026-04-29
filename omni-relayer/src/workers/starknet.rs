@@ -189,6 +189,12 @@ pub async fn process_init_transfer_event(
                         );
                     }
                 };
+            } else if let BridgeSdkError::MpcFinalityNotReached = err {
+                warn!(
+                    "MPC finality not reached yet for Starknet transfer ({:?}:{}), retrying",
+                    transfer_id.origin_chain, transfer_id.origin_nonce
+                );
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!(
@@ -280,6 +286,9 @@ pub async fn process_fin_transfer_event(
                         anyhow::bail!("Failed to claim Starknet fee: {near_rpc_error:?}");
                     }
                 };
+            } else if let BridgeSdkError::MpcFinalityNotReached = err {
+                warn!("MPC finality not reached yet, retrying Starknet claim fee");
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!("Failed to claim Starknet fee: {err:?}");
@@ -341,6 +350,9 @@ pub async fn process_deploy_token_event(
                         anyhow::bail!("Failed to bind Starknet token: {near_rpc_error:?}");
                     }
                 };
+            } else if let BridgeSdkError::MpcFinalityNotReached = err {
+                warn!("MPC finality not reached yet, retrying Starknet bind token");
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!("Failed to bind Starknet token: {err:?}");
