@@ -203,6 +203,7 @@ light_client = "btc-client-v4.testnet"
 signing_enabled = true
 # If this is set to true, then omni relayer will call `verify_withdraw`
 verifying_withdraw_enabled = true
+confirmations = 3
 
 [zcash]
 rpc_http_url = "https://x-api-key:TATUM_API_KEY@zcash-testnet.gateway.tatum.io"
@@ -211,6 +212,7 @@ light_client = "zcash-client.n-bridge.testnet"
 signing_enabled = true
 # If this is set to true, then omni relayer will call `verify_withdraw`
 verifying_withdraw_enabled = true
+confirmations = 12
 
 # [orchard]
 # enabled = true

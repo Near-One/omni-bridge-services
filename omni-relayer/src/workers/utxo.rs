@@ -256,25 +256,20 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 };
             }
 
-            if let BridgeSdkError::LightClientNotSynced(block) = err {
+            if let BridgeSdkError::LightClientNotSynced(lc_head) = err {
                 warn!(
-                    "{chain:?} light client is not synced yet for transfer ({btc_tx_hash}), block: {block}; deferring to LC poller"
+                    "{chain:?} light client is not synced yet for transfer ({btc_tx_hash}), lc_head: {lc_head}; deferring to LC poller"
                 );
-                let original_key = format!("{btc_tx_hash}@{vout}");
-                let stored = utils::utxo::store_pending_lc_event(
+                return Ok(defer_to_lc_poller(
                     config,
                     redis_connection_manager,
+                    &omni_connector,
                     chain,
-                    block,
-                    original_key,
+                    &btc_tx_hash,
+                    format!("{btc_tx_hash}@{vout}"),
                     &original_transfer,
                 )
-                .await;
-                return Ok(if stored {
-                    EventAction::Remove
-                } else {
-                    EventAction::Retry
-                });
+                .await);
             }
 
             anyhow::bail!("Failed to finalize {chain:?} transaction: {err:?}");
@@ -416,29 +411,58 @@ pub async fn process_confirmed_tx_hash(
                 };
             }
 
-            if let BridgeSdkError::LightClientNotSynced(block) = err {
+            if let BridgeSdkError::LightClientNotSynced(lc_head) = err {
                 warn!(
-                    "Light client is not synced yet for {}, block: {block}; deferring to LC poller",
+                    "Light client is not synced yet for {}, lc_head: {lc_head}; deferring to LC poller",
                     original_confirmed_tx_hash.btc_tx_hash
                 );
-                let original_key = original_confirmed_tx_hash.btc_tx_hash.clone();
-                let stored = utils::utxo::store_pending_lc_event(
+                return Ok(defer_to_lc_poller(
                     config,
                     redis_connection_manager,
+                    &omni_connector,
                     original_confirmed_tx_hash.chain,
-                    block,
-                    original_key,
+                    &original_confirmed_tx_hash.btc_tx_hash,
+                    original_confirmed_tx_hash.btc_tx_hash.clone(),
                     &original_confirmed_tx_hash,
                 )
-                .await;
-                return Ok(if stored {
-                    EventAction::Remove
-                } else {
-                    EventAction::Retry
-                });
+                .await);
             }
 
             anyhow::bail!("Failed to verify withdraw: {err:?}");
         }
+    }
+}
+
+async fn defer_to_lc_poller<E>(
+    config: &config::Config,
+    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    omni_connector: &OmniConnector,
+    chain: ChainKind,
+    tx_hash: &str,
+    original_key: String,
+    event: &E,
+) -> EventAction
+where
+    E: serde::Serialize + std::fmt::Debug + Send,
+{
+    let Some(target_block) =
+        utils::utxo::compute_lc_target_block(config, omni_connector, chain, tx_hash).await
+    else {
+        return EventAction::Retry;
+    };
+
+    if utils::utxo::store_pending_lc_event(
+        config,
+        redis_connection_manager,
+        chain,
+        target_block,
+        original_key,
+        event,
+    )
+    .await
+    {
+        EventAction::Remove
+    } else {
+        EventAction::Retry
     }
 }
