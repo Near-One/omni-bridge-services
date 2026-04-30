@@ -93,18 +93,15 @@ pub async fn start_utxo_lc_poller(
             };
 
             let nats_key = format!("lc_replay:{}", pending.key);
-            if let Err(err) = nats_client.publish(subject.clone(), &nats_key, payload).await {
+            if let Err(err) = nats_client
+                .publish(subject.clone(), &nats_key, payload)
+                .await
+            {
                 warn!("Failed to publish replayed {chain:?} LC event to NATS: {err:?}");
                 continue;
             }
 
-            utils::redis::zrem(
-                &config,
-                &mut redis_connection_manager,
-                &redis_key,
-                pending,
-            )
-            .await;
+            utils::redis::zrem(&config, &mut redis_connection_manager, &redis_key, pending).await;
         }
     }
 }

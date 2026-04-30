@@ -10,10 +10,13 @@ pub struct PendingLcEvent {
 }
 
 pub fn pending_lc_key(chain: ChainKind) -> Option<String> {
-    match chain {
-        ChainKind::Btc => Some("pending_lc:btc".to_string()),
-        ChainKind::Zcash => Some("pending_lc:zcash".to_string()),
-        _ => None,
+    if chain.is_utxo_chain() {
+        Some(format!(
+            "pending_lc:{}",
+            chain.as_ref().to_ascii_lowercase()
+        ))
+    } else {
+        None
     }
 }
 

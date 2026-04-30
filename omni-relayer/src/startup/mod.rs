@@ -19,13 +19,13 @@ use crate::config::{self};
 #[cfg(any(feature = "nats-ingestion", feature = "mongo-ingestion"))]
 mod event_handlers;
 pub mod evm_fee_bumping;
-pub mod utxo_lc_poller;
 #[cfg(feature = "mongo-ingestion")]
 pub mod mongo_ingestion;
 #[cfg(feature = "native-indexers")]
 pub mod native_indexers;
 #[cfg(feature = "nats-ingestion")]
 pub mod nats_ingestion;
+pub mod utxo_lc_poller;
 
 #[macro_export]
 macro_rules! skip_fail {
