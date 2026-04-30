@@ -116,8 +116,6 @@ pub async fn process_near_to_utxo_init_transfer_event(
 }
 
 pub async fn process_utxo_to_near_init_transfer_event(
-    config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -125,8 +123,6 @@ pub async fn process_utxo_to_near_init_transfer_event(
     let Ok(near_bridge_client) = omni_connector.near_bridge_client() else {
         anyhow::bail!("Near bridge client is not configured");
     };
-
-    let original_transfer = transfer.clone();
 
     let Transfer::UtxoToNear {
         chain,
@@ -256,20 +252,11 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 };
             }
 
-            if let BridgeSdkError::LightClientNotSynced(lc_head) = err {
+            if let BridgeSdkError::LightClientNotSynced(block) = err {
                 warn!(
-                    "{chain:?} light client is not synced yet for transfer ({btc_tx_hash}), lc_head: {lc_head}; deferring to LC poller"
+                    "{chain:?} light client is not synced yet for transfer ({btc_tx_hash}), block: {block}",
                 );
-                return Ok(defer_to_lc_poller(
-                    config,
-                    redis_connection_manager,
-                    &omni_connector,
-                    chain,
-                    &btc_tx_hash,
-                    format!("{btc_tx_hash}@{vout}"),
-                    &original_transfer,
-                )
-                .await);
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!("Failed to finalize {chain:?} transaction: {err:?}");
@@ -348,15 +335,11 @@ pub async fn process_sign_transaction_event(
 }
 
 pub async fn process_confirmed_tx_hash(
-    config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     confirmed_tx_hash: ConfirmedTxHash,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
-    let original_confirmed_tx_hash = confirmed_tx_hash.clone();
-
     let nonce = match near_nonce.reserve_nonce().await {
         Ok(nonce) => Some(nonce),
         Err(err) => {
@@ -411,58 +394,15 @@ pub async fn process_confirmed_tx_hash(
                 };
             }
 
-            if let BridgeSdkError::LightClientNotSynced(lc_head) = err {
+            if let BridgeSdkError::LightClientNotSynced(block) = err {
                 warn!(
-                    "Light client is not synced yet for {}, lc_head: {lc_head}; deferring to LC poller",
-                    original_confirmed_tx_hash.btc_tx_hash
+                    "Light client is not synced yet for {}, block: {block}",
+                    confirmed_tx_hash.btc_tx_hash
                 );
-                return Ok(defer_to_lc_poller(
-                    config,
-                    redis_connection_manager,
-                    &omni_connector,
-                    original_confirmed_tx_hash.chain,
-                    &original_confirmed_tx_hash.btc_tx_hash,
-                    original_confirmed_tx_hash.btc_tx_hash.clone(),
-                    &original_confirmed_tx_hash,
-                )
-                .await);
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!("Failed to verify withdraw: {err:?}");
         }
-    }
-}
-
-async fn defer_to_lc_poller<E>(
-    config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
-    omni_connector: &OmniConnector,
-    chain: ChainKind,
-    tx_hash: &str,
-    original_key: String,
-    event: &E,
-) -> EventAction
-where
-    E: serde::Serialize + std::fmt::Debug + Send,
-{
-    let Some(target_block) =
-        utils::utxo::compute_lc_target_block(config, omni_connector, chain, tx_hash).await
-    else {
-        return EventAction::Retry;
-    };
-
-    if utils::utxo::store_pending_lc_event(
-        config,
-        redis_connection_manager,
-        chain,
-        target_block,
-        original_key,
-        event,
-    )
-    .await
-    {
-        EventAction::Remove
-    } else {
-        EventAction::Retry
     }
 }

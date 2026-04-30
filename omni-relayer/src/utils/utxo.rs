@@ -5,6 +5,30 @@ use tracing::warn;
 
 use crate::{config, utils};
 
+pub async fn lc_defer_target(
+    config: &config::Config,
+    omni_connector: &OmniConnector,
+    chain: ChainKind,
+    tx_hash: &str,
+) -> Option<u64> {
+    let target = compute_lc_target_block(config, omni_connector, chain, tx_hash).await?;
+    let lc = match omni_connector.light_client(chain) {
+        Ok(lc) => lc,
+        Err(err) => {
+            warn!("Failed to get {chain:?} light client during ingestion: {err:?}");
+            return None;
+        }
+    };
+    let tip = match lc.get_last_block_number().await {
+        Ok(tip) => tip,
+        Err(err) => {
+            warn!("Failed to query {chain:?} light client tip during ingestion: {err:?}");
+            return None;
+        }
+    };
+    if tip >= target { None } else { Some(target) }
+}
+
 pub async fn compute_lc_target_block(
     config: &config::Config,
     omni_connector: &OmniConnector,

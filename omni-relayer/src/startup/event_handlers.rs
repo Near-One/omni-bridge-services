@@ -6,6 +6,7 @@ use bridge_indexer_types::documents_types::{
     OmniMetaEvent, OmniMetaEventDetails, OmniTransactionEvent, OmniTransactionOrigin,
     OmniTransferMessage,
 };
+use omni_connector::OmniConnector;
 use omni_types::{
     ChainKind, Fee, OmniAddress, TransferId, TransferIdKind, UnifiedTransferId,
     near_events::OmniBridgeEvent,
@@ -143,11 +144,12 @@ fn get_utxo_chain_token(config: &config::Config, chain: ChainKind) -> Option<Omn
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) async fn handle_transaction_event(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
     nats: Option<&utils::nats::NatsClient>,
+    omni_connector: &OmniConnector,
     origin_transaction_id: String,
     unified_transfer_id: UnifiedTransferId,
     origin: OmniTransactionOrigin,
@@ -677,40 +679,60 @@ pub(super) async fn handle_transaction_event(
                 event.transfer_id.origin_chain
             );
             let key = utxo_id.to_string();
-            add_event(
-                config,
-                redis_connection_manager,
-                nats,
-                &key,
-                ChainKind::Near,
-                workers::Transfer::UtxoToNear {
-                    chain: event.transfer_id.origin_chain,
-                    btc_tx_hash: utxo_id.tx_hash,
-                    vout: utxo_id.vout,
-                    deposit_msg: crate::types::DepositMsg {
-                        recipient_id: deposit_msg.recipient_id.clone(),
-                        post_actions: deposit_msg.post_actions.clone().map(|actions| {
-                            actions
-                                .into_iter()
-                                .map(|a| crate::types::PostAction {
-                                    receiver_id: a.receiver_id,
-                                    amount: near_sdk::json_types::U128(a.amount.0),
-                                    memo: a.memo,
-                                    msg: a.msg,
-                                    gas: a.gas.map(near_sdk::Gas::as_gas),
-                                })
-                                .collect()
-                        }),
-                        extra_msg: deposit_msg.extra_msg.clone(),
-                        safe_deposit: deposit_msg
-                            .safe_deposit
-                            .clone()
-                            .map(|sd| crate::types::SafeDepositMsg { msg: sd.msg }),
-                        refund_address: deposit_msg.refund_address.clone(),
-                    },
+            let chain = event.transfer_id.origin_chain;
+            let payload = workers::Transfer::UtxoToNear {
+                chain,
+                btc_tx_hash: utxo_id.tx_hash.clone(),
+                vout: utxo_id.vout,
+                deposit_msg: crate::types::DepositMsg {
+                    recipient_id: deposit_msg.recipient_id.clone(),
+                    post_actions: deposit_msg.post_actions.clone().map(|actions| {
+                        actions
+                            .into_iter()
+                            .map(|a| crate::types::PostAction {
+                                receiver_id: a.receiver_id,
+                                amount: near_sdk::json_types::U128(a.amount.0),
+                                memo: a.memo,
+                                msg: a.msg,
+                                gas: a.gas.map(near_sdk::Gas::as_gas),
+                            })
+                            .collect()
+                    }),
+                    extra_msg: deposit_msg.extra_msg.clone(),
+                    safe_deposit: deposit_msg
+                        .safe_deposit
+                        .clone()
+                        .map(|sd| crate::types::SafeDepositMsg { msg: sd.msg }),
+                    refund_address: deposit_msg.refund_address.clone(),
                 },
-            )
-            .await;
+            };
+
+            if let Some(target_block) =
+                utils::utxo::lc_defer_target(config, omni_connector, chain, &utxo_id.tx_hash).await
+            {
+                info!(
+                    "Deferring TransferUtxoToNear ({chain:?}:{key}) to LC poller (target_block={target_block})"
+                );
+                utils::utxo::store_pending_lc_event(
+                    config,
+                    redis_connection_manager,
+                    chain,
+                    target_block,
+                    key,
+                    &payload,
+                )
+                .await;
+            } else {
+                add_event(
+                    config,
+                    redis_connection_manager,
+                    nats,
+                    &key,
+                    ChainKind::Near,
+                    payload,
+                )
+                .await;
+            }
         }
         OmniTransferMessage::UtxoConfirmedTxHash { destination_chain } => {
             if config.is_verifying_utxo_withdraw_enabled(destination_chain) {
@@ -723,18 +745,42 @@ pub(super) async fn handle_transaction_event(
                     destination_chain
                 );
                 let key = utxo_id.to_string();
-                add_event(
+                let payload = workers::utxo::ConfirmedTxHash {
+                    chain: destination_chain,
+                    btc_tx_hash: utxo_id.tx_hash.clone(),
+                };
+
+                if let Some(target_block) = utils::utxo::lc_defer_target(
                     config,
-                    redis_connection_manager,
-                    nats,
-                    &key,
-                    ChainKind::Near,
-                    workers::utxo::ConfirmedTxHash {
-                        chain: destination_chain,
-                        btc_tx_hash: utxo_id.tx_hash,
-                    },
+                    omni_connector,
+                    destination_chain,
+                    &utxo_id.tx_hash,
                 )
-                .await;
+                .await
+                {
+                    info!(
+                        "Deferring UtxoConfirmedTxHash ({destination_chain:?}:{key}) to LC poller (target_block={target_block})"
+                    );
+                    utils::utxo::store_pending_lc_event(
+                        config,
+                        redis_connection_manager,
+                        destination_chain,
+                        target_block,
+                        key,
+                        &payload,
+                    )
+                    .await;
+                } else {
+                    add_event(
+                        config,
+                        redis_connection_manager,
+                        nats,
+                        &key,
+                        ChainKind::Near,
+                        payload,
+                    )
+                    .await;
+                }
             }
         }
         OmniTransferMessage::NearFastTransferMessage { .. } => {

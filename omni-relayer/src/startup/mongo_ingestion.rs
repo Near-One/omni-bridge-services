@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use bridge_indexer_types::documents_types::{OmniEvent, OmniEventData};
 use mongodb::{Client, Collection, change_stream::event::ResumeToken, options::ClientOptions};
+use omni_connector::OmniConnector;
 use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
@@ -14,6 +17,7 @@ async fn watch_omni_events_collection(
     collection: &Collection<OmniEvent>,
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
+    omni_connector: Arc<OmniConnector>,
     start_timestamp: Option<u32>,
 ) -> Result<()> {
     let mut stream = if let Some(time) = start_timestamp {
@@ -47,12 +51,14 @@ async fn watch_omni_events_collection(
                             tokio::spawn({
                                 let mut redis_connection_manager = redis_connection_manager.clone();
                                 let config = config.clone();
+                                let omni_connector = omni_connector.clone();
 
                                 async move {
                                     if let Err(err) = handle_transaction_event(
                                         &config,
                                         &mut redis_connection_manager,
                                         None,
+                                        omni_connector.as_ref(),
                                         event.transaction_id,
                                         transaction_event.transfer_id.clone(),
                                         event.origin,
@@ -116,6 +122,7 @@ async fn watch_omni_events_collection(
 pub async fn start_indexer(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
+    omni_connector: Arc<OmniConnector>,
     start_timestamp: Option<u32>,
 ) -> Result<()> {
     info!("Connecting to bridge-indexer");
@@ -140,6 +147,7 @@ pub async fn start_indexer(
             &omni_events_collection,
             config,
             redis_connection_manager,
+            omni_connector.clone(),
             start_timestamp,
         )
         .await
