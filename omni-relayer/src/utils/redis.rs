@@ -114,12 +114,13 @@ pub async fn zadd<M>(
     key: &str,
     score: u64,
     member: M,
-) where
+) -> bool
+where
     M: serde::Serialize + std::fmt::Debug + Send,
 {
     let Ok(serialized_member) = serde_json::to_string(&member) else {
         warn!("Failed to serialize event: {member:?}");
-        return;
+        return false;
     };
 
     for _ in 0..config.redis.query_retry_attempts {
@@ -128,7 +129,7 @@ pub async fn zadd<M>(
             .await
             .is_ok()
         {
-            return;
+            return true;
         }
 
         tokio::time::sleep(tokio::time::Duration::from_secs(
@@ -138,6 +139,7 @@ pub async fn zadd<M>(
     }
 
     warn!("Failed to add event to redis sorted set");
+    false
 }
 
 pub async fn zrange<T>(
@@ -177,6 +179,46 @@ where
     }
 
     warn!("Failed to get members from redis sorted set");
+    None
+}
+
+pub async fn zrangebyscore<T>(
+    config: &config::Config,
+    redis_connection_manager: &mut ConnectionManager,
+    key: &str,
+    min: u64,
+    max: u64,
+) -> Option<Vec<T>>
+where
+    T: serde::de::DeserializeOwned,
+{
+    for _ in 0..config.redis.query_retry_attempts {
+        if let Ok(members) = redis_connection_manager
+            .zrangebyscore::<&str, u64, u64, Vec<String>>(key, min, max)
+            .await
+        {
+            let members: Vec<T> = members
+                .iter()
+                .filter_map(|serialized| {
+                    serde_json::from_str(serialized)
+                        .map_err(|err| {
+                            warn!("Failed to deserialize event from redis: {err:?}");
+                            err
+                        })
+                        .ok()
+                })
+                .collect();
+
+            return Some(members);
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(
+            config.redis.query_retry_sleep_secs,
+        ))
+        .await;
+    }
+
+    warn!("Failed to get members from redis sorted set by score");
     None
 }
 
