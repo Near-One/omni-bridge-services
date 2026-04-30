@@ -302,6 +302,12 @@ pub async fn process_init_transfer_event(
                     log.origin_nonce
                 );
                 return Ok(EventAction::Retry);
+            } else if let BridgeSdkError::MpcFinalityNotReached = err {
+                warn!(
+                    "MPC finality not reached yet for transfer ({chain_kind:?}:{}), retrying",
+                    log.origin_nonce
+                );
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!(
@@ -447,6 +453,9 @@ pub async fn process_evm_transfer_event(
             } else if let BridgeSdkError::LightClientNotSynced(block) = err {
                 warn!("Light client is not synced yet for block: {block}");
                 return Ok(EventAction::Retry);
+            } else if let BridgeSdkError::MpcFinalityNotReached = err {
+                warn!("MPC finality not reached yet, retrying claim fee");
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!("Failed to claim fee: {err:?}");
@@ -552,6 +561,9 @@ pub async fn process_deploy_token_event(
                 };
             } else if let BridgeSdkError::LightClientNotSynced(block) = err {
                 warn!("Light client is not synced yet for block: {block}");
+                return Ok(EventAction::Retry);
+            } else if let BridgeSdkError::MpcFinalityNotReached = err {
+                warn!("MPC finality not reached yet, retrying bind token");
                 return Ok(EventAction::Retry);
             }
 
