@@ -8,3 +8,4 @@ pub mod pending_transactions;
 pub mod redis;
 pub mod solana;
 pub mod storage;
+pub mod utxo;

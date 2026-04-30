@@ -385,6 +385,31 @@ async fn main() -> Result<()> {
         }));
     }
 
+    for chain in [ChainKind::Btc, ChainKind::Zcash] {
+        let utxo_configured = match chain {
+            ChainKind::Btc => config.btc.is_some(),
+            ChainKind::Zcash => config.zcash.is_some(),
+            _ => false,
+        };
+        if !utxo_configured {
+            continue;
+        }
+        let nats_client = nats_client.clone();
+        let omni_connector = omni_connector.clone();
+        let redis_connection_manager = redis_connection_manager.clone();
+        let config = config.clone();
+        handles.push(tokio::spawn(async move {
+            startup::utxo_lc_poller::start_utxo_lc_poller(
+                config,
+                chain,
+                omni_connector,
+                nats_client,
+                redis_connection_manager,
+            )
+            .await
+        }));
+    }
+
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received Ctrl+C signal, shutting down.");

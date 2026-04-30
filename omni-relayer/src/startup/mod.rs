@@ -25,6 +25,7 @@ pub mod mongo_ingestion;
 pub mod native_indexers;
 #[cfg(feature = "nats-ingestion")]
 pub mod nats_ingestion;
+pub mod utxo_lc_poller;
 
 #[macro_export]
 macro_rules! skip_fail {
