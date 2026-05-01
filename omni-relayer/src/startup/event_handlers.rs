@@ -708,7 +708,8 @@ pub(super) async fn handle_transaction_event(
             };
 
             if let Some(target_block) =
-                utils::utxo::lc_defer_target(config, omni_connector, chain, &utxo_id.tx_hash).await
+                utils::utxo::lc_defer_target(config, omni_connector, chain, &utxo_id.tx_hash)
+                    .await?
             {
                 info!(
                     "Deferring TransferUtxoToNear ({chain:?}:{key}) to LC poller (target_block={target_block})"
@@ -721,7 +722,7 @@ pub(super) async fn handle_transaction_event(
                     key,
                     &payload,
                 )
-                .await;
+                .await?;
             } else {
                 add_event(
                     config,
@@ -756,7 +757,7 @@ pub(super) async fn handle_transaction_event(
                     destination_chain,
                     &utxo_id.tx_hash,
                 )
-                .await
+                .await?
                 {
                     info!(
                         "Deferring UtxoConfirmedTxHash ({destination_chain:?}:{key}) to LC poller (target_block={target_block})"
@@ -769,7 +770,7 @@ pub(super) async fn handle_transaction_event(
                         key,
                         &payload,
                     )
-                    .await;
+                    .await?;
                 } else {
                     add_event(
                         config,

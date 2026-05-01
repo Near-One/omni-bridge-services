@@ -1,7 +1,7 @@
-use omni_connector::OmniConnector;
+use anyhow::{Context, Result};
+use omni_connector::{AnyUtxoClient, OmniConnector};
 use omni_types::ChainKind;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 
 use crate::{config, utils};
 
@@ -10,73 +10,58 @@ pub async fn lc_defer_target(
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
-) -> Option<u64> {
+) -> Result<Option<u64>> {
     let target = compute_lc_target_block(config, omni_connector, chain, tx_hash).await?;
-    let lc = match omni_connector.light_client(chain) {
-        Ok(lc) => lc,
-        Err(err) => {
-            warn!("Failed to get {chain:?} light client during ingestion: {err:?}");
-            return None;
-        }
-    };
-    let tip = match lc.get_last_block_number().await {
-        Ok(tip) => tip,
-        Err(err) => {
-            warn!("Failed to query {chain:?} light client tip during ingestion: {err:?}");
-            return None;
-        }
-    };
-    if tip >= target { None } else { Some(target) }
+    let lc = omni_connector
+        .light_client(chain)
+        .with_context(|| format!("Failed to get {chain:?} light client"))?;
+    let tip = lc
+        .get_last_block_number()
+        .await
+        .with_context(|| format!("Failed to query {chain:?} light client tip"))?;
+    Ok(if tip >= target { None } else { Some(target) })
 }
 
-pub async fn compute_lc_target_block(
+async fn compute_lc_target_block(
     config: &config::Config,
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
-) -> Option<u64> {
+) -> Result<u64> {
     let utxo_config = match chain {
         ChainKind::Btc => config.btc.as_ref(),
         ChainKind::Zcash => config.zcash.as_ref(),
         _ => None,
-    }?;
+    }
+    .with_context(|| format!("{chain:?} UTXO config is missing"))?;
 
     let block_height = match chain {
         ChainKind::Btc => {
-            fetch_utxo_block_height(omni_connector.btc_bridge_client().ok()?, chain, tx_hash).await
+            fetch_utxo_block_height(omni_connector.btc_bridge_client()?, chain, tx_hash).await
         }
         ChainKind::Zcash => {
-            fetch_utxo_block_height(omni_connector.zcash_bridge_client().ok()?, chain, tx_hash)
+            fetch_utxo_block_height(omni_connector.zcash_bridge_client()?, chain, tx_hash)
                 .await
         }
-        _ => None,
+        _ => anyhow::bail!("Unsupported chain {chain:?} for UTXO LC target"),
     }?;
 
-    Some(block_height + utxo_config.confirmations)
+    Ok(block_height + utxo_config.confirmations)
 }
 
 async fn fetch_utxo_block_height<C: utxo_bridge_client::types::UTXOChain>(
     client: &utxo_bridge_client::UTXOBridgeClient<C>,
     chain: ChainKind,
     tx_hash: &str,
-) -> Option<u64> {
-    let block_hash = match client.get_block_hash_by_tx_hash(tx_hash).await {
-        Ok(hash) => hash,
-        Err(err) => {
-            warn!("Failed to get {chain:?} block hash for {tx_hash}: {err:?}");
-            return None;
-        }
-    };
-    match client
+) -> Result<u64> {
+    let block_hash = client
+        .get_block_hash_by_tx_hash(tx_hash)
+        .await
+        .with_context(|| format!("Failed to get {chain:?} block hash for {tx_hash}"))?;
+    client
         .get_block_height_by_block_hash(&block_hash.to_string())
         .await
-    {
-        Ok(height) => Some(height),
-        Err(err) => {
-            warn!("Failed to get {chain:?} block height for {block_hash}: {err:?}");
-            None
-        }
-    }
+        .with_context(|| format!("Failed to get {chain:?} block height for {block_hash}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,21 +88,19 @@ pub async fn store_pending_lc_event<E>(
     target_block: u64,
     original_key: String,
     event: &E,
-) -> bool
+) -> Result<()>
 where
     E: serde::Serialize + std::fmt::Debug + Send,
 {
-    let Some(redis_key) = pending_lc_key(chain) else {
-        return false;
-    };
-    let Ok(value) = serde_json::to_value(event) else {
-        return false;
-    };
+    let redis_key = pending_lc_key(chain)
+        .with_context(|| format!("No pending LC redis key for chain {chain:?}"))?;
+    let value =
+        serde_json::to_value(event).context("Failed to serialize pending LC event payload")?;
     let pending = PendingLcEvent {
         key: original_key,
         event: value,
     };
-    utils::redis::zadd(
+    if !utils::redis::zadd(
         config,
         redis_connection_manager,
         &redis_key,
@@ -125,4 +108,8 @@ where
         pending,
     )
     .await
+    {
+        anyhow::bail!("Failed to add pending LC event to redis sorted set ({redis_key})");
+    }
+    Ok(())
 }
