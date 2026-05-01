@@ -397,7 +397,6 @@ pub struct Utxo {
     pub light_client: AccountId,
     pub signing_enabled: bool,
     pub verifying_withdraw_enabled: bool,
-    pub confirmations: u64,
     #[serde(default = "default_lc_polling_interval_secs")]
     pub lc_polling_interval_secs: u64,
 }

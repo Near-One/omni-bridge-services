@@ -707,9 +707,41 @@ pub(super) async fn handle_transaction_event(
                 },
             };
 
-            if let Some(target_block) =
-                utils::utxo::lc_defer_target(config, omni_connector, chain, &utxo_id.tx_hash)
-                    .await?
+            let proof = omni_connector
+                .utxo_bridge_client(chain)?
+                .extract_btc_proof(&utxo_id.tx_hash)
+                .await
+                .with_context(|| {
+                    format!("Failed to extract {chain:?} BTC proof for {}", utxo_id.tx_hash)
+                })?;
+            let btc_tx = utxo_utils::try_bytes_to_btc_transaction(&proof.tx_bytes)
+                .map_err(|err| anyhow::anyhow!("Failed to parse BTC tx bytes: {err}"))?;
+            let vout_idx = usize::try_from(utxo_id.vout)
+                .with_context(|| format!("vout {} out of usize range", utxo_id.vout))?;
+            let amount = u128::from(
+                btc_tx
+                    .output
+                    .get(vout_idx)
+                    .with_context(|| {
+                        format!(
+                            "vout {} out of range for tx {}",
+                            utxo_id.vout, utxo_id.tx_hash
+                        )
+                    })?
+                    .value
+                    .to_sat(),
+            );
+            let uses_extra_msg_path =
+                deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
+
+            if let Some(target_block) = utils::utxo::lc_defer_target(
+                omni_connector,
+                chain,
+                &utxo_id.tx_hash,
+                amount,
+                uses_extra_msg_path,
+            )
+            .await?
             {
                 info!(
                     "Deferring TransferUtxoToNear ({chain:?}:{key}) to LC poller (target_block={target_block})"
@@ -751,11 +783,23 @@ pub(super) async fn handle_transaction_event(
                     btc_tx_hash: utxo_id.tx_hash.clone(),
                 };
 
+                let pending_info = omni_connector
+                    .near_bridge_client()?
+                    .get_btc_pending_info(destination_chain, utxo_id.tx_hash.clone())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to get BTC pending info for {destination_chain:?}:{}",
+                            utxo_id.tx_hash
+                        )
+                    })?;
+
                 if let Some(target_block) = utils::utxo::lc_defer_target(
-                    config,
                     omni_connector,
                     destination_chain,
                     &utxo_id.tx_hash,
+                    pending_info.actual_received_amount,
+                    false,
                 )
                 .await?
                 {

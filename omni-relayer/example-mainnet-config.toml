@@ -204,7 +204,6 @@ light_client = "btc-client.bridge.near"
 signing_enabled = false
 # If this is set to true, then omni relayer will call `verify_withdraw`
 verifying_withdraw_enabled = false
-confirmations = 3
 lc_polling_interval_secs = 10
 
 [zcash]
@@ -214,7 +213,6 @@ light_client = "zcash-client.bridge.near"
 signing_enabled = true
 # If this is set to true, then omni relayer will call `verify_withdraw`
 verifying_withdraw_enabled = true
-confirmations = 35
 lc_polling_interval_secs = 10
 
 [orchard]

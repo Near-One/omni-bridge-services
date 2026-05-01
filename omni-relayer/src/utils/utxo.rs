@@ -1,17 +1,20 @@
 use anyhow::{Context, Result};
-use omni_connector::{AnyUtxoClient, OmniConnector};
+use omni_connector::OmniConnector;
 use omni_types::ChainKind;
 use serde::{Deserialize, Serialize};
 
 use crate::{config, utils};
 
 pub async fn lc_defer_target(
-    config: &config::Config,
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
+    amount: u128,
+    uses_extra_msg_path: bool,
 ) -> Result<Option<u64>> {
-    let target = compute_lc_target_block(config, omni_connector, chain, tx_hash).await?;
+    let target =
+        compute_lc_target_block(omni_connector, chain, tx_hash, amount, uses_extra_msg_path)
+            .await?;
     let lc = omni_connector
         .light_client(chain)
         .with_context(|| format!("Failed to get {chain:?} light client"))?;
@@ -23,30 +26,33 @@ pub async fn lc_defer_target(
 }
 
 async fn compute_lc_target_block(
-    config: &config::Config,
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
+    amount: u128,
+    uses_extra_msg_path: bool,
 ) -> Result<u64> {
-    let utxo_config = match chain {
-        ChainKind::Btc => config.btc.as_ref(),
-        ChainKind::Zcash => config.zcash.as_ref(),
-        _ => None,
-    }
-    .with_context(|| format!("{chain:?} UTXO config is missing"))?;
+    let near_bridge_client = omni_connector
+        .near_bridge_client()
+        .context("Failed to get NEAR bridge client")?;
+    let required_confirmations = near_bridge_client
+        .get_btc_confirmation_context(chain)
+        .await
+        .with_context(|| format!("Failed to get {chain:?} BTC confirmation context"))?
+        .required_confirmations(amount, uses_extra_msg_path)
+        .with_context(|| format!("Failed to compute required confirmations for {chain:?}"))?;
 
     let block_height = match chain {
         ChainKind::Btc => {
-            fetch_utxo_block_height(omni_connector.btc_bridge_client()?, chain, tx_hash).await
+            fetch_utxo_block_height(omni_connector.btc_bridge_client()?, chain, tx_hash).await?
         }
         ChainKind::Zcash => {
-            fetch_utxo_block_height(omni_connector.zcash_bridge_client()?, chain, tx_hash)
-                .await
+            fetch_utxo_block_height(omni_connector.zcash_bridge_client()?, chain, tx_hash).await?
         }
         _ => anyhow::bail!("Unsupported chain {chain:?} for UTXO LC target"),
-    }?;
+    };
 
-    Ok(block_height + utxo_config.confirmations)
+    Ok(block_height + required_confirmations)
 }
 
 async fn fetch_utxo_block_height<C: utxo_bridge_client::types::UTXOChain>(
