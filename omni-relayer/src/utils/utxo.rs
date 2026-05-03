@@ -68,7 +68,8 @@ pub async fn fetch_deposit_amount(
         .with_context(|| format!("Failed to extract {chain:?} BTC proof for {tx_hash}"))?;
     let btc_tx = utxo_utils::try_bytes_to_btc_transaction(&proof.tx_bytes)
         .map_err(|err| anyhow::anyhow!("Failed to parse {chain:?} tx bytes: {err}"))?;
-    let vout_idx = usize::try_from(vout).with_context(|| format!("vout {vout} out of usize range"))?;
+    let vout_idx =
+        usize::try_from(vout).with_context(|| format!("vout {vout} out of usize range"))?;
     let output = btc_tx
         .output
         .get(vout_idx)
