@@ -55,6 +55,27 @@ async fn compute_lc_target_block(
     Ok(block_height + required_confirmations)
 }
 
+pub async fn fetch_deposit_amount(
+    omni_connector: &OmniConnector,
+    chain: ChainKind,
+    tx_hash: &str,
+    vout: u32,
+) -> Result<u128> {
+    let proof = omni_connector
+        .utxo_bridge_client(chain)?
+        .extract_btc_proof(tx_hash)
+        .await
+        .with_context(|| format!("Failed to extract {chain:?} BTC proof for {tx_hash}"))?;
+    let btc_tx = utxo_utils::try_bytes_to_btc_transaction(&proof.tx_bytes)
+        .map_err(|err| anyhow::anyhow!("Failed to parse {chain:?} tx bytes: {err}"))?;
+    let vout_idx = usize::try_from(vout).with_context(|| format!("vout {vout} out of usize range"))?;
+    let output = btc_tx
+        .output
+        .get(vout_idx)
+        .with_context(|| format!("vout {vout} out of range for tx {tx_hash}"))?;
+    Ok(u128::from(output.value.to_sat()))
+}
+
 async fn fetch_utxo_block_height<C: utxo_bridge_client::types::UTXOChain>(
     client: &utxo_bridge_client::UTXOBridgeClient<C>,
     chain: ChainKind,
