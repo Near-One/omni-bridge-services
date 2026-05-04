@@ -260,7 +260,6 @@ pub(super) async fn handle_transaction_event(
             )
             .await;
         }
-        OmniTransferMessage::NearClaimFeeEvent(_) => {}
         OmniTransferMessage::EvmInitTransferMessage(init_transfer) => {
             let OmniTransactionOrigin::EVMLog {
                 block_number,
@@ -836,18 +835,11 @@ pub(super) async fn handle_transaction_event(
                 }
             }
         }
-        OmniTransferMessage::NearFastTransferMessage { .. } => {
-            info!("Received NearFastTransferMessage, skipping");
-        }
-        OmniTransferMessage::NearFailedTransferMessage { .. } => {
-            info!("Received NearFailedTransferMessage, skipping");
-        }
-        OmniTransferMessage::UtxoVerifyDeposit { .. } => {
-            info!("Received UtxoVerifyDeposit, skipping");
-        }
-        OmniTransferMessage::UtxoVerifyWithdraw { .. } => {
-            info!("Received UtxoVerifyWithdraw, skipping");
-        }
+        OmniTransferMessage::NearClaimFeeEvent(_)
+        | OmniTransferMessage::NearFastTransferMessage { .. }
+        | OmniTransferMessage::NearFailedTransferMessage { .. }
+        | OmniTransferMessage::UtxoVerifyDeposit { .. }
+        | OmniTransferMessage::UtxoVerifyWithdraw { .. } => {}
     }
 
     Ok(())
