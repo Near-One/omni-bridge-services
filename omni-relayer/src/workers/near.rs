@@ -318,7 +318,11 @@ pub async fn process_transfer_to_utxo_event(
                     jsonrpc_client,
                     tx_hash,
                     signer,
-                    &["not exist", "Previous btc tx has not been signed"],
+                    &[
+                        "not exist",
+                        "Previous btc tx has not been signed",
+                        "Too many pending sign transactions",
+                    ],
                 )
                 .await
                 {
