@@ -116,8 +116,6 @@ pub async fn process_near_to_utxo_init_transfer_event(
 }
 
 pub async fn process_utxo_to_near_init_transfer_event(
-    config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -125,8 +123,6 @@ pub async fn process_utxo_to_near_init_transfer_event(
     let Ok(near_bridge_client) = omni_connector.near_bridge_client() else {
         anyhow::bail!("Near bridge client is not configured");
     };
-
-    let original_transfer = transfer.clone();
 
     let Transfer::UtxoToNear {
         chain,
@@ -258,23 +254,9 @@ pub async fn process_utxo_to_near_init_transfer_event(
 
             if let BridgeSdkError::LightClientNotSynced(block) = err {
                 warn!(
-                    "{chain:?} light client is not synced yet for transfer ({btc_tx_hash}), block: {block}; deferring to LC poller"
+                    "{chain:?} light client is not synced yet for transfer ({btc_tx_hash}), block: {block}",
                 );
-                let original_key = format!("{btc_tx_hash}@{vout}");
-                let stored = utils::utxo::store_pending_lc_event(
-                    config,
-                    redis_connection_manager,
-                    chain,
-                    block,
-                    original_key,
-                    &original_transfer,
-                )
-                .await;
-                return Ok(if stored {
-                    EventAction::Remove
-                } else {
-                    EventAction::Retry
-                });
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!("Failed to finalize {chain:?} transaction: {err:?}");
@@ -353,15 +335,11 @@ pub async fn process_sign_transaction_event(
 }
 
 pub async fn process_confirmed_tx_hash(
-    config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     confirmed_tx_hash: ConfirmedTxHash,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
-    let original_confirmed_tx_hash = confirmed_tx_hash.clone();
-
     let nonce = match near_nonce.reserve_nonce().await {
         Ok(nonce) => Some(nonce),
         Err(err) => {
@@ -418,24 +396,10 @@ pub async fn process_confirmed_tx_hash(
 
             if let BridgeSdkError::LightClientNotSynced(block) = err {
                 warn!(
-                    "Light client is not synced yet for {}, block: {block}; deferring to LC poller",
-                    original_confirmed_tx_hash.btc_tx_hash
+                    "Light client is not synced yet for {}, block: {block}",
+                    confirmed_tx_hash.btc_tx_hash
                 );
-                let original_key = original_confirmed_tx_hash.btc_tx_hash.clone();
-                let stored = utils::utxo::store_pending_lc_event(
-                    config,
-                    redis_connection_manager,
-                    original_confirmed_tx_hash.chain,
-                    block,
-                    original_key,
-                    &original_confirmed_tx_hash,
-                )
-                .await;
-                return Ok(if stored {
-                    EventAction::Remove
-                } else {
-                    EventAction::Retry
-                });
+                return Ok(EventAction::Retry);
             }
 
             anyhow::bail!("Failed to verify withdraw: {err:?}");

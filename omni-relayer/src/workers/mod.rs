@@ -516,8 +516,6 @@ async fn process_message(
             }
             Transfer::UtxoToNear { .. } => {
                 let result = utxo::process_utxo_to_near_init_transfer_event(
-                    config,
-                    redis,
                     omni_connector.clone(),
                     transfer,
                     near_omni_nonce.clone(),
@@ -707,8 +705,6 @@ async fn process_message(
         serde_json::from_value::<utxo::ConfirmedTxHash>(event.clone())
     {
         let result = utxo::process_confirmed_tx_hash(
-            config,
-            redis,
             jsonrpc_client,
             omni_connector.clone(),
             confirmed_tx_hash,

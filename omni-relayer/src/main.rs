@@ -192,11 +192,13 @@ async fn main() -> Result<()> {
             let config = config.clone();
             let mut redis_connection_manager = redis_connection_manager.clone();
             let nats_client = nats_client.clone().unwrap();
+            let omni_connector = omni_connector.clone();
             async move {
                 startup::nats_ingestion::start_indexer_nats(
                     &config,
                     &mut redis_connection_manager,
                     nats_client,
+                    omni_connector,
                 )
                 .await
             }
@@ -208,10 +210,12 @@ async fn main() -> Result<()> {
         handles.push(tokio::spawn({
             let config = config.clone();
             let mut redis_connection_manager = redis_connection_manager.clone();
+            let omni_connector = omni_connector.clone();
             async move {
                 startup::mongo_ingestion::start_indexer(
                     &config,
                     &mut redis_connection_manager,
+                    omni_connector,
                     args.start_timestamp,
                 )
                 .await

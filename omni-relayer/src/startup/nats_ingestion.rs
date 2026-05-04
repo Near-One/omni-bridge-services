@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_nats::jetstream::consumer::PullConsumer;
 use bridge_indexer_types::documents_types::{OmniEvent, OmniEventData};
+use omni_connector::OmniConnector;
 use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
@@ -14,6 +15,7 @@ async fn process_nats_message(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
     nats: Option<&utils::nats::NatsClient>,
+    omni_connector: &OmniConnector,
     event: OmniEvent,
 ) -> Result<()> {
     match event.event {
@@ -22,6 +24,7 @@ async fn process_nats_message(
                 config,
                 redis_connection_manager,
                 nats,
+                omni_connector,
                 event.transaction_id,
                 transaction_event.transfer_id.clone(),
                 event.origin,
@@ -50,6 +53,7 @@ async fn subscribe_to_omni_events(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
     nats: Option<&utils::nats::NatsClient>,
+    omni_connector: &OmniConnector,
 ) -> Result<()> {
     let mut messages = consumer
         .messages()
@@ -70,8 +74,14 @@ async fn subscribe_to_omni_events(
             }
         };
 
-        if let Err(err) =
-            process_nats_message(config, redis_connection_manager, nats, omni_event).await
+        if let Err(err) = process_nats_message(
+            config,
+            redis_connection_manager,
+            nats,
+            omni_connector,
+            omni_event,
+        )
+        .await
         {
             warn!("Failed to process NATS message: {err:?}");
             continue;
@@ -89,6 +99,7 @@ pub async fn start_indexer_nats(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
     nats_client: Arc<utils::nats::NatsClient>,
+    omni_connector: Arc<OmniConnector>,
 ) -> Result<()> {
     let nats_config = config.nats.as_ref().context("NATS config is not set")?;
 
@@ -109,6 +120,7 @@ pub async fn start_indexer_nats(
             config,
             redis_connection_manager,
             Some(nats_client.as_ref()),
+            omni_connector.as_ref(),
         )
         .await
         {
