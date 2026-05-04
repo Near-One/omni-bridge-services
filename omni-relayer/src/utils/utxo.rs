@@ -52,7 +52,7 @@ async fn compute_lc_target_block(
         _ => anyhow::bail!("Unsupported chain {chain:?} for UTXO LC target"),
     };
 
-    Ok(block_height + required_confirmations)
+    Ok(block_height + required_confirmations - 1)
 }
 
 pub async fn fetch_deposit_amount(
