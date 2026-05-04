@@ -12,9 +12,6 @@ pub async fn lc_defer_target(
     amount: u128,
     uses_extra_msg_path: bool,
 ) -> Result<Option<u64>> {
-    let target =
-        compute_lc_target_block(omni_connector, chain, tx_hash, amount, uses_extra_msg_path)
-            .await?;
     let lc = omni_connector
         .light_client(chain)
         .with_context(|| format!("Failed to get {chain:?} light client"))?;
@@ -22,6 +19,9 @@ pub async fn lc_defer_target(
         .get_last_block_number()
         .await
         .with_context(|| format!("Failed to query {chain:?} light client tip"))?;
+    let target =
+        compute_lc_target_block(omni_connector, chain, tx_hash, amount, uses_extra_msg_path)
+            .await?;
     Ok(if tip >= target { None } else { Some(target) })
 }
 
