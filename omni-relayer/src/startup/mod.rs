@@ -83,6 +83,13 @@ fn build_near_bridge_client(
         .omni_bridge_id(Some(config.near.omni_bridge_id.clone()))
         .mpc_omni_prover_id(config.near.mpc_omni_prover_id.clone())
         .utxo_bridges(build_utxo_bridges(config, near_signer))
+        .bridge_indexer_api_url(
+            config
+                .bridge_indexer
+                .api_url
+                .as_ref()
+                .map(|url| url.parse().unwrap()),
+        )
         .build()
         .context("Failed to build NearBridgeClient")
 }
