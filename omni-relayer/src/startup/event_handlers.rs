@@ -677,7 +677,7 @@ pub(super) async fn handle_transaction_event(
                 "Received TransferUtxoToNear on {:?}: {utxo_id}",
                 event.transfer_id.origin_chain
             );
-            let key = format!("deposit:{utxo_id}");
+            let key = format!("utxo-deposit:{utxo_id}");
             let chain = event.transfer_id.origin_chain;
             let payload = workers::Transfer::UtxoToNear {
                 chain,
@@ -772,7 +772,7 @@ pub(super) async fn handle_transaction_event(
                     "Received UtxoConfirmedTxHash on {:?}: {utxo_id}",
                     destination_chain
                 );
-                let key = format!("withdraw:{utxo_id}");
+                let key = format!("utxo-withdraw:{utxo_id}");
                 let payload = workers::utxo::ConfirmedTxHash {
                     chain: destination_chain,
                     btc_tx_hash: utxo_id.tx_hash.clone(),
