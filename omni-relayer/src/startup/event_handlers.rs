@@ -637,12 +637,7 @@ pub(super) async fn handle_transaction_event(
             };
 
             if config.is_signing_utxo_transaction_enabled(destination_chain) {
-                if sender != &config.near.omni_bridge_id {
-                    info!(
-                        "Skipping TransferNearToUtxo sign for {destination_chain:?} ({}): sender {sender} is not omni-bridge",
-                        utxo_id.tx_hash
-                    );
-                } else {
+                if sender == &config.near.omni_bridge_id {
                     info!(
                         "Received TransferNearToUtxo from {:?} to {destination_chain:?}: {origin_transaction_id}",
                         utxo_id.tx_hash
@@ -672,6 +667,11 @@ pub(super) async fn handle_transaction_event(
                         )
                         .await;
                     }
+                } else {
+                    info!(
+                        "Skipping TransferNearToUtxo sign for {destination_chain:?} ({}): sender {sender} is not omni-bridge",
+                        utxo_id.tx_hash
+                    );
                 }
             }
         }
