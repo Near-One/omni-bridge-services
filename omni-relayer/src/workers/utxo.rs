@@ -53,13 +53,6 @@ pub async fn process_near_to_utxo_init_transfer_event(
         return Ok(EventAction::Remove);
     }
 
-    if sender != config.near.omni_bridge_id {
-        info!(
-            "Skipping {chain:?} sign for {btc_pending_id}:{sign_index}: sender {sender} is not omni-bridge"
-        );
-        return Ok(EventAction::Remove);
-    }
-
     let current_timestamp = chrono::Utc::now().timestamp();
     if current_timestamp < creation_timestamp + config.kyt.delay_secs {
         let remaining =
