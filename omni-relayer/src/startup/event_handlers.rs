@@ -637,34 +637,41 @@ pub(super) async fn handle_transaction_event(
             };
 
             if config.is_signing_utxo_transaction_enabled(destination_chain) {
-                info!(
-                    "Received TransferNearToUtxo from {:?} to {destination_chain:?}: {origin_transaction_id}",
-                    utxo_id.tx_hash
-                );
-
-                for sign_index in 0..utxo_count {
+                if sender == &config.near.omni_bridge_id {
                     info!(
-                        "Received sign index {sign_index} for BTC pending ID: {}",
+                        "Received TransferNearToUtxo from {:?} to {destination_chain:?}: {origin_transaction_id}",
                         utxo_id.tx_hash
                     );
 
-                    let key = format!("{}:{sign_index}", utxo_id.tx_hash);
+                    for sign_index in 0..utxo_count {
+                        info!(
+                            "Received sign index {sign_index} for BTC pending ID: {}",
+                            utxo_id.tx_hash
+                        );
 
-                    add_event(
-                        config,
-                        redis_connection_manager,
-                        nats,
-                        &key,
-                        ChainKind::Near,
-                        workers::Transfer::NearToUtxo {
-                            chain: destination_chain,
-                            btc_pending_id: utxo_id.tx_hash.clone(),
-                            sign_index,
-                            sender: sender.clone(),
-                            creation_timestamp,
-                        },
-                    )
-                    .await;
+                        let key = format!("{}:{sign_index}", utxo_id.tx_hash);
+
+                        add_event(
+                            config,
+                            redis_connection_manager,
+                            nats,
+                            &key,
+                            ChainKind::Near,
+                            workers::Transfer::NearToUtxo {
+                                chain: destination_chain,
+                                btc_pending_id: utxo_id.tx_hash.clone(),
+                                sign_index,
+                                sender: sender.clone(),
+                                creation_timestamp,
+                            },
+                        )
+                        .await;
+                    }
+                } else {
+                    info!(
+                        "Skipping TransferNearToUtxo sign for {destination_chain:?} ({}): sender {sender} is not omni-bridge",
+                        utxo_id.tx_hash
+                    );
                 }
             }
         }
