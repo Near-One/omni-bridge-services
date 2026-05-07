@@ -270,6 +270,23 @@ pub async fn process_transfer_to_utxo_event(
         );
     };
 
+    let destination_chain = transfer_message.recipient.get_chain();
+
+    let fee_rate = if destination_chain == ChainKind::Btc && config.is_bridge_api_enabled() {
+        match utils::bridge_api::get_btc_fee_rate(config).await {
+            Ok(fee_rate) => Some(fee_rate),
+            Err(err) => {
+                warn!(
+                    "Failed to fetch BTC fee rate from bridge indexer for {:?} transfer ({}): {err:?}, retrying",
+                    destination_chain, transfer_message.origin_nonce
+                );
+                return Ok((EventAction::Retry, Vec::new()));
+            }
+        }
+    } else {
+        None
+    };
+
     let nonce = near_nonce
         .reserve_nonce()
         .await
@@ -280,7 +297,7 @@ pub async fn process_transfer_to_utxo_event(
             transfer_message.recipient.get_chain(),
             recipient,
             transfer_message.amount.0 - transfer_message.fee.fee.0,
-            None,
+            fee_rate,
             TransferId {
                 origin_chain: transfer_message.sender.get_chain(),
                 origin_nonce: transfer_message.origin_nonce,
@@ -310,8 +327,6 @@ pub async fn process_transfer_to_utxo_event(
             let signer = omni_connector
                 .near_bridge_client()
                 .and_then(near_bridge_client::NearBridgeClient::account_id)?;
-
-            let destination_chain = transfer_message.recipient.get_chain();
 
             Ok(
                 match utils::near::resolve_tx_receipts(

@@ -41,6 +41,27 @@ fn build_transfer_fee_url(
     Ok(url)
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct BtcFeeRateResponse {
+    fee_rate: u64,
+}
+
+pub async fn get_btc_fee_rate(config: &config::Config) -> Result<u64> {
+    let base_url = config
+        .bridge_indexer
+        .api_url
+        .as_ref()
+        .context("No api url was provided")?;
+
+    let url = Url::parse(base_url)
+        .context("Failed to parse bridge_indexer.api_url")?
+        .join("api/v3/btc/fee-rate")
+        .context("Failed to build btc/fee-rate API URL")?;
+
+    let response: BtcFeeRateResponse = client().get(url).send().await?.json().await?;
+    Ok(response.fee_rate)
+}
+
 #[allow(clippy::struct_field_names)]
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct TransferFee {
