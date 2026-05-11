@@ -85,6 +85,9 @@ fn to_kyt_address(sender: &OmniAddress) -> Option<KytAddress> {
 }
 
 pub async fn check_senders(senders: &[OmniAddress]) -> Result<SuggestedAction> {
+    // TODO: remove once api supports >10 addresses in a single call
+    let senders = &senders[..senders.len().min(10)];
+
     let mut kyt_addresses = Vec::with_capacity(senders.len());
     let mut dropped = Vec::new();
     for sender in senders {
