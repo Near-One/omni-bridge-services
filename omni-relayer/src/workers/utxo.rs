@@ -1,6 +1,6 @@
 use std::{str::FromStr, sync::Arc};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bridge_connector_common::result::BridgeSdkError;
 use near_bridge_client::{
     TransactionOptions,
@@ -136,17 +136,23 @@ pub async fn process_utxo_to_near_init_transfer_event(
     };
 
     if config::Config::is_kyt_enabled() {
-        let input_addresses = match utils::utxo::fetch_input_addresses(config, chain, &btc_tx_hash)
-            .await
-        {
-            Ok(addresses) => addresses,
-            Err(err) => {
-                warn!(
-                    "Failed to fetch input addresses for {chain:?} tx {btc_tx_hash}, retrying: {err:?}"
-                );
-                return Ok(EventAction::Retry);
-            }
-        };
+        let rpc_url = match chain {
+            ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
+            ChainKind::Zcash => config.zcash.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
+            _ => anyhow::bail!("UtxoToNear transfer for unsupported chain {chain:?}"),
+        }
+        .with_context(|| format!("{chain:?} UTXO config missing for input KYT"))?;
+
+        let input_addresses =
+            match utils::utxo::fetch_input_addresses(rpc_url, chain, &btc_tx_hash).await {
+                Ok(addresses) => addresses,
+                Err(err) => {
+                    warn!(
+                        "Failed to fetch input addresses for {chain:?} tx {btc_tx_hash}, retrying: {err:?}"
+                    );
+                    return Ok(EventAction::Retry);
+                }
+            };
 
         let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
         if let Some(action) = super::near::check_kyt_senders(&input_addresses, &context).await {

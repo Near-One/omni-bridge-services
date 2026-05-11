@@ -193,16 +193,13 @@ async fn get_raw_transaction(rpc_url: &str, chain: ChainKind, tx_hash: &str) -> 
 /// shielded Zcash spends, etc.) — only transparent inputs with a derived address
 /// are returned.
 pub async fn fetch_input_addresses(
-    config: &config::Config,
+    rpc_url: &str,
     chain: ChainKind,
     tx_hash: &str,
 ) -> Result<Vec<OmniAddress>> {
-    let rpc_url = match chain {
-        ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
-        ChainKind::Zcash => config.zcash.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
-        _ => anyhow::bail!("fetch_input_addresses unsupported for {chain:?}"),
+    if !matches!(chain, ChainKind::Btc | ChainKind::Zcash) {
+        anyhow::bail!("fetch_input_addresses unsupported for {chain:?}");
     }
-    .with_context(|| format!("{chain:?} UTXO config missing for input KYT"))?;
 
     let tx = get_raw_transaction(rpc_url, chain, tx_hash).await?;
     let vin = tx
@@ -247,4 +244,94 @@ pub async fn fetch_input_addresses(
     }
 
     Ok(addresses)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::kyt;
+
+    const DEFAULT_TAINTED_TX: &str =
+        "0b13776c8a64eaf701c240885afc0c8560258c08201df207863033380b03b0c6";
+
+    /// Pulls just `btc.rpc_http_url` out of a TOML config without going through
+    /// `Config` deserialization (which would trigger env-var substitution for
+    /// unrelated fields like `MONGODB_*` / `INFURA_API_KEY`). Any
+    /// `${VAR}`-style placeholder inside the URL itself must be expanded by the
+    /// shell before invoking the test (or substituted in a copy of the file).
+    fn btc_rpc_url() -> String {
+        if let Ok(url) = std::env::var("BTC_RPC_URL") {
+            return url;
+        }
+        let path = std::env::var("CONFIG_PATH")
+            .expect("Set BTC_RPC_URL or CONFIG_PATH=/path/to/mainnet-config.toml");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("Failed to read {path}: {err}"));
+        let value: toml::Value =
+            toml::from_str(&raw).expect("Failed to parse config as generic TOML");
+        value
+            .get("btc")
+            .and_then(|btc| btc.get("rpc_http_url"))
+            .and_then(toml::Value::as_str)
+            .map(str::to_string)
+            .expect("`btc.rpc_http_url` missing from config")
+    }
+
+    fn tx_under_test() -> String {
+        std::env::var("BTC_TX_HASH").unwrap_or_else(|_| DEFAULT_TAINTED_TX.to_string())
+    }
+
+    /// Smoke test: prints the transparent input addresses for the configured BTC
+    /// tx. Useful before running the full KYT path to confirm the BTC RPC route.
+    /// Run with:
+    ///   CONFIG_PATH=/path/to/mainnet-config.toml \
+    ///   cargo test btc_input_addresses_lists_transparent_inputs \
+    ///       -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "needs live BTC RPC"]
+    async fn btc_input_addresses_lists_transparent_inputs() {
+        let rpc_url = btc_rpc_url();
+        let tx = tx_under_test();
+        let addresses = fetch_input_addresses(&rpc_url, ChainKind::Btc, &tx)
+            .await
+            .expect("fetch_input_addresses failed");
+        eprintln!("Got {} transparent input address(es) for {tx}:", addresses.len());
+        for addr in &addresses {
+            eprintln!("  {addr}");
+        }
+        assert!(
+            !addresses.is_empty(),
+            "no transparent input addresses extracted for {tx}"
+        );
+    }
+
+    /// Full pipeline: fetches BTC inputs and asserts the KYT provider returns
+    /// `STOP_RELAYING` for the configured (known-tainted) tx. Run with:
+    ///   CONFIG_PATH=/path/to/mainnet-config.toml \
+    ///   KYT_API_URL=https://... \
+    ///   KYT_API_KEY=... \
+    ///   cargo test btc_input_kyt_flags_known_tainted_tx \
+    ///       -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "needs live BTC RPC + KYT credentials"]
+    async fn btc_input_kyt_flags_known_tainted_tx() {
+        let rpc_url = btc_rpc_url();
+        let tx = tx_under_test();
+        let addresses = fetch_input_addresses(&rpc_url, ChainKind::Btc, &tx)
+            .await
+            .expect("fetch_input_addresses failed");
+        eprintln!("Screening {} input(s) for {tx}:", addresses.len());
+        for addr in &addresses {
+            eprintln!("  {addr}");
+        }
+        let action = kyt::check_senders(&addresses)
+            .await
+            .expect("check_senders failed (KYT_API_URL / KYT_API_KEY set?)");
+        eprintln!("KYT verdict: {action:?}");
+        assert_eq!(
+            action,
+            kyt::SuggestedAction::StopRelaying,
+            "expected STOP_RELAYING for {tx}"
+        );
+    }
 }
