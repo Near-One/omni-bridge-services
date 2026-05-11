@@ -112,7 +112,17 @@ pub async fn check_senders(senders: &[OmniAddress]) -> Result<SuggestedAction> {
         wait_time_ms: WAIT_TIME_MS,
     };
 
-    let resp: KytResponse = client().post(&url).json(&body).send().await?.json().await?;
+    let raw = client()
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("KYT request failed")?
+        .text()
+        .await
+        .context("KYT response body read failed")?;
+    let resp: KytResponse = serde_json::from_str(&raw)
+        .with_context(|| format!("KYT response did not match expected schema. Raw body: {raw}"))?;
 
     match resp.suggested_action.as_str() {
         "NONE" => Ok(SuggestedAction::None),
