@@ -1,7 +1,11 @@
+use std::{sync::OnceLock, time::Duration};
+
 use anyhow::{Context, Result};
 use omni_connector::OmniConnector;
-use omni_types::ChainKind;
+use omni_types::{ChainKind, OmniAddress};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 use crate::{config, utils};
 
@@ -140,4 +144,107 @@ where
         anyhow::bail!("Failed to add pending LC event to redis sorted set ({redis_key})");
     }
     Ok(())
+}
+
+const UTXO_RPC_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn utxo_rpc_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(UTXO_RPC_TIMEOUT)
+            .build()
+            .expect("Failed to build UTXO RPC reqwest client")
+    })
+}
+
+async fn get_raw_transaction(rpc_url: &str, chain: ChainKind, tx_hash: &str) -> Result<Value> {
+    let verbosity = if matches!(chain, ChainKind::Zcash) {
+        json!(1)
+    } else {
+        json!(true)
+    };
+    let body = json!({
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "getrawtransaction",
+        "params": [tx_hash, verbosity],
+    });
+    let response: Value = utxo_rpc_client()
+        .post(rpc_url)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("getrawtransaction request failed for {chain:?}:{tx_hash}"))?
+        .json()
+        .await
+        .with_context(|| format!("getrawtransaction body parse failed for {chain:?}:{tx_hash}"))?;
+    let result = response.get("result").cloned().with_context(|| {
+        format!("getrawtransaction response missing `result` for {chain:?}:{tx_hash}: {response}")
+    })?;
+    if result.is_null() {
+        anyhow::bail!("getrawtransaction returned null for {chain:?}:{tx_hash}: {response}");
+    }
+    Ok(result)
+}
+
+/// Fetch the spending address for each input of `tx_hash`. Skips inputs whose
+/// previous output has no extractable address (coinbase, raw multisig, `OP_RETURN`,
+/// shielded Zcash spends, etc.) — only transparent inputs with a derived address
+/// are returned.
+pub async fn fetch_input_addresses(
+    config: &config::Config,
+    chain: ChainKind,
+    tx_hash: &str,
+) -> Result<Vec<OmniAddress>> {
+    let rpc_url = match chain {
+        ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
+        ChainKind::Zcash => config.zcash.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
+        _ => anyhow::bail!("fetch_input_addresses unsupported for {chain:?}"),
+    }
+    .with_context(|| format!("{chain:?} UTXO config missing for input KYT"))?;
+
+    let tx = get_raw_transaction(rpc_url, chain, tx_hash).await?;
+    let vin = tx
+        .get("vin")
+        .and_then(Value::as_array)
+        .with_context(|| format!("vin missing in {chain:?} tx {tx_hash}"))?;
+
+    let mut addresses = Vec::with_capacity(vin.len());
+    for input in vin {
+        if input.get("coinbase").is_some() {
+            continue;
+        }
+        let Some(prev_txid) = input.get("txid").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(prev_vout) = input.get("vout").and_then(Value::as_u64) else {
+            continue;
+        };
+        let prev_vout = usize::try_from(prev_vout)
+            .with_context(|| format!("vout {prev_vout} out of usize range for {prev_txid}"))?;
+
+        let prev_tx = get_raw_transaction(rpc_url, chain, prev_txid).await?;
+        let Some(prev_outputs) = prev_tx.get("vout").and_then(Value::as_array) else {
+            continue;
+        };
+        let Some(output) = prev_outputs.get(prev_vout) else {
+            continue;
+        };
+        let Some(address) = output
+            .pointer("/scriptPubKey/address")
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+
+        let omni_address = match chain {
+            ChainKind::Btc => OmniAddress::Btc(address.to_string()),
+            ChainKind::Zcash => OmniAddress::Zcash(address.to_string()),
+            _ => unreachable!("guarded above"),
+        };
+        addresses.push(omni_address);
+    }
+
+    Ok(addresses)
 }

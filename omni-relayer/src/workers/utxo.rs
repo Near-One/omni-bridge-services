@@ -116,6 +116,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
 }
 
 pub async fn process_utxo_to_near_init_transfer_event(
+    config: &config::Config,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -133,6 +134,25 @@ pub async fn process_utxo_to_near_init_transfer_event(
     else {
         anyhow::bail!("Expected UtxoToNearTransfer, got: {transfer:?}");
     };
+
+    if config::Config::is_kyt_enabled() {
+        let input_addresses = match utils::utxo::fetch_input_addresses(config, chain, &btc_tx_hash)
+            .await
+        {
+            Ok(addresses) => addresses,
+            Err(err) => {
+                warn!(
+                    "Failed to fetch input addresses for {chain:?} tx {btc_tx_hash}, retrying: {err:?}"
+                );
+                return Ok(EventAction::Retry);
+            }
+        };
+
+        let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
+        if let Some(action) = super::near::check_kyt_senders(&input_addresses, &context).await {
+            return Ok(action);
+        }
+    }
 
     let mut nonce = match near_nonce.reserve_nonce().await {
         Ok(nonce) => Some(nonce),
