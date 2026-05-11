@@ -143,16 +143,17 @@ pub async fn process_utxo_to_near_init_transfer_event(
         }
         .with_context(|| format!("{chain:?} UTXO config missing for input KYT"))?;
 
-        let input_addresses =
-            match utils::utxo::fetch_input_addresses(rpc_url, chain, &btc_tx_hash).await {
-                Ok(addresses) => addresses,
-                Err(err) => {
-                    warn!(
-                        "Failed to fetch input addresses for {chain:?} tx {btc_tx_hash}, retrying: {err:?}"
-                    );
-                    return Ok(EventAction::Retry);
-                }
-            };
+        let input_addresses = match utils::utxo::fetch_input_addresses(rpc_url, chain, &btc_tx_hash)
+            .await
+        {
+            Ok(addresses) => addresses,
+            Err(err) => {
+                warn!(
+                    "Failed to fetch input addresses for {chain:?} tx {btc_tx_hash}, retrying: {err:?}"
+                );
+                return Ok(EventAction::Retry);
+            }
+        };
 
         let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
         if let Some(action) = super::near::check_kyt_senders(&input_addresses, &context).await {

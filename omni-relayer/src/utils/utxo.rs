@@ -295,7 +295,10 @@ mod tests {
         let addresses = fetch_input_addresses(&rpc_url, ChainKind::Btc, &tx)
             .await
             .expect("fetch_input_addresses failed");
-        eprintln!("Got {} transparent input address(es) for {tx}:", addresses.len());
+        eprintln!(
+            "Got {} transparent input address(es) for {tx}:",
+            addresses.len()
+        );
         for addr in &addresses {
             eprintln!("  {addr}");
         }
