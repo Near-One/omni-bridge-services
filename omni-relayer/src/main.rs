@@ -137,6 +137,22 @@ async fn main() -> Result<()> {
 
     init_logging(config.near.network).context("Failed to initialize logging")?;
 
+    match (
+        std::env::var("KYT_API_URL").is_ok(),
+        std::env::var("KYT_API_KEY").is_ok(),
+    ) {
+        (true, true) => info!("KYT checks enabled (delay_secs={})", config.kyt.delay_secs),
+        (false, false) => {
+            warn!("KYT checks disabled: `KYT_API_URL` and `KYT_API_KEY` env vars are not set");
+        }
+        (false, true) => {
+            warn!("KYT checks disabled: `KYT_API_URL` env var is not set");
+        }
+        (true, false) => {
+            warn!("KYT checks disabled: `KYT_API_KEY` env var is not set");
+        }
+    }
+
     let redis_connection_manager = build_redis_connection_manager(&config)
         .await
         .context("Failed to create Redis connection manager")?;

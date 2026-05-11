@@ -28,18 +28,27 @@ enum UTXOChainMsg {
 }
 
 pub(super) async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
+    check_kyt_senders(std::slice::from_ref(sender), context).await
+}
+
+pub(super) async fn check_kyt_senders(
+    senders: &[OmniAddress],
+    context: &str,
+) -> Option<EventAction> {
     if !config::Config::is_kyt_enabled() {
         return None;
     }
 
-    match utils::kyt::check_sender(sender).await {
+    match utils::kyt::check_senders(senders).await {
         Ok(utils::kyt::SuggestedAction::StopRelaying) => {
-            warn!("KYT suggested STOP_RELAYING for sender {sender}, rejecting transfer {context}");
+            warn!(
+                "KYT suggested STOP_RELAYING for senders {senders:?}, rejecting transfer {context}"
+            );
             Some(EventAction::Remove)
         }
         Ok(utils::kyt::SuggestedAction::None) => None,
         Err(err) => {
-            warn!("KYT check failed for {sender}: {err:?}, retrying");
+            warn!("KYT check failed for {senders:?}: {err:?}, retrying");
             Some(EventAction::Retry)
         }
     }
