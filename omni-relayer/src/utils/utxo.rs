@@ -1,4 +1,4 @@
-use std::{sync::OnceLock, time::Duration};
+use std::{collections::HashMap, sync::OnceLock, time::Duration};
 
 use anyhow::{Context, Result};
 use omni_connector::OmniConnector;
@@ -158,17 +158,20 @@ fn utxo_rpc_client() -> &'static Client {
     })
 }
 
-async fn get_raw_transaction(rpc_url: &str, chain: ChainKind, tx_hash: &str) -> Result<Value> {
-    let verbosity = if matches!(chain, ChainKind::Zcash) {
+fn verbosity_for(chain: ChainKind) -> Value {
+    if matches!(chain, ChainKind::Zcash) {
         json!(1)
     } else {
         json!(true)
-    };
+    }
+}
+
+async fn get_raw_transaction(rpc_url: &str, chain: ChainKind, tx_hash: &str) -> Result<Value> {
     let body = json!({
         "id": 1,
         "jsonrpc": "2.0",
         "method": "getrawtransaction",
-        "params": [tx_hash, verbosity],
+        "params": [tx_hash, verbosity_for(chain)],
     });
     let response: Value = utxo_rpc_client()
         .post(rpc_url)
@@ -186,6 +189,79 @@ async fn get_raw_transaction(rpc_url: &str, chain: ChainKind, tx_hash: &str) -> 
         anyhow::bail!("getrawtransaction returned null for {chain:?}:{tx_hash}: {response}");
     }
     Ok(result)
+}
+
+/// Fetch many raw transactions in a single JSON-RPC 2.0 batched POST. Returns a
+/// `txid -> result` map. Each request is keyed by its array index as the
+/// JSON-RPC `id`, so order doesn't matter on the response side.
+async fn get_raw_transactions_batch(
+    rpc_url: &str,
+    chain: ChainKind,
+    tx_hashes: &[String],
+) -> Result<HashMap<String, Value>> {
+    if tx_hashes.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let verbosity = verbosity_for(chain);
+    let body: Vec<Value> = tx_hashes
+        .iter()
+        .enumerate()
+        .map(|(idx, tx)| {
+            json!({
+                "id": idx,
+                "jsonrpc": "2.0",
+                "method": "getrawtransaction",
+                "params": [tx, verbosity],
+            })
+        })
+        .collect();
+
+    let responses: Vec<Value> = utxo_rpc_client()
+        .post(rpc_url)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "batched getrawtransaction request failed for {chain:?} ({} tx)",
+                tx_hashes.len()
+            )
+        })?
+        .json()
+        .await
+        .with_context(|| {
+            format!(
+                "batched getrawtransaction body parse failed for {chain:?} ({} tx) — server may not support JSON-RPC 2.0 batching",
+                tx_hashes.len()
+            )
+        })?;
+
+    let mut by_txid = HashMap::with_capacity(tx_hashes.len());
+    for response in responses {
+        let id = response
+            .get("id")
+            .and_then(Value::as_u64)
+            .with_context(|| format!("batched response missing `id`: {response}"))?;
+        let idx = usize::try_from(id)
+            .with_context(|| format!("batched response id {id} out of usize range"))?;
+        let tx_hash = tx_hashes.get(idx).with_context(|| {
+            format!(
+                "batched response id {idx} out of range (sent {})",
+                tx_hashes.len()
+            )
+        })?;
+        let result = response.get("result").cloned().with_context(|| {
+            format!("batched response for {chain:?}:{tx_hash} missing `result`: {response}")
+        })?;
+        if result.is_null() {
+            if let Some(error) = response.get("error").filter(|e| !e.is_null()) {
+                anyhow::bail!("getrawtransaction failed for {chain:?}:{tx_hash} in batch: {error}");
+            }
+            anyhow::bail!("getrawtransaction returned null for {chain:?}:{tx_hash} in batch");
+        }
+        by_txid.insert(tx_hash.clone(), result);
+    }
+    Ok(by_txid)
 }
 
 /// Fetch the spending address for each input of `tx_hash`. Skips inputs whose
@@ -207,7 +283,10 @@ pub async fn fetch_input_addresses(
         .and_then(Value::as_array)
         .with_context(|| format!("vin missing in {chain:?} tx {tx_hash}"))?;
 
-    let mut addresses = Vec::with_capacity(vin.len());
+    // First pass: collect (prev_txid, prev_vout) for every transparent input,
+    // and the set of unique prev txids to batch-fetch.
+    let mut input_refs: Vec<(String, usize)> = Vec::with_capacity(vin.len());
+    let mut unique_txids: Vec<String> = Vec::new();
     for input in vin {
         if input.get("coinbase").is_some() {
             continue;
@@ -220,8 +299,21 @@ pub async fn fetch_input_addresses(
         };
         let prev_vout = usize::try_from(prev_vout)
             .with_context(|| format!("vout {prev_vout} out of usize range for {prev_txid}"))?;
+        if !unique_txids.iter().any(|t| t == prev_txid) {
+            unique_txids.push(prev_txid.to_string());
+        }
+        input_refs.push((prev_txid.to_string(), prev_vout));
+    }
 
-        let prev_tx = get_raw_transaction(rpc_url, chain, prev_txid).await?;
+    // Single batched JSON-RPC POST for all prev txs.
+    let prev_txs = get_raw_transactions_batch(rpc_url, chain, &unique_txids).await?;
+
+    // Second pass: resolve each input to its spend address.
+    let mut addresses = Vec::with_capacity(input_refs.len());
+    for (prev_txid, prev_vout) in input_refs {
+        let Some(prev_tx) = prev_txs.get(&prev_txid) else {
+            continue;
+        };
         let Some(prev_outputs) = prev_tx.get("vout").and_then(Value::as_array) else {
             continue;
         };
