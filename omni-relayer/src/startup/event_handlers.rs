@@ -609,6 +609,7 @@ pub(super) async fn handle_transaction_event(
             utxo_count,
             ref new_transfer_id,
             ref sender,
+            is_active_management,
             ..
         } => {
             let OmniTransactionOrigin::NearReceipt {
@@ -637,9 +638,11 @@ pub(super) async fn handle_transaction_event(
             };
 
             if config.is_signing_utxo_transaction_enabled(destination_chain) {
-                if sender == &config.near.omni_bridge_id {
+                let is_active_management = is_active_management.unwrap_or(false);
+
+                if is_active_management || sender == &config.near.omni_bridge_id {
                     info!(
-                        "Received TransferNearToUtxo from {:?} to {destination_chain:?}: {origin_transaction_id}",
+                        "Received TransferNearToUtxo to {destination_chain:?}: {origin_transaction_id} (is_active_management={is_active_management}, utxo_id={})",
                         utxo_id.tx_hash
                     );
 

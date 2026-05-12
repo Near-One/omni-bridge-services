@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use bridge_connector_common::result::BridgeSdkError;
 use near_bridge_client::{
     TransactionOptions,
-    btc::{DepositMsg, PostAction, SafeDepositMsg},
+    btc::{DepositMsg, PendingInfoState, PostAction, SafeDepositMsg},
 };
 use near_jsonrpc_client::{JsonRpcClient, errors::JsonRpcError};
 use near_primitives::{hash::CryptoHash, types::AccountId};
@@ -367,6 +367,31 @@ pub async fn process_confirmed_tx_hash(
     confirmed_tx_hash: ConfirmedTxHash,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
+    let Ok(client) = omni_connector.near_bridge_client() else {
+        anyhow::bail!("Near bridge client is not configured");
+    };
+
+    let pending_info = match client
+        .get_btc_pending_info(confirmed_tx_hash.chain, confirmed_tx_hash.btc_tx_hash.clone())
+        .await
+    {
+        Ok(info) => info,
+        Err(err) => {
+            warn!(
+                "Failed to fetch BTC pending info for {} ({:?}), retrying: {err:?}",
+                confirmed_tx_hash.btc_tx_hash, confirmed_tx_hash.chain,
+            );
+            return Ok(EventAction::Retry);
+        }
+    };
+
+    let is_active_management = matches!(
+        pending_info.state,
+        PendingInfoState::ActiveUtxoManagementOriginal(_)
+            | PendingInfoState::ActiveUtxoManagementRbf(_)
+            | PendingInfoState::ActiveUtxoManagementCancelRbf(_)
+    );
+
     let nonce = match near_nonce.reserve_nonce().await {
         Ok(nonce) => Some(nonce),
         Err(err) => {
@@ -375,20 +400,39 @@ pub async fn process_confirmed_tx_hash(
         }
     };
 
-    match omni_connector
-        .near_btc_verify_withdraw(
-            confirmed_tx_hash.chain,
-            confirmed_tx_hash.btc_tx_hash.clone(),
-            TransactionOptions {
-                nonce,
-                wait_until: near_primitives::views::TxExecutionStatus::Final,
-                wait_final_outcome_timeout_sec: None,
-            },
-        )
-        .await
-    {
+    let transaction_options = TransactionOptions {
+        nonce,
+        wait_until: near_primitives::views::TxExecutionStatus::Final,
+        wait_final_outcome_timeout_sec: None,
+    };
+
+    let verify_result = if is_active_management {
+        omni_connector
+            .near_btc_verify_active_utxo_management(
+                confirmed_tx_hash.chain,
+                confirmed_tx_hash.btc_tx_hash.clone(),
+                transaction_options,
+            )
+            .await
+    } else {
+        omni_connector
+            .near_btc_verify_withdraw(
+                confirmed_tx_hash.chain,
+                confirmed_tx_hash.btc_tx_hash.clone(),
+                transaction_options,
+            )
+            .await
+    };
+
+    let action = if is_active_management {
+        "verify active utxo management"
+    } else {
+        "verify withdraw"
+    };
+
+    match verify_result {
         Ok(tx_hash) => {
-            info!("Verified withdraw: {tx_hash:?}");
+            info!("Verified {action} ({}): {tx_hash:?}", confirmed_tx_hash.btc_tx_hash);
 
             let signer = omni_connector
                 .near_bridge_client()
@@ -412,11 +456,11 @@ pub async fn process_confirmed_tx_hash(
                         JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
                     )
                     | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to verify withdraw, retrying: {near_rpc_error:?}");
+                        warn!("Failed to {action}, retrying: {near_rpc_error:?}");
                         return Ok(EventAction::Retry);
                     }
                     _ => {
-                        anyhow::bail!("Failed to verify withdraw: {near_rpc_error:?}");
+                        anyhow::bail!("Failed to {action}: {near_rpc_error:?}");
                     }
                 };
             }
@@ -429,7 +473,7 @@ pub async fn process_confirmed_tx_hash(
                 return Ok(EventAction::Retry);
             }
 
-            anyhow::bail!("Failed to verify withdraw: {err:?}");
+            anyhow::bail!("Failed to {action}: {err:?}");
         }
     }
 }

@@ -114,6 +114,12 @@ pub enum OmniTransferMessage {
         recipient_id: String,
         amount: U128,
         new_transfer_id: Option<UnifiedTransferId>,
+        /// `Some(true)` when this event was produced by the bridge's
+        /// `active_utxo_management` flow rather than a user-initiated
+        /// `ft_on_transfer`. In that case `sender`/`recipient_id`/`amount`
+        /// carry placeholder values.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_active_management: Option<bool>,
     },
     TransferUtxoToNear {
         deposit_msg: DepositMsg,
