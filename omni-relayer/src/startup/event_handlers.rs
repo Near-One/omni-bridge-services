@@ -586,8 +586,17 @@ pub(super) async fn handle_transaction_event(
             destination_chain,
             relayer,
         } => {
+            let btc_pending_id = if let TransferIdKind::Utxo(utxo_id) = event.transfer_id.kind.clone() {
+                Some(utxo_id.tx_hash)
+            } else {
+                warn!(
+                    "UtxoSignTransaction missing TransferIdKind::Utxo, redis cleanup will be skipped: {origin_transaction_id}"
+                );
+                None
+            };
+
             info!(
-                "Received UtxoSignBtcTransaction on {:?}: {origin_transaction_id}",
+                "Received UtxoSignBtcTransaction on {:?}: {origin_transaction_id} (btc_pending_id={btc_pending_id:?})",
                 event.transfer_id.origin_chain
             );
             add_event(
@@ -600,6 +609,7 @@ pub(super) async fn handle_transaction_event(
                     chain: destination_chain,
                     near_tx_hash: origin_transaction_id.clone(),
                     relayer,
+                    btc_pending_id,
                 },
             )
             .await;
@@ -642,6 +652,17 @@ pub(super) async fn handle_transaction_event(
                         "Received TransferNearToUtxo from {:?} to {destination_chain:?}: {origin_transaction_id}",
                         utxo_id.tx_hash
                     );
+
+                    let pending_key =
+                        utils::redis::near_to_utxo_pending_signs_key(&utxo_id.tx_hash);
+                    utils::redis::set_with_ttl(
+                        config,
+                        redis_connection_manager,
+                        &pending_key,
+                        &creation_timestamp.to_string(),
+                        utils::redis::NEAR_TO_UTXO_PENDING_SIGNS_TTL_SECS,
+                    )
+                    .await;
 
                     for sign_index in 0..utxo_count {
                         info!(

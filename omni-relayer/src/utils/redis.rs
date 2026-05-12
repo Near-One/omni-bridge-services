@@ -9,8 +9,16 @@ pub const EVENTS: &str = "events";
 
 pub const FEE_MAPPING: &str = "fee_mapping";
 
+pub const NEAR_TO_UTXO_PENDING_SIGNS_PREFIX: &str = "near_to_utxo_pending_signs";
+
+pub const NEAR_TO_UTXO_PENDING_SIGNS_TTL_SECS: u64 = 86_400;
+
 pub fn composite_key(parts: &[&str]) -> String {
     parts.join(":")
+}
+
+pub fn near_to_utxo_pending_signs_key(btc_pending_id: &str) -> String {
+    composite_key(&[NEAR_TO_UTXO_PENDING_SIGNS_PREFIX, btc_pending_id])
 }
 
 pub async fn get_fee(
@@ -106,6 +114,70 @@ pub async fn remove_event<F>(
     }
 
     warn!("Failed to remove event from redis db");
+}
+
+pub async fn set_with_ttl(
+    config: &config::Config,
+    redis_connection_manager: &mut ConnectionManager,
+    key: &str,
+    value: &str,
+    ttl_secs: u64,
+) {
+    for _ in 0..config.redis.query_retry_attempts {
+        if redis_connection_manager
+            .set_ex::<&str, &str, ()>(key, value, ttl_secs)
+            .await
+            .is_ok()
+        {
+            return;
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(
+            config.redis.query_retry_sleep_secs,
+        ))
+        .await;
+    }
+
+    warn!("Failed to set redis key {key}");
+}
+
+pub async fn exists(
+    config: &config::Config,
+    redis_connection_manager: &mut ConnectionManager,
+    key: &str,
+) -> Option<bool> {
+    for _ in 0..config.redis.query_retry_attempts {
+        if let Ok(present) = redis_connection_manager.exists::<&str, bool>(key).await {
+            return Some(present);
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(
+            config.redis.query_retry_sleep_secs,
+        ))
+        .await;
+    }
+
+    warn!("Failed to check exists on redis key {key}");
+    None
+}
+
+pub async fn del(
+    config: &config::Config,
+    redis_connection_manager: &mut ConnectionManager,
+    key: &str,
+) {
+    for _ in 0..config.redis.query_retry_attempts {
+        if redis_connection_manager.del::<&str, ()>(key).await.is_ok() {
+            return;
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(
+            config.redis.query_retry_sleep_secs,
+        ))
+        .await;
+    }
+
+    warn!("Failed to del redis key {key}");
 }
 
 pub async fn zadd<M>(

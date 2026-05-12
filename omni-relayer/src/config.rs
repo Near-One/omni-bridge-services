@@ -163,6 +163,26 @@ impl Config {
         config.is_some_and(|utxo| utxo.signing_enabled)
     }
 
+    pub fn utxo_sign_delay_secs(&self, chain: ChainKind) -> u64 {
+        let config = match chain {
+            ChainKind::Btc => self.btc.as_ref(),
+            ChainKind::Zcash => self.zcash.as_ref(),
+            ChainKind::Near
+            | ChainKind::Eth
+            | ChainKind::Base
+            | ChainKind::Arb
+            | ChainKind::Bnb
+            | ChainKind::Pol
+            | ChainKind::HyperEvm
+            | ChainKind::Abs
+            | ChainKind::Sol
+            | ChainKind::Strk => {
+                panic!("Sign delay is not applicable for {chain:?}")
+            }
+        };
+        config.map_or(0, |utxo| utxo.sign_delay_secs)
+    }
+
     pub fn is_verifying_utxo_withdraw_enabled(&self, chain: ChainKind) -> bool {
         let config = match chain {
             ChainKind::Btc => self.btc.as_ref(),
@@ -399,6 +419,8 @@ pub struct Utxo {
     pub verifying_withdraw_enabled: bool,
     #[serde(default = "default_lc_polling_interval_secs")]
     pub lc_polling_interval_secs: u64,
+    #[serde(default)]
+    pub sign_delay_secs: u64,
 }
 
 const fn default_lc_polling_interval_secs() -> u64 {

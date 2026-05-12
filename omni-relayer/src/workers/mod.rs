@@ -409,6 +409,7 @@ async fn process_message(
                 let result = if is_utxo {
                     near::process_transfer_to_utxo_event(
                         config,
+                        redis,
                         jsonrpc_client,
                         omni_connector.clone(),
                         transfer,
@@ -502,6 +503,7 @@ async fn process_message(
             Transfer::NearToUtxo { .. } => {
                 let result = utxo::process_near_to_utxo_init_transfer_event(
                     config,
+                    redis,
                     omni_connector.clone(),
                     transfer,
                     near_omni_nonce.clone(),
@@ -692,6 +694,8 @@ async fn process_message(
         serde_json::from_value::<utxo::SignUtxoTransaction>(event.clone())
     {
         let result = utxo::process_sign_transaction_event(
+            config,
+            redis,
             omni_connector.clone(),
             sign_utxo_transaction_event,
         )

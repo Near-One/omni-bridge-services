@@ -23,6 +23,8 @@ pub struct SignUtxoTransaction {
     pub chain: ChainKind,
     pub near_tx_hash: String,
     pub relayer: AccountId,
+    #[serde(default)]
+    pub btc_pending_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -33,6 +35,7 @@ pub struct ConfirmedTxHash {
 
 pub async fn process_near_to_utxo_init_transfer_event(
     config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -65,6 +68,31 @@ pub async fn process_near_to_utxo_init_transfer_event(
     let context = format!("(btc_pending_id={btc_pending_id}, sign_index={sign_index})");
     if let Some(action) = super::near::check_kyt(&OmniAddress::Near(sender), &context).await {
         return Ok(action);
+    }
+
+    let sign_delay_secs = i64::try_from(config.utxo_sign_delay_secs(chain)).unwrap_or(0);
+    if sign_delay_secs > 0 && current_timestamp < creation_timestamp + sign_delay_secs {
+        let remaining = (creation_timestamp + sign_delay_secs - current_timestamp).unsigned_abs();
+        return Ok(EventAction::RetryAfter(std::time::Duration::from_secs(
+            remaining,
+        )));
+    }
+
+    let pending_key = utils::redis::near_to_utxo_pending_signs_key(&btc_pending_id);
+
+    match utils::redis::exists(config, redis, &pending_key).await {
+        Some(true) => {}
+        Some(false) => {
+            info!(
+                "Skipping sign for {btc_pending_id}:{sign_index} - already handled by another relayer"
+            );
+            return Ok(EventAction::Remove);
+        }
+        None => {
+            warn!(
+                "Redis exists failed for {btc_pending_id}:{sign_index}; proceeding to sign and letting the contract dedupe"
+            );
+        }
     }
 
     let nonce = match near_nonce.reserve_nonce().await {
@@ -292,6 +320,8 @@ pub async fn process_utxo_to_near_init_transfer_event(
 }
 
 pub async fn process_sign_transaction_event(
+    config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
     omni_connector: Arc<OmniConnector>,
     sign_utxo_transaction_event: SignUtxoTransaction,
 ) -> Result<EventAction> {
@@ -317,6 +347,12 @@ pub async fn process_sign_transaction_event(
                 "Finalized {:?} transaction: {tx_hash}",
                 sign_utxo_transaction_event.chain
             );
+
+            if let Some(btc_pending_id) = sign_utxo_transaction_event.btc_pending_id.as_deref() {
+                let pending_key = utils::redis::near_to_utxo_pending_signs_key(btc_pending_id);
+                utils::redis::del(config, redis, &pending_key).await;
+            }
+
             Ok(EventAction::Remove)
         }
         Err(err) => {

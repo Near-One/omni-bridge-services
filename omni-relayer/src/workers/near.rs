@@ -227,6 +227,7 @@ pub async fn process_transfer_event(
 
 pub async fn process_transfer_to_utxo_event(
     config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
@@ -350,10 +351,29 @@ pub async fn process_transfer_to_utxo_event(
                 )
                 .await
                 {
-                    Ok(receipts) => (
-                        EventAction::Remove,
-                        utils::near::extract_near_to_utxo(&receipts, destination_chain, sender),
-                    ),
+                    Ok(receipts) => {
+                        let events =
+                            utils::near::extract_near_to_utxo(&receipts, destination_chain, sender);
+                        if let Some(WorkerEvent::NearToUtxo(transfer)) = events.first()
+                            && let Transfer::NearToUtxo {
+                                btc_pending_id,
+                                creation_timestamp,
+                                ..
+                            } = transfer.as_ref()
+                        {
+                            let pending_key =
+                                utils::redis::near_to_utxo_pending_signs_key(btc_pending_id);
+                            utils::redis::set_with_ttl(
+                                config,
+                                redis,
+                                &pending_key,
+                                &creation_timestamp.to_string(),
+                                utils::redis::NEAR_TO_UTXO_PENDING_SIGNS_TTL_SECS,
+                            )
+                            .await;
+                        }
+                        (EventAction::Remove, events)
+                    }
                     Err(action) => (action, Vec::new()),
                 },
             )
@@ -397,15 +417,15 @@ pub async fn process_transfer_to_utxo_event(
                     transfer_message.origin_nonce
                 );
                 return Ok((EventAction::Retry, Vec::new()));
-            } else if let BridgeSdkError::UtxoClientError(ref msg) = err {
-                if msg == "Failed to estimate fee_rate" {
-                    warn!(
-                        "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
-                        transfer_message.recipient.get_chain(),
-                        transfer_message.origin_nonce
-                    );
-                    return Ok((EventAction::Retry, Vec::new()));
-                }
+            } else if let BridgeSdkError::UtxoClientError(ref msg) = err
+                && msg == "Failed to estimate fee_rate"
+            {
+                warn!(
+                    "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
+                    transfer_message.recipient.get_chain(),
+                    transfer_message.origin_nonce
+                );
+                return Ok((EventAction::Retry, Vec::new()));
             }
 
             anyhow::bail!(
