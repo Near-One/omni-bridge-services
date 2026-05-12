@@ -80,16 +80,16 @@ pub async fn process_near_to_utxo_init_transfer_event(
         )));
     }
 
-    let pending_key = utils::redis::near_to_utxo_pending_signs_key(&btc_pending_id);
+    let signed_key = utils::redis::near_to_utxo_signed_key(&btc_pending_id);
 
-    match utils::redis::exists(config, redis, &pending_key).await {
-        Some(true) => {}
-        Some(false) => {
+    match utils::redis::exists(config, redis, &signed_key).await {
+        Some(true) => {
             info!(
                 "Skipping sign for {btc_pending_id}:{sign_index} - already handled by another relayer"
             );
             return Ok(EventAction::Remove);
         }
+        Some(false) => {}
         None => {
             warn!(
                 "Redis exists failed for {btc_pending_id}:{sign_index}; proceeding to sign and letting the contract dedupe"
@@ -378,8 +378,16 @@ pub async fn process_sign_transaction_event(
             );
 
             if let Some(btc_pending_id) = sign_utxo_transaction_event.btc_pending_id.as_deref() {
-                let pending_key = utils::redis::near_to_utxo_pending_signs_key(btc_pending_id);
-                utils::redis::del(config, redis, &pending_key).await;
+                let signed_key = utils::redis::near_to_utxo_signed_key(btc_pending_id);
+                let now = chrono::Utc::now().timestamp().to_string();
+                utils::redis::set_with_ttl(
+                    config,
+                    redis,
+                    &signed_key,
+                    &now,
+                    utils::redis::NEAR_TO_UTXO_SIGNED_TTL_SECS,
+                )
+                .await;
             }
 
             Ok(EventAction::Remove)

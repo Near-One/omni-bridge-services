@@ -9,16 +9,16 @@ pub const EVENTS: &str = "events";
 
 pub const FEE_MAPPING: &str = "fee_mapping";
 
-pub const NEAR_TO_UTXO_PENDING_SIGNS_PREFIX: &str = "near_to_utxo_pending_signs";
+pub const NEAR_TO_UTXO_SIGNED_PREFIX: &str = "near_to_utxo_signed";
 
-pub const NEAR_TO_UTXO_PENDING_SIGNS_TTL_SECS: u64 = 86_400;
+pub const NEAR_TO_UTXO_SIGNED_TTL_SECS: u64 = 86_400;
 
 pub fn composite_key(parts: &[&str]) -> String {
     parts.join(":")
 }
 
-pub fn near_to_utxo_pending_signs_key(btc_pending_id: &str) -> String {
-    composite_key(&[NEAR_TO_UTXO_PENDING_SIGNS_PREFIX, btc_pending_id])
+pub fn near_to_utxo_signed_key(btc_pending_id: &str) -> String {
+    composite_key(&[NEAR_TO_UTXO_SIGNED_PREFIX, btc_pending_id])
 }
 
 pub async fn get_fee(
@@ -159,25 +159,6 @@ pub async fn exists(
 
     warn!("Failed to check exists on redis key {key}");
     None
-}
-
-pub async fn del(
-    config: &config::Config,
-    redis_connection_manager: &mut ConnectionManager,
-    key: &str,
-) {
-    for _ in 0..config.redis.query_retry_attempts {
-        if redis_connection_manager.del::<&str, ()>(key).await.is_ok() {
-            return;
-        }
-
-        tokio::time::sleep(tokio::time::Duration::from_secs(
-            config.redis.query_retry_sleep_secs,
-        ))
-        .await;
-    }
-
-    warn!("Failed to del redis key {key}");
 }
 
 pub async fn zadd<M>(

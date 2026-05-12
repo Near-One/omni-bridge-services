@@ -655,17 +655,6 @@ pub(super) async fn handle_transaction_event(
                         utxo_id.tx_hash
                     );
 
-                    let pending_key =
-                        utils::redis::near_to_utxo_pending_signs_key(&utxo_id.tx_hash);
-                    utils::redis::set_with_ttl(
-                        config,
-                        redis_connection_manager,
-                        &pending_key,
-                        &creation_timestamp.to_string(),
-                        utils::redis::NEAR_TO_UTXO_PENDING_SIGNS_TTL_SECS,
-                    )
-                    .await;
-
                     for sign_index in 0..utxo_count {
                         info!(
                             "Received sign index {sign_index} for BTC pending ID: {}",

@@ -227,7 +227,6 @@ pub async fn process_transfer_event(
 
 pub async fn process_transfer_to_utxo_event(
     config: &config::Config,
-    redis: &mut redis::aio::ConnectionManager,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
@@ -355,11 +354,7 @@ pub async fn process_transfer_to_utxo_event(
                         let events =
                             utils::near::extract_near_to_utxo(&receipts, destination_chain, sender);
                         if let Some(WorkerEvent::NearToUtxo(transfer)) = events.first()
-                            && let Transfer::NearToUtxo {
-                                btc_pending_id,
-                                creation_timestamp,
-                                ..
-                            } = transfer.as_ref()
+                            && let Transfer::NearToUtxo { btc_pending_id, .. } = transfer.as_ref()
                         {
                             info!(
                                 "Extracted btc_pending_id={btc_pending_id} for NEAR->{destination_chain:?} transfer ({:?}:{}): utxo_inputs={}",
@@ -367,16 +362,6 @@ pub async fn process_transfer_to_utxo_event(
                                 transfer_message.origin_nonce,
                                 events.len()
                             );
-                            let pending_key =
-                                utils::redis::near_to_utxo_pending_signs_key(btc_pending_id);
-                            utils::redis::set_with_ttl(
-                                config,
-                                redis,
-                                &pending_key,
-                                &creation_timestamp.to_string(),
-                                utils::redis::NEAR_TO_UTXO_PENDING_SIGNS_TTL_SECS,
-                            )
-                            .await;
                         }
                         (EventAction::Remove, events)
                     }
