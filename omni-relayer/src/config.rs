@@ -163,6 +163,15 @@ impl Config {
         config.is_some_and(|utxo| utxo.signing_enabled)
     }
 
+    pub fn active_utxo_management(&self, chain: ChainKind) -> Option<&ActiveUtxoManagement> {
+        let utxo = match chain {
+            ChainKind::Btc => self.btc.as_ref()?,
+            ChainKind::Zcash => self.zcash.as_ref()?,
+            _ => return None,
+        };
+        utxo.active_utxo_management.as_ref()
+    }
+
     pub fn is_verifying_utxo_withdraw_enabled(&self, chain: ChainKind) -> bool {
         let config = match chain {
             ChainKind::Btc => self.btc.as_ref(),
@@ -399,10 +408,31 @@ pub struct Utxo {
     pub verifying_withdraw_enabled: bool,
     #[serde(default = "default_lc_polling_interval_secs")]
     pub lc_polling_interval_secs: u64,
+    #[serde(default)]
+    pub active_utxo_management: Option<ActiveUtxoManagement>,
 }
 
 const fn default_lc_polling_interval_secs() -> u64 {
     30
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActiveUtxoManagement {
+    /// When `current_utxos_num` on the UTXO connector contract exceeds this
+    /// threshold, the service calls `active_utxo_management` to consolidate.
+    pub utxo_count_threshold: u32,
+    /// How often to poll `get_metadata` for the current UTXO count.
+    #[serde(default = "default_active_utxo_polling_interval_secs")]
+    pub polling_interval_secs: u64,
+    /// If set, the service also calls `active_utxo_management` whenever this
+    /// many seconds have elapsed since the last call, regardless of whether
+    /// `utxo_count_threshold` is exceeded.
+    #[serde(default)]
+    pub force_interval_secs: Option<u64>,
+}
+
+const fn default_active_utxo_polling_interval_secs() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Deserialize)]
