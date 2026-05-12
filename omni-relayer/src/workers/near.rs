@@ -329,7 +329,7 @@ pub async fn process_transfer_to_utxo_event(
     {
         Ok(tx_hash) => {
             info!(
-                "Submitted transfer ({:?}:{}): {tx_hash:?}",
+                "Submitted NEAR->{destination_chain:?} transfer on NEAR ({:?}:{}): near_submit_tx_hash={tx_hash:?}",
                 transfer_message.get_origin_chain(),
                 transfer_message.origin_nonce
             );
@@ -361,6 +361,12 @@ pub async fn process_transfer_to_utxo_event(
                                 ..
                             } = transfer.as_ref()
                         {
+                            info!(
+                                "Extracted btc_pending_id={btc_pending_id} for NEAR->{destination_chain:?} transfer ({:?}:{}): utxo_inputs={}",
+                                transfer_message.get_origin_chain(),
+                                transfer_message.origin_nonce,
+                                events.len()
+                            );
                             let pending_key =
                                 utils::redis::near_to_utxo_pending_signs_key(btc_pending_id);
                             utils::redis::set_with_ttl(

@@ -586,7 +586,9 @@ pub(super) async fn handle_transaction_event(
             destination_chain,
             relayer,
         } => {
-            let btc_pending_id = if let TransferIdKind::Utxo(utxo_id) = event.transfer_id.kind.clone() {
+            let btc_pending_id = if let TransferIdKind::Utxo(utxo_id) =
+                event.transfer_id.kind.clone()
+            {
                 Some(utxo_id.tx_hash)
             } else {
                 warn!(

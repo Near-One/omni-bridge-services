@@ -52,7 +52,9 @@ pub async fn process_near_to_utxo_init_transfer_event(
     };
 
     if !config.is_signing_utxo_transaction_enabled(chain) {
-        info!("Signing UTXO transactions for {chain:?} is disabled, skipping");
+        info!(
+            "Signing NEAR->{chain:?} disabled by config ({btc_pending_id}:{sign_index}), skipping"
+        );
         return Ok(EventAction::Remove);
     }
 
@@ -65,7 +67,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
         )));
     }
 
-    let context = format!("(btc_pending_id={btc_pending_id}, sign_index={sign_index})");
+    let context = format!("({btc_pending_id}:{sign_index})");
     if let Some(action) = super::near::check_kyt(&OmniAddress::Near(sender), &context).await {
         return Ok(action);
     }
@@ -98,11 +100,14 @@ pub async fn process_near_to_utxo_init_transfer_event(
     let nonce = match near_nonce.reserve_nonce().await {
         Ok(nonce) => Some(nonce),
         Err(err) => {
-            warn!("Failed to reserve nonce: {err:?}");
+            warn!(
+                "Failed to reserve nonce for NEAR->{chain:?} sign ({btc_pending_id}:{sign_index}): {err:?}"
+            );
             return Ok(EventAction::Retry);
         }
     };
 
+    let btc_pending_id_log = btc_pending_id.clone();
     match omni_connector
         .near_sign_btc_transaction(
             chain,
@@ -117,7 +122,9 @@ pub async fn process_near_to_utxo_init_transfer_event(
         .await
     {
         Ok(tx_hash) => {
-            info!("Signed {chain:?} transaction: {tx_hash:?}");
+            info!(
+                "Signed NEAR->{chain:?} input ({btc_pending_id_log}:{sign_index}): near_sign_tx_hash={tx_hash:?}"
+            );
             Ok(EventAction::Remove)
         }
         Err(err) => {
@@ -130,15 +137,21 @@ pub async fn process_near_to_utxo_init_transfer_event(
                         JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
                     )
                     | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to sign {chain:?} transaction, retrying: {near_rpc_error:?}");
+                        warn!(
+                            "Failed to sign NEAR->{chain:?} input ({btc_pending_id_log}:{sign_index}), retrying: {near_rpc_error:?}"
+                        );
                         return Ok(EventAction::Retry);
                     }
                     _ => {
-                        anyhow::bail!("Failed to sign {chain:?} transaction: {near_rpc_error:?}");
+                        anyhow::bail!(
+                            "Failed to sign NEAR->{chain:?} input ({btc_pending_id_log}:{sign_index}): {near_rpc_error:?}"
+                        );
                     }
                 };
             }
-            anyhow::bail!("Failed to sign {chain:?} transaction: {err:?}");
+            anyhow::bail!(
+                "Failed to sign NEAR->{chain:?} input ({btc_pending_id_log}:{sign_index}): {err:?}"
+            );
         }
     }
 }
@@ -192,7 +205,9 @@ pub async fn process_utxo_to_near_init_transfer_event(
     let mut nonce = match near_nonce.reserve_nonce().await {
         Ok(nonce) => Some(nonce),
         Err(err) => {
-            warn!("Failed to reserve nonce: {err:?}");
+            warn!(
+                "Failed to reserve nonce for {chain:?}->NEAR fin_transfer ({btc_tx_hash}:{vout}): {err:?}"
+            );
             return Ok(EventAction::Retry);
         }
     };
@@ -220,7 +235,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 .is_err()
             {
                 warn!(
-                    "Failed to deposit storage for token {:?} to {}",
+                    "Failed to deposit storage for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}): token={:?}, recipient={}",
                     near_bridge_client.utxo_chain_token(chain)?,
                     deposit_msg.recipient_id
                 );
@@ -230,7 +245,9 @@ pub async fn process_utxo_to_near_init_transfer_event(
             nonce = match near_nonce.reserve_nonce().await {
                 Ok(nonce) => Some(nonce),
                 Err(err) => {
-                    warn!("Failed to reserve nonce: {err:?}");
+                    warn!(
+                        "Failed to reserve nonce after storage deposit for {chain:?}->NEAR fin_transfer ({btc_tx_hash}:{vout}): {err:?}"
+                    );
                     return Ok(EventAction::Retry);
                 }
             };
@@ -238,7 +255,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
         Ok(_) => {}
         Err(err) => {
             warn!(
-                "Failed to get required storage deposit for token {:?} to {}: {err:?}",
+                "Failed to get required storage deposit for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}): token={:?}, recipient={}: {err:?}",
                 near_bridge_client.utxo_chain_token(chain)?,
                 deposit_msg.recipient_id
             );
@@ -281,7 +298,9 @@ pub async fn process_utxo_to_near_init_transfer_event(
 
     match omni_connector.fin_transfer(fin_transfer_args).await {
         Ok(tx_hash) => {
-            info!("Finalized {chain:?} transaction: {tx_hash:?}");
+            info!(
+                "Finalized {chain:?}->NEAR transfer on NEAR ({btc_tx_hash}:{vout}): near_fin_tx_hash={tx_hash:?}"
+            );
             Ok(EventAction::Remove)
         }
         Err(err) => {
@@ -295,13 +314,13 @@ pub async fn process_utxo_to_near_init_transfer_event(
                     )
                     | NearRpcError::RpcTransactionError(_) => {
                         warn!(
-                            "Failed to finalize {chain:?} transaction, retrying: {near_rpc_error:?}"
+                            "Failed to finalize {chain:?}->NEAR transfer on NEAR ({btc_tx_hash}:{vout}), retrying: {near_rpc_error:?}"
                         );
                         return Ok(EventAction::Retry);
                     }
                     _ => {
                         anyhow::bail!(
-                            "Failed to finalize {chain:?} transaction: {near_rpc_error:?}"
+                            "Failed to finalize {chain:?}->NEAR transfer on NEAR ({btc_tx_hash}:{vout}): {near_rpc_error:?}"
                         );
                     }
                 };
@@ -309,12 +328,14 @@ pub async fn process_utxo_to_near_init_transfer_event(
 
             if let BridgeSdkError::LightClientNotSynced(block) = err {
                 warn!(
-                    "{chain:?} light client is not synced yet for transfer ({btc_tx_hash}), block: {block}",
+                    "{chain:?} light client is not synced yet for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), block: {block}"
                 );
                 return Ok(EventAction::Retry);
             }
 
-            anyhow::bail!("Failed to finalize {chain:?} transaction: {err:?}");
+            anyhow::bail!(
+                "Failed to finalize {chain:?}->NEAR transfer on NEAR ({btc_tx_hash}:{vout}): {err:?}"
+            );
         }
     }
 }
@@ -325,11 +346,20 @@ pub async fn process_sign_transaction_event(
     omni_connector: Arc<OmniConnector>,
     sign_utxo_transaction_event: SignUtxoTransaction,
 ) -> Result<EventAction> {
-    info!("Trying to process SignBtcTransaction log on NEAR");
+    let chain = sign_utxo_transaction_event.chain;
+    let btc_pending_id_log = sign_utxo_transaction_event
+        .btc_pending_id
+        .as_deref()
+        .unwrap_or("?");
+    let near_sign_tx_hash_log = sign_utxo_transaction_event.near_tx_hash.clone();
+
+    info!(
+        "Processing SignBtcTransaction log on NEAR for NEAR->{chain:?} ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}"
+    );
 
     let Ok(near_tx_hash) = CryptoHash::from_str(&sign_utxo_transaction_event.near_tx_hash) else {
         anyhow::bail!(
-            "Invalid near tx hash: {}",
+            "Invalid near tx hash for NEAR->{chain:?} ({btc_pending_id_log}): {}",
             sign_utxo_transaction_event.near_tx_hash
         );
     };
@@ -344,8 +374,7 @@ pub async fn process_sign_transaction_event(
     {
         Ok(tx_hash) => {
             info!(
-                "Finalized {:?} transaction: {tx_hash}",
-                sign_utxo_transaction_event.chain
+                "Broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}: btc_tx_hash={tx_hash}"
             );
 
             if let Some(btc_pending_id) = sign_utxo_transaction_event.btc_pending_id.as_deref() {
@@ -366,32 +395,25 @@ pub async fn process_sign_transaction_event(
                     )
                     | NearRpcError::RpcTransactionError(_) => {
                         warn!(
-                            "Failed to finalize {:?} transaction ({}), retrying: {near_rpc_error:?}",
-                            sign_utxo_transaction_event.chain,
-                            sign_utxo_transaction_event.near_tx_hash
+                            "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}, retrying: {near_rpc_error:?}"
                         );
                         return Ok(EventAction::Retry);
                     }
                     _ => {
                         anyhow::bail!(
-                            "Failed to finalize {:?} transaction ({}): {near_rpc_error:?}",
-                            sign_utxo_transaction_event.chain,
-                            sign_utxo_transaction_event.near_tx_hash
+                            "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}: {near_rpc_error:?}"
                         );
                     }
                 };
             } else if let BridgeSdkError::UtxoRpcError(err) = err {
                 warn!(
-                    "Failed to finalize {:?} transaction ({}), retrying: {err:?}",
-                    sign_utxo_transaction_event.chain, sign_utxo_transaction_event.near_tx_hash
+                    "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}, retrying: {err:?}"
                 );
                 return Ok(EventAction::Retry);
             }
 
             anyhow::bail!(
-                "Failed to finalize {:?} transaction ({}): {err:?}",
-                sign_utxo_transaction_event.chain,
-                sign_utxo_transaction_event.near_tx_hash
+                "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}: {err:?}"
             );
         }
     }
@@ -403,10 +425,13 @@ pub async fn process_confirmed_tx_hash(
     confirmed_tx_hash: ConfirmedTxHash,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
+    let chain = confirmed_tx_hash.chain;
+    let btc_tx_hash = &confirmed_tx_hash.btc_tx_hash;
+
     let nonce = match near_nonce.reserve_nonce().await {
         Ok(nonce) => Some(nonce),
         Err(err) => {
-            warn!("Failed to reserve nonce: {err:?}");
+            warn!("Failed to reserve nonce for {chain:?} verify_withdraw ({btc_tx_hash}): {err:?}");
             return Ok(EventAction::Retry);
         }
     };
@@ -424,7 +449,9 @@ pub async fn process_confirmed_tx_hash(
         .await
     {
         Ok(tx_hash) => {
-            info!("Verified withdraw: {tx_hash:?}");
+            info!(
+                "Verified NEAR->{chain:?} withdraw on NEAR ({btc_tx_hash}): near_verify_tx_hash={tx_hash:?}"
+            );
 
             let signer = omni_connector
                 .near_bridge_client()
@@ -448,24 +475,27 @@ pub async fn process_confirmed_tx_hash(
                         JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
                     )
                     | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to verify withdraw, retrying: {near_rpc_error:?}");
+                        warn!(
+                            "Failed to verify NEAR->{chain:?} withdraw ({btc_tx_hash}), retrying: {near_rpc_error:?}"
+                        );
                         return Ok(EventAction::Retry);
                     }
                     _ => {
-                        anyhow::bail!("Failed to verify withdraw: {near_rpc_error:?}");
+                        anyhow::bail!(
+                            "Failed to verify NEAR->{chain:?} withdraw ({btc_tx_hash}): {near_rpc_error:?}"
+                        );
                     }
                 };
             }
 
             if let BridgeSdkError::LightClientNotSynced(block) = err {
                 warn!(
-                    "Light client is not synced yet for {}, block: {block}",
-                    confirmed_tx_hash.btc_tx_hash
+                    "Light client is not synced yet for NEAR->{chain:?} verify_withdraw ({btc_tx_hash}), block: {block}"
                 );
                 return Ok(EventAction::Retry);
             }
 
-            anyhow::bail!("Failed to verify withdraw: {err:?}");
+            anyhow::bail!("Failed to verify NEAR->{chain:?} withdraw ({btc_tx_hash}): {err:?}");
         }
     }
 }
