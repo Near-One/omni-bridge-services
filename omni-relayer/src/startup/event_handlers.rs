@@ -586,8 +586,19 @@ pub(super) async fn handle_transaction_event(
             destination_chain,
             relayer,
         } => {
+            let btc_pending_id = if let TransferIdKind::Utxo(utxo_id) =
+                event.transfer_id.kind.clone()
+            {
+                Some(utxo_id.tx_hash)
+            } else {
+                warn!(
+                    "UtxoSignTransaction missing TransferIdKind::Utxo, redis cleanup will be skipped: {origin_transaction_id}"
+                );
+                None
+            };
+
             info!(
-                "Received UtxoSignBtcTransaction on {:?}: {origin_transaction_id}",
+                "Received UtxoSignBtcTransaction on {:?}: {origin_transaction_id} (btc_pending_id={btc_pending_id:?})",
                 event.transfer_id.origin_chain
             );
             add_event(
@@ -600,6 +611,7 @@ pub(super) async fn handle_transaction_event(
                     chain: destination_chain,
                     near_tx_hash: origin_transaction_id.clone(),
                     relayer,
+                    btc_pending_id,
                 },
             )
             .await;
