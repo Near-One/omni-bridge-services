@@ -377,7 +377,9 @@ pub async fn process_sign_transaction_event(
                 "Broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}: btc_tx_hash={tx_hash}"
             );
 
-            if let Some(btc_pending_id) = sign_utxo_transaction_event.btc_pending_id.as_deref() {
+            if config.utxo_sign_delay_secs(chain) > 0
+                && let Some(btc_pending_id) = sign_utxo_transaction_event.btc_pending_id.as_deref()
+            {
                 let signed_key = utils::redis::near_to_utxo_signed_key(btc_pending_id);
                 let now = chrono::Utc::now().timestamp().to_string();
                 utils::redis::set_with_ttl(
