@@ -372,7 +372,10 @@ pub async fn process_confirmed_tx_hash(
     };
 
     let pending_info = match client
-        .get_btc_pending_info(confirmed_tx_hash.chain, confirmed_tx_hash.btc_tx_hash.clone())
+        .get_btc_pending_info(
+            confirmed_tx_hash.chain,
+            confirmed_tx_hash.btc_tx_hash.clone(),
+        )
         .await
     {
         Ok(info) => info,
@@ -432,7 +435,10 @@ pub async fn process_confirmed_tx_hash(
 
     match verify_result {
         Ok(tx_hash) => {
-            info!("Verified {action} ({}): {tx_hash:?}", confirmed_tx_hash.btc_tx_hash);
+            info!(
+                "Verified {action} ({}): {tx_hash:?}",
+                confirmed_tx_hash.btc_tx_hash
+            );
 
             let signer = omni_connector
                 .near_bridge_client()
