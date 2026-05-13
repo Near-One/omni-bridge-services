@@ -481,28 +481,28 @@ pub async fn process_confirmed_tx_hash(
         wait_final_outcome_timeout_sec: None,
     };
 
-    let verify_result = if is_active_management {
-        omni_connector
-            .near_btc_verify_active_utxo_management(
-                confirmed_tx_hash.chain,
-                confirmed_tx_hash.btc_tx_hash.clone(),
-                transaction_options,
-            )
-            .await
+    let (verify_result, action) = if is_active_management {
+        (
+            omni_connector
+                .near_btc_verify_active_utxo_management(
+                    confirmed_tx_hash.chain,
+                    confirmed_tx_hash.btc_tx_hash.clone(),
+                    transaction_options,
+                )
+                .await,
+            "active utxo management",
+        )
     } else {
-        omni_connector
-            .near_btc_verify_withdraw(
-                confirmed_tx_hash.chain,
-                confirmed_tx_hash.btc_tx_hash.clone(),
-                transaction_options,
-            )
-            .await
-    };
-
-    let action = if is_active_management {
-        "active utxo management"
-    } else {
-        "withdraw"
+        (
+            omni_connector
+                .near_btc_verify_withdraw(
+                    confirmed_tx_hash.chain,
+                    confirmed_tx_hash.btc_tx_hash.clone(),
+                    transaction_options,
+                )
+                .await,
+            "withdraw",
+        )
     };
 
     match verify_result {
