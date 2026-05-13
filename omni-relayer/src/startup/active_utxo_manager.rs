@@ -1,25 +1,20 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use near_bridge_client::TransactionOptions;
 use omni_connector::OmniConnector;
 use omni_types::ChainKind;
 use tokio::time::Instant;
 use tracing::{info, warn};
 
-use crate::{config, utils};
+use crate::{config::ActiveUtxoManagement, utils};
 
 pub async fn start_active_utxo_manager(
-    config: Arc<config::Config>,
+    settings: ActiveUtxoManagement,
     chain: ChainKind,
     omni_connector: Arc<OmniConnector>,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<()> {
-    let settings = config
-        .active_utxo_management(chain)
-        .with_context(|| format!("Active UTXO management config missing for {chain:?}"))?
-        .clone();
-
     let interval = Duration::from_secs(settings.polling_interval_secs);
     let force_interval = settings.force_interval_secs.map(Duration::from_secs);
 

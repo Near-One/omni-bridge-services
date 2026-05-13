@@ -431,15 +431,15 @@ async fn main() -> Result<()> {
     }
 
     for chain in [ChainKind::Btc, ChainKind::Zcash] {
-        if config.active_utxo_management(chain).is_none() {
+        let Some(active_utxo_management) = config.active_utxo_management(chain).cloned() else {
             continue;
-        }
-        let config = config.clone();
+        };
+
         let omni_connector = omni_connector.clone();
         let near_omni_nonce = near_omni_nonce.clone();
         handles.push(tokio::spawn(async move {
             startup::active_utxo_manager::start_active_utxo_manager(
-                config,
+                active_utxo_management,
                 chain,
                 omni_connector,
                 near_omni_nonce,
