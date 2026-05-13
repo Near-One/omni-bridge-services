@@ -213,13 +213,10 @@ sign_delay_secs = 120
 # Uncomment to periodically consolidate UTXOs. The service polls
 # `get_metadata.current_utxos_num` on the connector and calls
 # `active_utxo_management` when the count exceeds `utxo_count_threshold`.
-# If `force_interval_secs` is set, the service also triggers a call whenever
-# that many seconds have elapsed since the last call, regardless of count.
 # Signing of the resulting transfer is handled by the regular UTXO sign flow.
 # [btc.active_utxo_management]
 # utxo_count_threshold = 5000
 # polling_interval_secs = 300
-# force_interval_secs = 86400
 
 [zcash]
 rpc_http_url = "https://x-api-key:TATUM_API_KEY@zcash-mainnet.gateway.tatum.io"

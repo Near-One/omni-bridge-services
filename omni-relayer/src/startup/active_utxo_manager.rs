@@ -4,7 +4,6 @@ use anyhow::Result;
 use near_bridge_client::TransactionOptions;
 use omni_connector::OmniConnector;
 use omni_types::ChainKind;
-use tokio::time::Instant;
 use tracing::{info, warn};
 
 use crate::{config::ActiveUtxoManagement, utils};
@@ -16,14 +15,11 @@ pub async fn start_active_utxo_manager(
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<()> {
     let interval = Duration::from_secs(settings.polling_interval_secs);
-    let force_interval = settings.force_interval_secs.map(Duration::from_secs);
 
     info!(
-        "Starting active UTXO manager for {chain:?} (threshold={}, interval={}s, force_interval={:?})",
-        settings.utxo_count_threshold, settings.polling_interval_secs, settings.force_interval_secs,
+        "Starting active UTXO manager for {chain:?} (threshold={}, interval={}s)",
+        settings.utxo_count_threshold, settings.polling_interval_secs,
     );
-
-    let mut last_run: Option<Instant> = None;
 
     loop {
         tokio::time::sleep(interval).await;
@@ -44,11 +40,7 @@ pub async fn start_active_utxo_manager(
             }
         };
 
-        let above_threshold = utxos_num > settings.utxo_count_threshold;
-        let force_due = force_interval
-            .is_some_and(|forced| last_run.is_none_or(|last| last.elapsed() >= forced));
-
-        if !above_threshold && !force_due {
+        if utxos_num <= settings.utxo_count_threshold {
             info!(
                 "Active UTXO manager: {chain:?} has {utxos_num} UTXOs (threshold {}); skipping",
                 settings.utxo_count_threshold
@@ -56,14 +48,9 @@ pub async fn start_active_utxo_manager(
             continue;
         }
 
-        let reason = if above_threshold {
-            format!("above threshold {}", settings.utxo_count_threshold)
-        } else {
-            "force interval elapsed".to_string()
-        };
-
         info!(
-            "Active UTXO manager: {chain:?} has {utxos_num} UTXOs ({reason}); triggering active_utxo_management"
+            "Active UTXO manager: {chain:?} has {utxos_num} UTXOs (above threshold {}); triggering active_utxo_management",
+            settings.utxo_count_threshold
         );
 
         let nonce = match near_nonce.reserve_nonce().await {
@@ -86,7 +73,6 @@ pub async fn start_active_utxo_manager(
             .await
         {
             Ok(tx_hash) => {
-                last_run = Some(Instant::now());
                 info!(
                     "Active UTXO manager: submitted active_utxo_management for {chain:?}: {tx_hash}"
                 );

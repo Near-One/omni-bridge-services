@@ -458,11 +458,6 @@ pub struct ActiveUtxoManagement {
     /// How often to poll `get_metadata` for the current UTXO count.
     #[serde(default = "default_active_utxo_polling_interval_secs")]
     pub polling_interval_secs: u64,
-    /// If set, the service also calls `active_utxo_management` whenever this
-    /// many seconds have elapsed since the last call, regardless of whether
-    /// `utxo_count_threshold` is exceeded.
-    #[serde(default)]
-    pub force_interval_secs: Option<u64>,
 }
 
 const fn default_active_utxo_polling_interval_secs() -> u64 {
