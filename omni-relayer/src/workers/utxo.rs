@@ -289,6 +289,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 refund_address: deposit_msg.refund_address,
             },
         },
+        prefetched: None,
         transaction_options: TransactionOptions {
             nonce,
             wait_until: near_primitives::views::TxExecutionStatus::Included,
