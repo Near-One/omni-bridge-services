@@ -183,6 +183,27 @@ impl Config {
         config.map_or(0, |utxo| utxo.sign_delay_secs)
     }
 
+    pub fn active_utxo_management(&self, chain: ChainKind) -> Option<&ActiveUtxoManagement> {
+        let config = match chain {
+            ChainKind::Btc => self.btc.as_ref(),
+            ChainKind::Zcash => self.zcash.as_ref(),
+            ChainKind::Near
+            | ChainKind::Eth
+            | ChainKind::Base
+            | ChainKind::Arb
+            | ChainKind::Bnb
+            | ChainKind::Pol
+            | ChainKind::HyperEvm
+            | ChainKind::Abs
+            | ChainKind::Sol
+            | ChainKind::Strk => {
+                panic!("Active UTXO management is not applicable for {chain:?}");
+            }
+        };
+
+        config.and_then(|utxo| utxo.active_utxo_management.as_ref())
+    }
+
     pub fn is_verifying_utxo_withdraw_enabled(&self, chain: ChainKind) -> bool {
         let config = match chain {
             ChainKind::Btc => self.btc.as_ref(),
@@ -421,10 +442,26 @@ pub struct Utxo {
     pub lc_polling_interval_secs: u64,
     #[serde(default)]
     pub sign_delay_secs: u64,
+    #[serde(default)]
+    pub active_utxo_management: Option<ActiveUtxoManagement>,
 }
 
 const fn default_lc_polling_interval_secs() -> u64 {
     30
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActiveUtxoManagement {
+    /// When `current_utxos_num` on the UTXO connector contract exceeds this
+    /// threshold, the service calls `active_utxo_management` to consolidate.
+    pub utxo_count_threshold: u32,
+    /// How often to poll `get_metadata` for the current UTXO count.
+    #[serde(default = "default_active_utxo_polling_interval_secs")]
+    pub polling_interval_secs: u64,
+}
+
+const fn default_active_utxo_polling_interval_secs() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Deserialize)]

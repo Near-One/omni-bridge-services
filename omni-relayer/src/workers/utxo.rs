@@ -289,6 +289,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 refund_address: deposit_msg.refund_address,
             },
         },
+        prefetched: None,
         transaction_options: TransactionOptions {
             nonce,
             wait_until: near_primitives::views::TxExecutionStatus::Included,
@@ -435,32 +436,72 @@ pub async fn process_confirmed_tx_hash(
     confirmed_tx_hash: ConfirmedTxHash,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
-    let chain = confirmed_tx_hash.chain;
-    let btc_tx_hash = &confirmed_tx_hash.btc_tx_hash;
+    let Ok(client) = omni_connector.near_bridge_client() else {
+        anyhow::bail!("Near bridge client is not configured");
+    };
 
-    let nonce = match near_nonce.reserve_nonce().await {
-        Ok(nonce) => Some(nonce),
+    let pending_info = match client
+        .get_btc_pending_info(
+            confirmed_tx_hash.chain,
+            confirmed_tx_hash.btc_tx_hash.clone(),
+        )
+        .await
+    {
+        Ok(info) => info,
         Err(err) => {
-            warn!("Failed to reserve nonce for {chain:?} verify_withdraw ({btc_tx_hash}): {err:?}");
+            warn!(
+                "Failed to fetch BTC pending info for {} ({:?}), retrying: {err:?}",
+                confirmed_tx_hash.btc_tx_hash, confirmed_tx_hash.chain,
+            );
             return Ok(EventAction::Retry);
         }
     };
 
-    match omni_connector
-        .near_btc_verify_withdraw(
-            confirmed_tx_hash.chain,
-            confirmed_tx_hash.btc_tx_hash.clone(),
-            TransactionOptions {
-                nonce,
-                wait_until: near_primitives::views::TxExecutionStatus::Final,
-                wait_final_outcome_timeout_sec: None,
-            },
-        )
-        .await
-    {
+    let chain = confirmed_tx_hash.chain;
+    let btc_tx_hash = &confirmed_tx_hash.btc_tx_hash;
+
+    let action = if pending_info.state.is_active_utxo_management() {
+        "active utxo management"
+    } else {
+        "withdraw"
+    };
+
+    let nonce = match near_nonce.reserve_nonce().await {
+        Ok(nonce) => Some(nonce),
+        Err(err) => {
+            warn!("Failed to reserve nonce for {chain:?} {action} ({btc_tx_hash}): {err:?}");
+            return Ok(EventAction::Retry);
+        }
+    };
+
+    let transaction_options = TransactionOptions {
+        nonce,
+        wait_until: near_primitives::views::TxExecutionStatus::Final,
+        wait_final_outcome_timeout_sec: None,
+    };
+
+    let verify_result = if pending_info.state.is_active_utxo_management() {
+        omni_connector
+            .near_btc_verify_active_utxo_management(
+                confirmed_tx_hash.chain,
+                confirmed_tx_hash.btc_tx_hash.clone(),
+                transaction_options,
+            )
+            .await
+    } else {
+        omni_connector
+            .near_btc_verify_withdraw(
+                confirmed_tx_hash.chain,
+                confirmed_tx_hash.btc_tx_hash.clone(),
+                transaction_options,
+            )
+            .await
+    };
+
+    match verify_result {
         Ok(tx_hash) => {
             info!(
-                "Verified NEAR->{chain:?} withdraw on NEAR ({btc_tx_hash}): near_verify_tx_hash={tx_hash:?}"
+                "Verified NEAR->{chain:?} {action} on NEAR ({btc_tx_hash}): near_verify_tx_hash={tx_hash:?}"
             );
 
             let signer = omni_connector
@@ -486,13 +527,13 @@ pub async fn process_confirmed_tx_hash(
                     )
                     | NearRpcError::RpcTransactionError(_) => {
                         warn!(
-                            "Failed to verify NEAR->{chain:?} withdraw ({btc_tx_hash}), retrying: {near_rpc_error:?}"
+                            "Failed to verify NEAR->{chain:?} {action} ({btc_tx_hash}), retrying: {near_rpc_error:?}"
                         );
                         return Ok(EventAction::Retry);
                     }
                     _ => {
                         anyhow::bail!(
-                            "Failed to verify NEAR->{chain:?} withdraw ({btc_tx_hash}): {near_rpc_error:?}"
+                            "Failed to verify NEAR->{chain:?} {action} ({btc_tx_hash}): {near_rpc_error:?}"
                         );
                     }
                 };
@@ -500,12 +541,12 @@ pub async fn process_confirmed_tx_hash(
 
             if let BridgeSdkError::LightClientNotSynced(block) = err {
                 warn!(
-                    "Light client is not synced yet for NEAR->{chain:?} verify_withdraw ({btc_tx_hash}), block: {block}"
+                    "Light client is not synced yet for NEAR->{chain:?} {action} ({btc_tx_hash}), block: {block}"
                 );
                 return Ok(EventAction::Retry);
             }
 
-            anyhow::bail!("Failed to verify NEAR->{chain:?} withdraw ({btc_tx_hash}): {err:?}");
+            anyhow::bail!("Failed to verify NEAR->{chain:?} {action} ({btc_tx_hash}): {err:?}");
         }
     }
 }

@@ -430,6 +430,24 @@ async fn main() -> Result<()> {
         }));
     }
 
+    for chain in [ChainKind::Btc, ChainKind::Zcash] {
+        let Some(active_utxo_management) = config.active_utxo_management(chain).cloned() else {
+            continue;
+        };
+
+        let omni_connector = omni_connector.clone();
+        let near_omni_nonce = near_omni_nonce.clone();
+        handles.push(tokio::spawn(async move {
+            startup::active_utxo_manager::start_active_utxo_manager(
+                active_utxo_management,
+                chain,
+                omni_connector,
+                near_omni_nonce,
+            )
+            .await
+        }));
+    }
+
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received Ctrl+C signal, shutting down.");
