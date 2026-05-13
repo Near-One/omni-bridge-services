@@ -184,12 +184,24 @@ impl Config {
     }
 
     pub fn active_utxo_management(&self, chain: ChainKind) -> Option<&ActiveUtxoManagement> {
-        let utxo = match chain {
-            ChainKind::Btc => self.btc.as_ref()?,
-            ChainKind::Zcash => self.zcash.as_ref()?,
-            _ => return None,
+        let config = match chain {
+            ChainKind::Btc => self.btc.as_ref(),
+            ChainKind::Zcash => self.zcash.as_ref(),
+            ChainKind::Near
+            | ChainKind::Eth
+            | ChainKind::Base
+            | ChainKind::Arb
+            | ChainKind::Bnb
+            | ChainKind::Pol
+            | ChainKind::HyperEvm
+            | ChainKind::Abs
+            | ChainKind::Sol
+            | ChainKind::Strk => {
+                panic!("Active UTXO management is not applicable for {chain:?}");
+            }
         };
-        utxo.active_utxo_management.as_ref()
+
+        config.and_then(|utxo| utxo.active_utxo_management.as_ref())
     }
 
     pub fn is_verifying_utxo_withdraw_enabled(&self, chain: ChainKind) -> bool {
