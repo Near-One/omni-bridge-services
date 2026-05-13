@@ -79,7 +79,7 @@ pub async fn start_active_utxo_manager(
                 chain,
                 TransactionOptions {
                     nonce,
-                    wait_until: near_primitives::views::TxExecutionStatus::ExecutedOptimistic,
+                    wait_until: near_primitives::views::TxExecutionStatus::Final,
                     wait_final_outcome_timeout_sec: None,
                 },
             )
