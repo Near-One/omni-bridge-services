@@ -196,7 +196,7 @@ pub async fn process_init_transfer_event(
                     | NearRpcError::RpcQueryError(
                         JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
                     )
-                    | NearRpcError::RpcTransactionError(JsonRpcError::TransportError(_)) => {
+                    | NearRpcError::RpcTransactionError(_) => {
                         warn!("Failed to finalize transfer, retrying: {near_rpc_error:?}",);
                         return Ok(EventAction::Retry);
                     }
@@ -311,7 +311,7 @@ pub async fn process_fin_transfer_event(
                     | NearRpcError::RpcQueryError(
                         JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
                     )
-                    | NearRpcError::RpcTransactionError(JsonRpcError::TransportError(_)) => {
+                    | NearRpcError::RpcTransactionError(_) => {
                         warn!("Failed to claim fee, retrying: {near_rpc_error:?}");
                         return Ok(EventAction::Retry);
                     }
@@ -387,7 +387,7 @@ pub async fn process_deploy_token_event(
                     | NearRpcError::RpcQueryError(
                         JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
                     )
-                    | NearRpcError::RpcTransactionError(JsonRpcError::TransportError(_)) => {
+                    | NearRpcError::RpcTransactionError(_) => {
                         warn!("Failed to bind token, retrying: {near_rpc_error:?}");
                         return Ok(EventAction::Retry);
                     }

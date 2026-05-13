@@ -174,7 +174,7 @@ pub async fn process_init_transfer_event(
                     | NearRpcError::RpcQueryError(
                         JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
                     )
-                    | NearRpcError::RpcTransactionError(JsonRpcError::TransportError(_)) => {
+                    | NearRpcError::RpcTransactionError(_) => {
                         warn!(
                             "Failed to finalize Starknet transfer ({:?}:{}), retrying: {near_rpc_error:?}",
                             transfer_id.origin_chain, transfer_id.origin_nonce
@@ -278,7 +278,7 @@ pub async fn process_fin_transfer_event(
                     | NearRpcError::RpcQueryError(
                         JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
                     )
-                    | NearRpcError::RpcTransactionError(JsonRpcError::TransportError(_)) => {
+                    | NearRpcError::RpcTransactionError(_) => {
                         warn!("Failed to claim Starknet fee, retrying: {near_rpc_error:?}");
                         return Ok(EventAction::Retry);
                     }
@@ -342,7 +342,7 @@ pub async fn process_deploy_token_event(
                     | NearRpcError::RpcQueryError(
                         JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
                     )
-                    | NearRpcError::RpcTransactionError(JsonRpcError::TransportError(_)) => {
+                    | NearRpcError::RpcTransactionError(_) => {
                         warn!("Failed to bind Starknet token, retrying: {near_rpc_error:?}");
                         return Ok(EventAction::Retry);
                     }
