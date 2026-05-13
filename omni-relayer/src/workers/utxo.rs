@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use bridge_connector_common::result::BridgeSdkError;
 use near_bridge_client::{
     TransactionOptions,
-    btc::{DepositMsg, PendingInfoState, PostAction, SafeDepositMsg},
+    btc::{DepositMsg, PostAction, SafeDepositMsg},
 };
 use near_jsonrpc_client::{JsonRpcClient, errors::JsonRpcError};
 use near_primitives::{hash::CryptoHash, types::AccountId};
@@ -457,13 +457,6 @@ pub async fn process_confirmed_tx_hash(
         }
     };
 
-    let is_active_management = matches!(
-        pending_info.state,
-        PendingInfoState::ActiveUtxoManagementOriginal(_)
-            | PendingInfoState::ActiveUtxoManagementRbf(_)
-            | PendingInfoState::ActiveUtxoManagementCancelRbf(_)
-    );
-
     let chain = confirmed_tx_hash.chain;
     let btc_tx_hash = &confirmed_tx_hash.btc_tx_hash;
 
@@ -481,7 +474,7 @@ pub async fn process_confirmed_tx_hash(
         wait_final_outcome_timeout_sec: None,
     };
 
-    let (verify_result, action) = if is_active_management {
+    let (verify_result, action) = if pending_info.state.is_active_utxo_management() {
         (
             omni_connector
                 .near_btc_verify_active_utxo_management(
