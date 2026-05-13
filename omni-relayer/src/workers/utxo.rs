@@ -460,10 +460,16 @@ pub async fn process_confirmed_tx_hash(
     let chain = confirmed_tx_hash.chain;
     let btc_tx_hash = &confirmed_tx_hash.btc_tx_hash;
 
+    let action = if pending_info.state.is_active_utxo_management() {
+        "active utxo management"
+    } else {
+        "withdraw"
+    };
+
     let nonce = match near_nonce.reserve_nonce().await {
         Ok(nonce) => Some(nonce),
         Err(err) => {
-            warn!("Failed to reserve nonce for {chain:?} verify_withdraw ({btc_tx_hash}): {err:?}");
+            warn!("Failed to reserve nonce for {chain:?} {action} ({btc_tx_hash}): {err:?}");
             return Ok(EventAction::Retry);
         }
     };
@@ -474,28 +480,22 @@ pub async fn process_confirmed_tx_hash(
         wait_final_outcome_timeout_sec: None,
     };
 
-    let (verify_result, action) = if pending_info.state.is_active_utxo_management() {
-        (
-            omni_connector
-                .near_btc_verify_active_utxo_management(
-                    confirmed_tx_hash.chain,
-                    confirmed_tx_hash.btc_tx_hash.clone(),
-                    transaction_options,
-                )
-                .await,
-            "active utxo management",
-        )
+    let verify_result = if pending_info.state.is_active_utxo_management() {
+        omni_connector
+            .near_btc_verify_active_utxo_management(
+                confirmed_tx_hash.chain,
+                confirmed_tx_hash.btc_tx_hash.clone(),
+                transaction_options,
+            )
+            .await
     } else {
-        (
-            omni_connector
-                .near_btc_verify_withdraw(
-                    confirmed_tx_hash.chain,
-                    confirmed_tx_hash.btc_tx_hash.clone(),
-                    transaction_options,
-                )
-                .await,
-            "withdraw",
-        )
+        omni_connector
+            .near_btc_verify_withdraw(
+                confirmed_tx_hash.chain,
+                confirmed_tx_hash.btc_tx_hash.clone(),
+                transaction_options,
+            )
+            .await
     };
 
     match verify_result {
