@@ -205,6 +205,10 @@ signing_enabled = false
 # If this is set to true, then omni relayer will call `verify_withdraw`
 verifying_withdraw_enabled = false
 lc_polling_interval_secs = 10
+# How long (in seconds) to wait before calling `sign_btc_transaction`. Gives the
+# co-relayer (rhea/satoshi) a chance to sign first so we don't race on MPC.
+# Set to 0 to disable the delay.
+sign_delay_secs = 120
 
 # Uncomment to periodically consolidate UTXOs. The service polls
 # `get_metadata.current_utxos_num` on the connector and calls
@@ -225,6 +229,8 @@ signing_enabled = true
 # If this is set to true, then omni relayer will call `verify_withdraw`
 verifying_withdraw_enabled = true
 lc_polling_interval_secs = 10
+# No co-relayer exists for Zcash today; keep at 0 unless one is introduced.
+sign_delay_secs = 0
 
 [orchard]
 enabled = false

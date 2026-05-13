@@ -328,7 +328,7 @@ pub async fn process_transfer_to_utxo_event(
     {
         Ok(tx_hash) => {
             info!(
-                "Submitted transfer ({:?}:{}): {tx_hash:?}",
+                "Submitted NEAR->{destination_chain:?} transfer on NEAR ({:?}:{}): near_submit_tx_hash={tx_hash:?}",
                 transfer_message.get_origin_chain(),
                 transfer_message.origin_nonce
             );
@@ -350,10 +350,21 @@ pub async fn process_transfer_to_utxo_event(
                 )
                 .await
                 {
-                    Ok(receipts) => (
-                        EventAction::Remove,
-                        utils::near::extract_near_to_utxo(&receipts, destination_chain, sender),
-                    ),
+                    Ok(receipts) => {
+                        let events =
+                            utils::near::extract_near_to_utxo(&receipts, destination_chain, sender);
+                        if let Some(WorkerEvent::NearToUtxo(transfer)) = events.first()
+                            && let Transfer::NearToUtxo { btc_pending_id, .. } = transfer.as_ref()
+                        {
+                            info!(
+                                "Extracted btc_pending_id={btc_pending_id} for NEAR->{destination_chain:?} transfer ({:?}:{}): utxo_inputs={}",
+                                transfer_message.get_origin_chain(),
+                                transfer_message.origin_nonce,
+                                events.len()
+                            );
+                        }
+                        (EventAction::Remove, events)
+                    }
                     Err(action) => (action, Vec::new()),
                 },
             )
@@ -397,15 +408,15 @@ pub async fn process_transfer_to_utxo_event(
                     transfer_message.origin_nonce
                 );
                 return Ok((EventAction::Retry, Vec::new()));
-            } else if let BridgeSdkError::UtxoClientError(ref msg) = err {
-                if msg == "Failed to estimate fee_rate" {
-                    warn!(
-                        "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
-                        transfer_message.recipient.get_chain(),
-                        transfer_message.origin_nonce
-                    );
-                    return Ok((EventAction::Retry, Vec::new()));
-                }
+            } else if let BridgeSdkError::UtxoClientError(ref msg) = err
+                && msg == "Failed to estimate fee_rate"
+            {
+                warn!(
+                    "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
+                    transfer_message.recipient.get_chain(),
+                    transfer_message.origin_nonce
+                );
+                return Ok((EventAction::Retry, Vec::new()));
             }
 
             anyhow::bail!(
