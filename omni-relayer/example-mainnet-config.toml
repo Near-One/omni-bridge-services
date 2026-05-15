@@ -218,7 +218,7 @@ sign_delay_secs = 120
 # utxo_count_threshold = 5000
 # polling_interval_secs = 300
 # fixed_fee_rate = 1000
-# max_input_number = 50
+# max_input_number = 20
 
 [zcash]
 rpc_http_url = "https://x-api-key:TATUM_API_KEY@zcash-mainnet.gateway.tatum.io"
