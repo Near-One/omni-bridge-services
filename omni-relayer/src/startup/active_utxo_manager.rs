@@ -61,12 +61,11 @@ pub async fn start_active_utxo_manager(
             }
         };
 
-        let fixed_fee_rate = Some(1000);
         match omni_connector
             .active_utxo_management(
                 chain,
-                fixed_fee_rate,
-                None,
+                settings.fixed_fee_rate,
+                settings.max_input_number,
                 TransactionOptions {
                     nonce,
                     wait_until: near_primitives::views::TxExecutionStatus::Final,
