@@ -458,6 +458,13 @@ pub struct ActiveUtxoManagement {
     /// How often to poll `get_metadata` for the current UTXO count.
     #[serde(default = "default_active_utxo_polling_interval_secs")]
     pub polling_interval_secs: u64,
+    /// Optional fixed fee rate (sats/kvB) to pass to `active_utxo_management`.
+    /// If unset, the connector falls back to the on-chain fee rate.
+    #[serde(default)]
+    pub fixed_fee_rate: Option<u64>,
+    /// Optional cap on the number of UTXOs consumed per consolidation call.
+    #[serde(default)]
+    pub max_input_number: Option<u8>,
 }
 
 const fn default_active_utxo_polling_interval_secs() -> u64 {

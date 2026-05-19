@@ -64,6 +64,8 @@ pub async fn start_active_utxo_manager(
         match omni_connector
             .active_utxo_management(
                 chain,
+                settings.fixed_fee_rate,
+                settings.max_input_number,
                 TransactionOptions {
                     nonce,
                     wait_until: near_primitives::views::TxExecutionStatus::Final,
