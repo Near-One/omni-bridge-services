@@ -171,6 +171,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
         btc_tx_hash,
         vout,
         deposit_msg,
+        ..
     } = transfer
     else {
         anyhow::bail!("Expected UtxoToNearTransfer, got: {transfer:?}");

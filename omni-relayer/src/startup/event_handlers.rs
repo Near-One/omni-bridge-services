@@ -690,7 +690,16 @@ pub(super) async fn handle_transaction_event(
                 }
             }
         }
-        OmniTransferMessage::TransferUtxoToNear { ref deposit_msg } => {
+        OmniTransferMessage::TransferUtxoToNear {
+            ref deposit_msg,
+            amount,
+        } => {
+            let Some(amount) = amount else {
+                anyhow::bail!(
+                    "Expected `Some(amount)`, got `None` for TransferUtxoToNear: {event:?}"
+                );
+            };
+
             let TransferIdKind::Utxo(utxo_id) = event.transfer_id.kind else {
                 anyhow::bail!("Expected Utxo ChainTransferId for TransferUtxoToNear: {event:?}");
             };
@@ -729,21 +738,13 @@ pub(super) async fn handle_transaction_event(
             };
 
             let target = match async {
-                let amount = utils::utxo::fetch_deposit_amount(
-                    omni_connector,
-                    chain,
-                    &utxo_id.tx_hash,
-                    utxo_id.vout,
-                )
-                .await?;
-
                 let uses_extra_msg_path =
                     deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
                 utils::utxo::lc_defer_target(
                     omni_connector,
                     chain,
                     &utxo_id.tx_hash,
-                    amount,
+                    amount.0,
                     uses_extra_msg_path,
                 )
                 .await
