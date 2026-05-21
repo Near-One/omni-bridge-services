@@ -123,6 +123,8 @@ pub enum OmniTransferMessage {
     },
     TransferUtxoToNear {
         deposit_msg: DepositMsg,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        amount: Option<U128>,
     },
     UtxoVerifyDeposit {
         details: VerifyDepositDetails,
