@@ -48,15 +48,24 @@ pub async fn process_init_transfer_event(
         anyhow::bail!("Expected SolanaInitTransferWithTimestamp, got: {transfer:?}");
     };
 
+    let chain_kind = sender.get_chain();
+
     let transfer_id = TransferId {
-        origin_chain: sender.get_chain(),
+        origin_chain: chain_kind,
         origin_nonce: sequence,
     };
 
-    let expected_finalization_time = config
-        .solana
-        .as_ref()
-        .map_or(0, |solana| solana.expected_finalization_time);
+    let expected_finalization_time = match chain_kind {
+        ChainKind::Fogo => config
+            .fogo
+            .as_ref()
+            .map_or(0, |c| c.expected_finalization_time),
+        ChainKind::Sol => config
+            .solana
+            .as_ref()
+            .map_or(0, |c| c.expected_finalization_time),
+        _ => unreachable!("SVM worker invoked with non-SVM chain: {chain_kind:?}"),
+    };
     let current_timestamp = chrono::Utc::now().timestamp();
     let effective_wait = std::cmp::max(expected_finalization_time, config.kyt.delay_secs);
     if current_timestamp < creation_timestamp + effective_wait {
@@ -65,7 +74,7 @@ pub async fn process_init_transfer_event(
     }
 
     info!(
-        "Processing Solana InitTransfer ({:?}:{})",
+        "Processing SVM InitTransfer ({:?}:{})",
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
 
@@ -78,7 +87,7 @@ pub async fn process_init_transfer_event(
     }
 
     match omni_connector
-        .is_transfer_finalised(Some(sender.get_chain()), ChainKind::Near, sequence)
+        .is_transfer_finalised(Some(chain_kind), ChainKind::Near, sequence)
         .await
     {
         Ok(true) => anyhow::bail!("Transfer is already finalised: {transfer_id:?}"),
@@ -90,10 +99,9 @@ pub async fn process_init_transfer_event(
     }
 
     if config.is_bridge_api_enabled() {
-        let token =
-            OmniAddress::new_from_slice(ChainKind::Sol, &token.to_bytes()).map_err(|err| {
-                anyhow::anyhow!("Failed to parse \"{sender}\" as `OmniAddress`: {err:?}")
-            })?;
+        let token = OmniAddress::new_from_slice(chain_kind, &token.to_bytes()).map_err(|err| {
+            anyhow::anyhow!("Failed to parse \"{token}\" as `OmniAddress`: {err:?}")
+        })?;
 
         let Ok(needed_fee) =
             utils::bridge_api::TransferFee::get_transfer_fee(config, sender, recipient, &token)
@@ -122,8 +130,9 @@ pub async fn process_init_transfer_event(
         }
     }
 
+    let wormhole_chain_id = config.wormhole.svm_chain_id(chain_kind);
     let Ok(vaa) = omni_connector
-        .wormhole_get_vaa(config.wormhole.solana_chain_id, &emitter, sequence)
+        .wormhole_get_vaa(wormhole_chain_id, &emitter, sequence)
         .await
     else {
         warn!(
@@ -140,7 +149,7 @@ pub async fn process_init_transfer_event(
 
     let storage_deposit_actions = match utils::storage::get_storage_deposit_actions(
         &omni_connector,
-        ChainKind::Sol,
+        chain_kind,
         recipient,
         &fee_recipient,
         &token.to_string(),
@@ -161,7 +170,7 @@ pub async fn process_init_transfer_event(
         .context("Failed to reserve nonce for near transaction")?;
 
     let fin_transfer_args = omni_connector::FinTransferArgs::NearFinTransferWithVaa {
-        chain_kind: ChainKind::Sol,
+        chain_kind,
         destination_chain: recipient.get_chain(),
         storage_deposit_actions,
         vaa,
@@ -223,16 +232,24 @@ pub async fn process_fin_transfer_event(
         emitter,
         sequence,
         transfer_id,
+        chain_kind,
         creation_timestamp,
     } = fin_transfer
     else {
         anyhow::bail!("Expected Solana FinTransfer, got: {fin_transfer:?}");
     };
 
-    let expected_finalization_time = config
-        .solana
-        .as_ref()
-        .map_or(0, |solana| solana.expected_finalization_time);
+    let expected_finalization_time = match chain_kind {
+        ChainKind::Fogo => config
+            .fogo
+            .as_ref()
+            .map_or(0, |c| c.expected_finalization_time),
+        ChainKind::Sol => config
+            .solana
+            .as_ref()
+            .map_or(0, |c| c.expected_finalization_time),
+        _ => unreachable!("SVM worker invoked with non-SVM chain: {chain_kind:?}"),
+    };
     let current_timestamp = chrono::Utc::now().timestamp();
     if current_timestamp < creation_timestamp + expected_finalization_time {
         let remaining =
@@ -240,10 +257,7 @@ pub async fn process_fin_transfer_event(
         return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
     }
 
-    info!(
-        "Processing Solana FinTransfer ({:?}:{sequence})",
-        ChainKind::Sol
-    );
+    info!("Processing SVM FinTransfer ({chain_kind:?}:{sequence})");
 
     if let Some(transfer_id) = transfer_id
         && let Err(BridgeSdkError::NearRpcError(NearRpcError::RpcQueryError(
@@ -259,11 +273,12 @@ pub async fn process_fin_transfer_event(
         }
     }
 
+    let wormhole_chain_id = config.wormhole.svm_chain_id(chain_kind);
     let Ok(vaa) = omni_connector
-        .wormhole_get_vaa(config.wormhole.solana_chain_id, emitter, sequence)
+        .wormhole_get_vaa(wormhole_chain_id, emitter, sequence)
         .await
     else {
-        warn!("VAA is not ready for {:?}:{sequence}", ChainKind::Sol);
+        warn!("VAA is not ready for {chain_kind:?}:{sequence}");
         return Ok(EventAction::Retry);
     };
 
@@ -275,7 +290,7 @@ pub async fn process_fin_transfer_event(
     };
 
     let claim_fee_args = ClaimFeeArgs {
-        chain_kind: ChainKind::Sol,
+        chain_kind,
         prover_args,
     };
 
@@ -331,20 +346,23 @@ pub async fn process_deploy_token_event(
     deploy_token_event: DeployToken,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
-    let DeployToken::Solana { emitter, sequence } = deploy_token_event else {
+    let DeployToken::Solana {
+        emitter,
+        sequence,
+        chain_kind,
+    } = deploy_token_event
+    else {
         anyhow::bail!("Expected Solana DeployToken, got: {deploy_token_event:?}");
     };
 
-    info!(
-        "Processing Solana DeployToken ({:?}:{sequence})",
-        ChainKind::Sol
-    );
+    info!("Processing SVM DeployToken ({chain_kind:?}:{sequence})");
 
+    let wormhole_chain_id = config.wormhole.svm_chain_id(chain_kind);
     let Ok(vaa) = omni_connector
-        .wormhole_get_vaa(config.wormhole.solana_chain_id, emitter, sequence)
+        .wormhole_get_vaa(wormhole_chain_id, emitter, sequence)
         .await
     else {
-        warn!("VAA is not ready for {:?}:{sequence}", ChainKind::Sol);
+        warn!("VAA is not ready for {chain_kind:?}:{sequence}");
         return Ok(EventAction::Retry);
     };
 
@@ -364,7 +382,7 @@ pub async fn process_deploy_token_event(
     };
 
     let bind_token_args = omni_connector::BindTokenArgs::BindTokenWithArgs {
-        chain_kind: ChainKind::Sol,
+        chain_kind,
         prover_args,
         transaction_options: TransactionOptions {
             nonce,

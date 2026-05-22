@@ -303,6 +303,7 @@ impl EvmNonceManagers {
             }
             ChainKind::Near
             | ChainKind::Sol
+            | ChainKind::Fogo
             | ChainKind::Strk
             | ChainKind::Btc
             | ChainKind::Zcash => {

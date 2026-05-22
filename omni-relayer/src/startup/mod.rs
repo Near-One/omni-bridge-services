@@ -108,7 +108,12 @@ fn build_evm_bridge_client(
         ChainKind::Pol => &config.pol,
         ChainKind::HyperEvm => &config.hyperevm,
         ChainKind::Abs => &config.abs,
-        ChainKind::Near | ChainKind::Sol | ChainKind::Strk | ChainKind::Btc | ChainKind::Zcash => {
+        ChainKind::Near
+        | ChainKind::Sol
+        | ChainKind::Fogo
+        | ChainKind::Strk
+        | ChainKind::Btc
+        | ChainKind::Zcash => {
             unreachable!("Function `build_evm_bridge_client` supports only EVM chains")
         }
     };
@@ -138,28 +143,27 @@ fn build_evm_bridge_client(
         .transpose()
 }
 
-fn build_solana_bridge_client(config: &config::Config) -> Result<Option<SolanaBridgeClient>> {
-    config
-        .solana
-        .as_ref()
-        .map(|solana| {
-            SolanaBridgeClientBuilder::default()
-                .client(Some(RpcClient::new(solana.rpc_http_url.clone())))
-                .program_id(Some(solana.program_id.parse()?))
-                .wormhole_core(Some(solana.wormhole_id.parse()?))
-                .wormhole_post_message_shim_program_id(Some(
-                    solana.wormhole_post_message_shim_id.parse()?,
-                ))
-                .wormhole_post_message_shim_event_authority(Some(
-                    solana.wormhole_post_message_shim_event_authority.parse()?,
-                ))
-                .keypair(Some(crate::utils::solana::get_keypair(
-                    solana.credentials_path.as_ref(),
-                )))
-                .build()
-                .context("Failed to build SolanaBridgeClient")
-        })
-        .transpose()
+fn build_svm_bridge_client(
+    svm: Option<&config::Solana>,
+    chain_kind: ChainKind,
+) -> Result<Option<SolanaBridgeClient>> {
+    svm.map(|svm| {
+        SolanaBridgeClientBuilder::default()
+            .client(Some(RpcClient::new(svm.rpc_http_url.clone())))
+            .program_id(Some(svm.program_id.parse()?))
+            .wormhole_core(Some(svm.wormhole_id.parse()?))
+            .wormhole_post_message_shim_program_id(Some(svm.wormhole_post_message_shim_id.parse()?))
+            .wormhole_post_message_shim_event_authority(Some(
+                svm.wormhole_post_message_shim_event_authority.parse()?,
+            ))
+            .keypair(Some(crate::utils::solana::get_keypair(
+                svm.credentials_path.as_ref(),
+                chain_kind,
+            )))
+            .build()
+            .with_context(|| format!("Failed to build {chain_kind:?} bridge client"))
+    })
+    .transpose()
 }
 
 fn build_starknet_bridge_client(
@@ -210,6 +214,7 @@ fn build_utxo_bridge_client<C: utxo_bridge_client::types::UTXOChain>(
         | ChainKind::HyperEvm
         | ChainKind::Abs
         | ChainKind::Sol
+        | ChainKind::Fogo
         | ChainKind::Strk => {
             anyhow::bail!("Chain {chain:?} is not supported for building UTXO bridge client")
         }
@@ -243,6 +248,7 @@ fn build_light_client(config: &config::Config, chain: ChainKind) -> Result<Optio
         | ChainKind::HyperEvm
         | ChainKind::Abs
         | ChainKind::Sol
+        | ChainKind::Fogo
         | ChainKind::Strk => {
             anyhow::bail!("Chain {chain:?} is not supported for building light client")
         }
@@ -289,7 +295,8 @@ pub async fn build_omni_connector(
     // let hyperevm_bridge_client = build_evm_bridge_client(config, ChainKind::HyperEvm)?;
     let abs_bridge_client =
         build_evm_bridge_client(config, ChainKind::Abs, mpc_finalities.as_ref())?;
-    let solana_bridge_client = build_solana_bridge_client(config)?;
+    let solana_bridge_client = build_svm_bridge_client(config.solana.as_ref(), ChainKind::Sol)?;
+    let fogo_bridge_client = build_svm_bridge_client(config.fogo.as_ref(), ChainKind::Fogo)?;
     let starknet_bridge_client = build_starknet_bridge_client(config, mpc_finalities.as_ref())?;
     let btc_bridge_client = build_utxo_bridge_client(config, ChainKind::Btc)?;
     let zcash_bridge_client = build_utxo_bridge_client(config, ChainKind::Zcash)?;
@@ -309,6 +316,7 @@ pub async fn build_omni_connector(
         .hyperevm_bridge_client(None)
         .abs_bridge_client(abs_bridge_client)
         .solana_bridge_client(solana_bridge_client)
+        .fogo_bridge_client(fogo_bridge_client)
         .starknet_bridge_client(starknet_bridge_client)
         .wormhole_bridge_client(Some(wormhole_bridge_client))
         .btc_bridge_client(btc_bridge_client)

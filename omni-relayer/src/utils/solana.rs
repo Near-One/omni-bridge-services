@@ -6,7 +6,7 @@ use omni_types::ChainKind;
 
 use crate::config;
 
-pub fn get_keypair(file: Option<&String>) -> Keypair {
+pub fn get_keypair(file: Option<&String>, chain_kind: ChainKind) -> Keypair {
     if let Some(file) = file
         && let Ok(keypair) = Keypair::read_from_file(file)
     {
@@ -14,7 +14,7 @@ pub fn get_keypair(file: Option<&String>) -> Keypair {
         return keypair;
     }
 
-    info!("Retrieving Solana keypair from env");
+    info!("Retrieving SVM keypair from env");
 
-    Keypair::from_base58_string(&config::get_private_key(ChainKind::Sol, None))
+    Keypair::from_base58_string(&config::get_private_key(chain_kind, None))
 }

@@ -28,6 +28,7 @@ pub fn get_private_key(chain_kind: ChainKind, near_signer_type: Option<NearSigne
         ChainKind::HyperEvm => "HLEVM_PRIVATE_KEY",
         ChainKind::Abs => "ABS_PRIVATE_KEY",
         ChainKind::Sol => "SOLANA_PRIVATE_KEY",
+        ChainKind::Fogo => "FOGO_PRIVATE_KEY",
         ChainKind::Strk => "STARKNET_PRIVATE_KEY",
         ChainKind::Btc | ChainKind::Zcash => unreachable!("No private key for UTXO chains"),
     };
@@ -117,6 +118,7 @@ pub struct Config {
     pub hyperevm: Option<Evm>,
     pub abs: Option<Evm>,
     pub solana: Option<Solana>,
+    pub fogo: Option<Solana>,
     pub starknet: Option<Starknet>,
     pub btc: Option<Utxo>,
     pub zcash: Option<Utxo>,
@@ -156,6 +158,7 @@ impl Config {
             | ChainKind::HyperEvm
             | ChainKind::Abs
             | ChainKind::Sol
+            | ChainKind::Fogo
             | ChainKind::Strk => {
                 panic!("Sigining utxo transaction is not applicable for {chain:?}")
             }
@@ -176,6 +179,7 @@ impl Config {
             | ChainKind::HyperEvm
             | ChainKind::Abs
             | ChainKind::Sol
+            | ChainKind::Fogo
             | ChainKind::Strk => {
                 panic!("Sign delay is not applicable for {chain:?}")
             }
@@ -196,6 +200,7 @@ impl Config {
             | ChainKind::HyperEvm
             | ChainKind::Abs
             | ChainKind::Sol
+            | ChainKind::Fogo
             | ChainKind::Strk => {
                 panic!("Active UTXO management is not applicable for {chain:?}");
             }
@@ -217,6 +222,7 @@ impl Config {
             | ChainKind::HyperEvm
             | ChainKind::Abs
             | ChainKind::Sol
+            | ChainKind::Fogo
             | ChainKind::Strk => {
                 panic!("Verifying withdraw is not applicable for {chain:?}")
             }
@@ -480,4 +486,18 @@ pub struct Orchard {
 pub struct Wormhole {
     pub api_url: String,
     pub solana_chain_id: u64,
+    #[serde(default)]
+    pub fogo_chain_id: Option<u64>,
+}
+
+impl Wormhole {
+    pub fn svm_chain_id(&self, chain_kind: ChainKind) -> u64 {
+        match chain_kind {
+            ChainKind::Sol => self.solana_chain_id,
+            ChainKind::Fogo => self
+                .fogo_chain_id
+                .expect("wormhole.fogo_chain_id must be configured when [fogo] is enabled"),
+            _ => panic!("svm_chain_id called for non-SVM chain {chain_kind:?}"),
+        }
+    }
 }

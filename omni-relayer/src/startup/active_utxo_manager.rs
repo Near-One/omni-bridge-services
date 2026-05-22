@@ -66,6 +66,7 @@ pub async fn start_active_utxo_manager(
                 chain,
                 settings.fixed_fee_rate,
                 settings.max_input_number,
+                false,
                 TransactionOptions {
                     nonce,
                     wait_until: near_primitives::views::TxExecutionStatus::Final,
