@@ -486,14 +486,17 @@ pub struct Orchard {
 pub struct Wormhole {
     pub api_url: String,
     pub solana_chain_id: u64,
-    pub fogo_chain_id: u64,
+    #[serde(default)]
+    pub fogo_chain_id: Option<u64>,
 }
 
 impl Wormhole {
     pub fn svm_chain_id(&self, chain_kind: ChainKind) -> u64 {
         match chain_kind {
             ChainKind::Sol => self.solana_chain_id,
-            ChainKind::Fogo => self.fogo_chain_id,
+            ChainKind::Fogo => self
+                .fogo_chain_id
+                .expect("wormhole.fogo_chain_id must be configured when [fogo] is enabled"),
             _ => panic!("svm_chain_id called for non-SVM chain {chain_kind:?}"),
         }
     }

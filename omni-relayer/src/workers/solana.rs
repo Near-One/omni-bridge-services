@@ -100,7 +100,7 @@ pub async fn process_init_transfer_event(
 
     if config.is_bridge_api_enabled() {
         let token = OmniAddress::new_from_slice(chain_kind, &token.to_bytes()).map_err(|err| {
-            anyhow::anyhow!("Failed to parse \"{sender}\" as `OmniAddress`: {err:?}")
+            anyhow::anyhow!("Failed to parse \"{token}\" as `OmniAddress`: {err:?}")
         })?;
 
         let Ok(needed_fee) =
