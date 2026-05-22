@@ -34,6 +34,10 @@ pub mod utxo;
 
 const PAUSED_ERROR: u32 = 6008;
 
+fn default_sol_chain_kind() -> ChainKind {
+    ChainKind::Sol
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RetryableEvent<E> {
     pub event: E,
@@ -159,6 +163,8 @@ pub enum FinTransfer {
         emitter: String,
         sequence: u64,
         transfer_id: Option<TransferId>,
+        #[serde(default = "default_sol_chain_kind")]
+        chain_kind: ChainKind,
         #[serde(default)]
         creation_timestamp: i64,
     },
@@ -180,6 +186,8 @@ pub enum DeployToken {
     Solana {
         emitter: String,
         sequence: u64,
+        #[serde(default = "default_sol_chain_kind")]
+        chain_kind: ChainKind,
     },
     Starknet {
         tx_hash: String,
@@ -472,7 +480,12 @@ async fn process_message(
                     produced_events: Vec::new(),
                 }
             }
-            Transfer::Solana { sequence, .. } => {
+            Transfer::Solana {
+                sequence,
+                ref sender,
+                ..
+            } => {
+                let origin_chain = sender.get_chain();
                 let result = solana::process_init_transfer_event(
                     config,
                     redis,
@@ -486,7 +499,7 @@ async fn process_message(
 
                 let fee_key = serde_json::to_string(&TransferId {
                     origin_nonce: sequence,
-                    origin_chain: ChainKind::Sol,
+                    origin_chain,
                 })
                 .unwrap_or_default();
 

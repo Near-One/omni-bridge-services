@@ -15,6 +15,10 @@ use utoipa::ToSchema;
 use crate::integers::U128;
 use crate::stream_types::AccountId;
 
+fn default_sol_chain_kind() -> ChainKind {
+    ChainKind::Sol
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OmniTransferStatus {
     /// The transfer was initialized on the sender's chain.
@@ -66,6 +70,10 @@ pub enum OmniTransactionOrigin {
         // estimated production time, as Unix timestamp (seconds since the Unix epoch) of when the transaction was processed.
         block_time: u64,
         instruction_index: usize,
+        // Defaults to `ChainKind::Sol` so historical documents written before
+        // the Solana-family multi-chain split still deserialize.
+        #[serde(default = "default_sol_chain_kind")]
+        chain_kind: ChainKind,
     },
     UtxoTransaction {
         block_height: u64,

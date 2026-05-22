@@ -376,6 +376,7 @@ pub fn get_last_processed_key(chain_kind: omni_types::ChainKind) -> String {
     use omni_types::ChainKind;
     match chain_kind {
         ChainKind::Sol => "SOLANA_LAST_PROCESSED_SIGNATURE".to_string(),
+        ChainKind::Fogo => "FOGO_LAST_PROCESSED_SIGNATURE".to_string(),
         _ => format!("{chain_kind:?}_LAST_PROCESSED_BLOCK"),
     }
 }

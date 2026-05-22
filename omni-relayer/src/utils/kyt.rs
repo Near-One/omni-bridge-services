@@ -65,6 +65,7 @@ fn blockchain_tag(chain: ChainKind) -> Option<&'static str> {
         ChainKind::Bnb => Some("bsc"),
         ChainKind::Pol => Some("pol"),
         ChainKind::Sol => Some("sol"),
+        ChainKind::Fogo => None,
         ChainKind::Strk => Some("starknet"),
         ChainKind::Btc => Some("btc"),
         ChainKind::Zcash => Some("zec"),

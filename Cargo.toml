@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-omni-types = { git = "https://github.com/near-one/omni-bridge", package = "omni-types", rev = "ffbdc544c0d7f670942e8bf532c7e023c1c6bfec", features = ["abi", "__abi-generate"] }
+omni-types = { git = "https://github.com/near-one/omni-bridge", package = "omni-types", rev = "ba6d1d4470d8dbe2748280647430ebf06a3cc299", features = ["abi", "__abi-generate"] }
 
 # Config for 'dist'
 [workspace.metadata.dist]

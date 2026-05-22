@@ -547,18 +547,21 @@ pub async fn process_sign_transfer_event(
                 Some(nonce),
             )
         }
-        ChainKind::Sol => {
-            let OmniAddress::Sol(token) = message_payload.token_address.clone() else {
+        ChainKind::Sol | ChainKind::Fogo => {
+            let (OmniAddress::Sol(token) | OmniAddress::Fogo(token)) =
+                message_payload.token_address.clone()
+            else {
                 anyhow::bail!(
-                    "Expected Sol token address, got: {:?}",
+                    "Expected SVM token address, got: {:?}",
                     message_payload.token_address
                 );
             };
 
             (
-                omni_connector::FinTransferArgs::SolanaFinTransfer {
+                omni_connector::FinTransferArgs::SvmFinTransfer {
+                    chain_kind,
                     event: omni_bridge_event.clone(),
-                    solana_token: Pubkey::new_from_array(token.0),
+                    svm_token: Pubkey::new_from_array(token.0),
                 },
                 None,
             )
@@ -610,6 +613,7 @@ pub async fn process_sign_transfer_event(
                     ChainKind::Abs => &config.abs,
                     ChainKind::Near
                     | ChainKind::Sol
+                    | ChainKind::Fogo
                     | ChainKind::Strk
                     | ChainKind::Btc
                     | ChainKind::Zcash => {

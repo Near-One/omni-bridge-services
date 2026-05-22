@@ -35,6 +35,12 @@ pub async fn get_token_id(
             })?;
             OmniAddress::new_from_slice(ChainKind::Sol, &token.to_bytes())
         }
+        ChainKind::Fogo => {
+            let token = Pubkey::from_str(token_address).map_err(|_| {
+                format!("Failed to parse token address as Pubkey: {token_address:?}",)
+            })?;
+            OmniAddress::new_from_slice(ChainKind::Fogo, &token.to_bytes())
+        }
         ChainKind::Strk => OmniAddress::from_str(token_address),
         ChainKind::Btc => Ok(OmniAddress::Btc(token_address.to_string())),
         ChainKind::Zcash => Ok(OmniAddress::Zcash(token_address.to_string())),

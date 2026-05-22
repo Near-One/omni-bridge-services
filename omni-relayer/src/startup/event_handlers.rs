@@ -50,7 +50,12 @@ fn get_evm_config(config: &config::Config, chain_kind: ChainKind) -> Result<&con
             .as_ref()
             .context("EVM config for HyperEvm is not set"),
         ChainKind::Abs => config.abs.as_ref().context("EVM config for Abs is not set"),
-        ChainKind::Near | ChainKind::Sol | ChainKind::Strk | ChainKind::Btc | ChainKind::Zcash => {
+        ChainKind::Near
+        | ChainKind::Sol
+        | ChainKind::Fogo
+        | ChainKind::Strk
+        | ChainKind::Btc
+        | ChainKind::Zcash => {
             anyhow::bail!("Unsupported chain kind for EVM: {chain_kind:?}")
         }
     }
@@ -421,6 +426,7 @@ pub(super) async fn handle_transaction_event(
             let OmniTransactionOrigin::SolanaTransaction {
                 instruction_index,
                 block_time,
+                chain_kind,
                 ..
             } = origin
             else {
@@ -435,11 +441,11 @@ pub(super) async fn handle_transaction_event(
 
             info!(
                 "Received SolanaInitTransfer ({:?}:{}): {origin_transaction_id}",
-                ChainKind::Sol,
-                init_transfer.origin_nonce
+                chain_kind, init_transfer.origin_nonce
             );
 
-            let OmniAddress::Sol(ref token) = init_transfer.token else {
+            let (OmniAddress::Sol(ref token) | OmniAddress::Fogo(ref token)) = init_transfer.token
+            else {
                 anyhow::bail!("Unexpected token address: {}", init_transfer.token);
             };
             let Ok(native_fee) = u64::try_from(init_transfer.fee.native_fee.0) else {
@@ -475,6 +481,7 @@ pub(super) async fn handle_transaction_event(
             let OmniTransactionOrigin::SolanaTransaction {
                 instruction_index,
                 block_time,
+                chain_kind,
                 ..
             } = origin
             else {
@@ -494,7 +501,7 @@ pub(super) async fn handle_transaction_event(
 
             info!(
                 "Received SolanaFinTransfer ({:?}:{sequence}): {origin_transaction_id}",
-                ChainKind::Sol
+                chain_kind
             );
             let redis_key = solana_event_key(&origin_transaction_id, Some(instruction_index));
 
@@ -507,6 +514,7 @@ pub(super) async fn handle_transaction_event(
                 crate::workers::FinTransfer::Solana {
                     emitter,
                     sequence,
+                    chain_kind,
                     transfer_id: (&unified_transfer_id).try_into().ok(),
                     creation_timestamp,
                 },
@@ -922,13 +930,15 @@ pub(super) async fn handle_meta_event(
             emitter, sequence, ..
         } => {
             let OmniTransactionOrigin::SolanaTransaction {
-                instruction_index, ..
+                instruction_index,
+                chain_kind,
+                ..
             } = origin
             else {
                 anyhow::bail!("Expected SolanaTransaction for SolanaDeployToken");
             };
 
-            info!("Received SolanaDeployToken: {sequence}");
+            info!("Received SolanaDeployToken ({chain_kind:?}): {sequence}");
 
             let redis_key = solana_event_key(&origin_transaction_id, Some(instruction_index));
 
@@ -938,7 +948,11 @@ pub(super) async fn handle_meta_event(
                 nats,
                 &redis_key,
                 ChainKind::Near,
-                workers::DeployToken::Solana { emitter, sequence },
+                workers::DeployToken::Solana {
+                    emitter,
+                    sequence,
+                    chain_kind,
+                },
             )
             .await;
         }

@@ -30,6 +30,8 @@ ABS_PRIVATE_KEY=
 
 # Note that solana private key must be encoded to bs58 string in order to use it
 SOLANA_PRIVATE_KEY=
+# Note that fogo private key must be encoded to bs58 string in order to use it
+FOGO_PRIVATE_KEY=
 
 STARKNET_PRIVATE_KEY=
 STARKNET_ACCOUNT_ADDRESS=
