@@ -53,7 +53,7 @@ pub async fn start_active_utxo_manager(
             settings.utxo_count_threshold
         );
 
-        let nonce = match near_nonce.reserve_nonce().await {
+        let nonce = match near_nonce.reserve_nonce() {
             Ok(nonce) => Some(nonce),
             Err(err) => {
                 warn!("Active UTXO manager: failed to reserve nonce for {chain:?}: {err:?}");

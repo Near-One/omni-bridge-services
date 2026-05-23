@@ -163,7 +163,6 @@ pub async fn process_transfer_event(
 
     let nonce = near_nonce
         .reserve_nonce()
-        .await
         .context("Failed to reserve nonce for near transaction")?;
 
     match omni_connector
@@ -298,7 +297,6 @@ pub async fn process_transfer_to_utxo_event(
 
     let nonce = near_nonce
         .reserve_nonce()
-        .await
         .context("Failed to reserve nonce for near transaction")?;
 
     match omni_connector
@@ -535,7 +533,6 @@ pub async fn process_sign_transfer_event(
         | ChainKind::Abs => {
             let nonce = evm_nonces
                 .reserve_nonce(chain_kind)
-                .await
                 .context("Failed to reserve nonce for evm transaction")?;
 
             (
@@ -760,7 +757,6 @@ pub async fn initiate_fast_transfer(
     let mut nonce = Some(
         near_fast_nonce
             .reserve_nonce()
-            .await
             .context("Failed to reserve nonce for near transaction")?,
     );
 
@@ -787,7 +783,6 @@ pub async fn initiate_fast_transfer(
             nonce = Some(
                 near_fast_nonce
                     .reserve_nonce()
-                    .await
                     .context("Failed to reserve nonce for near transaction")?,
             );
         }

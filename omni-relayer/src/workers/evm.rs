@@ -211,7 +211,6 @@ pub async fn process_init_transfer_event(
 
     let nonce = near_omni_nonce
         .reserve_nonce()
-        .await
         .context("Failed to reserve nonce for near transaction")?;
 
     let fin_transfer_args = if let Some(vaa) = vaa {
@@ -361,7 +360,6 @@ pub async fn process_evm_transfer_event(
 
     let nonce = near_nonce
         .reserve_nonce()
-        .await
         .context("Failed to reserve nonce for near transaction")?;
 
     let result = if chain_kind == ChainKind::Abs {
@@ -490,7 +488,6 @@ pub async fn process_deploy_token_event(
 
     let nonce = near_nonce
         .reserve_nonce()
-        .await
         .context("Failed to reserve nonce for near transaction")?;
 
     let transaction_options = TransactionOptions {

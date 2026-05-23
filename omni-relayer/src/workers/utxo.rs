@@ -97,7 +97,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
         }
     }
 
-    let nonce = match near_nonce.reserve_nonce().await {
+    let nonce = match near_nonce.reserve_nonce() {
         Ok(nonce) => Some(nonce),
         Err(err) => {
             warn!(
@@ -203,7 +203,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
         }
     }
 
-    let mut nonce = match near_nonce.reserve_nonce().await {
+    let mut nonce = match near_nonce.reserve_nonce() {
         Ok(nonce) => Some(nonce),
         Err(err) => {
             warn!(
@@ -243,7 +243,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 return Ok(EventAction::Retry);
             }
 
-            nonce = match near_nonce.reserve_nonce().await {
+            nonce = match near_nonce.reserve_nonce() {
                 Ok(nonce) => Some(nonce),
                 Err(err) => {
                     warn!(
@@ -467,7 +467,7 @@ pub async fn process_confirmed_tx_hash(
         "withdraw"
     };
 
-    let nonce = match near_nonce.reserve_nonce().await {
+    let nonce = match near_nonce.reserve_nonce() {
         Ok(nonce) => Some(nonce),
         Err(err) => {
             warn!("Failed to reserve nonce for {chain:?} {action} ({btc_tx_hash}): {err:?}");

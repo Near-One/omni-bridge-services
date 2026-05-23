@@ -51,21 +51,14 @@ impl NonceManager {
         Ok(())
     }
 
-    pub async fn reserve_nonce(&self) -> Result<u64> {
-        let current_nonce = self.get_current_nonce().await?;
-
+    pub fn reserve_nonce(&self) -> Result<u64> {
         let mut local_nonce = self
             .nonce
             .lock()
             .map_err(|_| anyhow::anyhow!("Mutex lock error during nonce update"))?;
 
-        if *local_nonce < current_nonce {
-            *local_nonce = current_nonce;
-        }
-
         let reserved = *local_nonce;
         *local_nonce += 1;
-        drop(local_nonce);
 
         Ok(reserved)
     }
@@ -250,57 +243,43 @@ impl EvmNonceManagers {
         Ok(())
     }
 
-    pub async fn reserve_nonce(&self, chain_kind: ChainKind) -> Result<u64> {
+    pub fn reserve_nonce(&self, chain_kind: ChainKind) -> Result<u64> {
         match chain_kind {
-            ChainKind::Eth => {
-                self.eth
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Eth nonce manager is not initialized"))?
-                    .reserve_nonce()
-                    .await
-            }
-            ChainKind::Base => {
-                self.base
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Base nonce manager is not initialized"))?
-                    .reserve_nonce()
-                    .await
-            }
-            ChainKind::Arb => {
-                self.arb
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Arb nonce manager is not initialized"))?
-                    .reserve_nonce()
-                    .await
-            }
-            ChainKind::Bnb => {
-                self.bnb
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Bnb nonce manager is not initialized"))?
-                    .reserve_nonce()
-                    .await
-            }
-            ChainKind::Pol => {
-                self.pol
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Pol nonce manager is not initialized"))?
-                    .reserve_nonce()
-                    .await
-            }
-            ChainKind::HyperEvm => {
-                self.hyperevm
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("HyperEvm nonce manager is not initialized"))?
-                    .reserve_nonce()
-                    .await
-            }
-            ChainKind::Abs => {
-                self.abs
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("Abs nonce manager is not initialized"))?
-                    .reserve_nonce()
-                    .await
-            }
+            ChainKind::Eth => self
+                .eth
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Eth nonce manager is not initialized"))?
+                .reserve_nonce(),
+            ChainKind::Base => self
+                .base
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Base nonce manager is not initialized"))?
+                .reserve_nonce(),
+            ChainKind::Arb => self
+                .arb
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Arb nonce manager is not initialized"))?
+                .reserve_nonce(),
+            ChainKind::Bnb => self
+                .bnb
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Bnb nonce manager is not initialized"))?
+                .reserve_nonce(),
+            ChainKind::Pol => self
+                .pol
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Pol nonce manager is not initialized"))?
+                .reserve_nonce(),
+            ChainKind::HyperEvm => self
+                .hyperevm
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("HyperEvm nonce manager is not initialized"))?
+                .reserve_nonce(),
+            ChainKind::Abs => self
+                .abs
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Abs nonce manager is not initialized"))?
+                .reserve_nonce(),
             ChainKind::Near
             | ChainKind::Sol
             | ChainKind::Fogo
