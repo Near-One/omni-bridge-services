@@ -135,7 +135,6 @@ pub async fn process_init_transfer_event(
 
     let nonce = near_nonce
         .reserve_nonce()
-        .await
         .context("Failed to reserve nonce for near transaction")?;
 
     let fin_transfer_args = omni_connector::FinTransferArgs::NearFinTransferWithMpcProof {
@@ -241,7 +240,6 @@ pub async fn process_fin_transfer_event(
 
     let nonce = near_nonce
         .reserve_nonce()
-        .await
         .context("Failed to reserve nonce for near transaction")?;
 
     let claim_fee_args = omni_connector::ClaimFeeArgs::ClaimFeeWithMpcProofTx {
@@ -310,7 +308,7 @@ pub async fn process_deploy_token_event(
         ChainKind::Strk
     );
 
-    let nonce = match near_nonce.reserve_nonce().await {
+    let nonce = match near_nonce.reserve_nonce() {
         Ok(nonce) => Some(nonce),
         Err(err) => {
             warn!("Failed to reserve nonce: {err:?}");

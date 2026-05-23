@@ -166,7 +166,6 @@ pub async fn process_init_transfer_event(
 
     let nonce = near_nonce
         .reserve_nonce()
-        .await
         .context("Failed to reserve nonce for near transaction")?;
 
     let fin_transfer_args = omni_connector::FinTransferArgs::NearFinTransferWithVaa {
@@ -296,7 +295,6 @@ pub async fn process_fin_transfer_event(
 
     let nonce = near_nonce
         .reserve_nonce()
-        .await
         .context("Failed to reserve nonce for near transaction")?;
 
     match omni_connector
@@ -373,7 +371,7 @@ pub async fn process_deploy_token_event(
         anyhow::bail!("Failed to serialize prover args for {sequence}");
     };
 
-    let nonce = match near_nonce.reserve_nonce().await {
+    let nonce = match near_nonce.reserve_nonce() {
         Ok(nonce) => Some(nonce),
         Err(err) => {
             warn!("Failed to reserve nonce: {err:?}");
