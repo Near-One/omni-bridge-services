@@ -46,7 +46,10 @@ pub(super) async fn check_kyt_senders(
             );
             Some(EventAction::Remove)
         }
-        Ok(utils::kyt::SuggestedAction::None) => None,
+        Ok(utils::kyt::SuggestedAction::None) => {
+            info!("KYT approved for senders {senders:?}, processing transfer {context}");
+            None
+        }
         Err(err) => {
             warn!("KYT check failed for {senders:?}: {err:?}, retrying");
             Some(EventAction::Retry)
