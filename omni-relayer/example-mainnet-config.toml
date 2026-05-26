@@ -196,7 +196,7 @@ finalize_transfer_sol_discriminator = [104, 27, 121, 69, 3, 70, 217, 66]
 rpc_http_url = "https://mainnet.fogo.io"
 rpc_ws_url = ""
 expected_finalization_time = 15
-program_id = "2iANpDh96GgithLPTVMZjZFtnbrYBUCLqnEvaytbwTQq"
+program_id = "dahPEoZGXfyV58JqqH85okdHmpN8U2q8owgPUXSCPxe"
 wormhole_id = "worm2mrQkG1B1KTz37erMfWN8anHkSK24nzca7UD8BB"
 wormhole_post_message_shim_id = "EtZMZM22ViKMo4r5y4Anovs3wKQ2owUmDpjygnMMcdEX"
 wormhole_post_message_shim_event_authority = "HQS31aApX3DDkuXgSpV9XyDUNtFgQ31pUn5BNWHG2PSp"
@@ -235,15 +235,29 @@ lc_polling_interval_secs = 10
 # Set to 0 to disable the delay.
 sign_delay_secs = 120
 
-# Uncomment to periodically consolidate UTXOs. The service polls
-# `get_metadata.current_utxos_num` on the connector and calls
-# `active_utxo_management` when the count exceeds `utxo_count_threshold`.
+# Uncomment to periodically consolidate UTXOs. The service polls the connector
+# every `polling_interval_secs` and fires `active_utxo_management` when either
+# sub-block's condition is met (large-merge wins if both fire on the same tick).
 # Signing of the resulting transfer is handled by the regular UTXO sign flow.
+# Either sub-block can be omitted to disable that mode.
+#
 # [btc.active_utxo_management]
-# utxo_count_threshold = 5000
 # polling_interval_secs = 300
-# fixed_fee_rate = 1000
-# max_input_number = 20
+#
+# # Consolidate the smallest UTXOs once the pool grows past this count.
+# [btc.active_utxo_management.small]
+# utxo_count_threshold = 5000
+# fixed_fee_rate       = 1000
+# max_input_number     = 20
+#
+# # Consolidate the largest UTXOs when the top of the pool gets too thin to
+# # cheaply fund big transfers — fires when the sum of the top `top_n_window`
+# # balances is < `top_n_sum_threshold` (in sats for BTC, zatoshis for Zcash).
+# [btc.active_utxo_management.large]
+# top_n_window            = 20
+# top_n_sum_threshold     = 1500000000
+# fixed_fee_rate          = 2000
+# max_input_number        = 10
 
 [zcash]
 rpc_http_url = "https://x-api-key:TATUM_API_KEY@zcash-mainnet.gateway.tatum.io"
