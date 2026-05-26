@@ -458,12 +458,44 @@ const fn default_lc_polling_interval_secs() -> u64 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ActiveUtxoManagement {
-    /// When `current_utxos_num` on the UTXO connector contract exceeds this
-    /// threshold, the service calls `active_utxo_management` to consolidate.
-    pub utxo_count_threshold: u32,
-    /// How often to poll `get_metadata` for the current UTXO count.
+    /// How often to poll the UTXO pool and re-evaluate merge conditions.
     #[serde(default = "default_active_utxo_polling_interval_secs")]
     pub polling_interval_secs: u64,
+    /// Consolidate the smallest UTXOs when the pool grows past a count
+    /// threshold. Optional — leave unset to disable small-merge for this chain.
+    #[serde(default)]
+    pub small: Option<SmallMerge>,
+    /// Consolidate the largest UTXOs when the top of the pool gets too thin
+    /// to fund big transfers cheaply. Optional — leave unset to disable
+    /// large-merge for this chain.
+    #[serde(default)]
+    pub large: Option<LargeMerge>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct SmallMerge {
+    /// When `current_utxos_num` on the UTXO connector contract exceeds this
+    /// threshold, fire `active_utxo_management` with `merge_largest = false`.
+    pub utxo_count_threshold: u32,
+    /// Optional fixed fee rate (sats/kvB) to pass to `active_utxo_management`.
+    /// If unset, the connector falls back to the on-chain fee rate.
+    #[serde(default)]
+    pub fixed_fee_rate: Option<u64>,
+    /// Optional cap on the number of UTXOs consumed per consolidation call.
+    #[serde(default)]
+    pub max_input_number: Option<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct LargeMerge {
+    /// Size of the "top of the pool" window (by balance) whose sum is checked
+    /// against `top_n_sum_threshold`.
+    pub top_n_window: u32,
+    /// Trigger `active_utxo_management` with `merge_largest = true` when the
+    /// sum of the top `top_n_window` UTXO balances is strictly less than this
+    /// value. Denominated in chain-native base units (sats for BTC, zatoshis
+    /// for Zcash).
+    pub top_n_sum_threshold: u64,
     /// Optional fixed fee rate (sats/kvB) to pass to `active_utxo_management`.
     /// If unset, the connector falls back to the on-chain fee rate.
     #[serde(default)]

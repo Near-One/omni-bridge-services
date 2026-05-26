@@ -434,6 +434,9 @@ async fn main() -> Result<()> {
         let Some(active_utxo_management) = config.active_utxo_management(chain).cloned() else {
             continue;
         };
+        if active_utxo_management.small.is_none() && active_utxo_management.large.is_none() {
+            continue;
+        }
 
         let omni_connector = omni_connector.clone();
         let near_omni_nonce = near_omni_nonce.clone();
