@@ -1,13 +1,120 @@
-use std::{collections::HashMap, sync::OnceLock, time::Duration};
+use std::{collections::HashMap, sync::Arc, sync::OnceLock, time::Duration};
 
 use anyhow::{Context, Result};
-use omni_connector::OmniConnector;
+use omni_connector::{BtcTransferSelection, OmniConnector};
 use omni_types::{ChainKind, OmniAddress};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::{Mutex, MutexGuard};
+use tracing::{info, warn};
+use utxo_utils::UTXO;
 
 use crate::{config, utils};
+
+/// In-memory cache of UTXOs held by the bridge contract on NEAR, with a
+/// separate mutex per chain. Populated on relayer init and refreshed by
+/// the LC poller when the tip advances. Submitters hold the lock only
+/// across selection (see `lock`), pull the selected outpoints out with
+/// `take_outpoints`, drop the lock, and restore via `restore_outpoints`
+/// if the downstream submit fails.
+pub struct UtxoSet {
+    btc: Mutex<HashMap<String, UTXO>>,
+    zcash: Mutex<HashMap<String, UTXO>>,
+}
+
+impl UtxoSet {
+    pub fn global() -> &'static Self {
+        static INSTANCE: OnceLock<UtxoSet> = OnceLock::new();
+        INSTANCE.get_or_init(|| Self {
+            btc: Mutex::new(HashMap::new()),
+            zcash: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn slot(&self, chain: ChainKind) -> Option<&Mutex<HashMap<String, UTXO>>> {
+        match chain {
+            ChainKind::Btc => Some(&self.btc),
+            ChainKind::Zcash => Some(&self.zcash),
+            _ => None,
+        }
+    }
+
+    /// Fire-and-forget version of `refresh`: spawns a background task and
+    /// returns immediately. Failures are logged, not propagated.
+    pub fn refresh_async(&'static self, omni_connector: Arc<OmniConnector>, chain: ChainKind) {
+        tokio::spawn(async move {
+            if let Err(err) = self.refresh(&omni_connector, chain).await {
+                warn!("Background refresh of {chain:?} UTXO set failed: {err:?}");
+            }
+        });
+    }
+
+    /// Re-fetch the UTXO set for `chain` from the NEAR bridge contract and
+    /// swap it into the cache. The RPC is performed without holding the
+    /// per-chain lock; the lock is only acquired for the brief swap.
+    pub async fn refresh(&self, omni_connector: &OmniConnector, chain: ChainKind) -> Result<()> {
+        let near_bridge_client = omni_connector
+            .near_bridge_client()
+            .context("NEAR bridge client unavailable for UTXO refresh")?;
+        let utxos = near_bridge_client
+            .get_utxos(chain)
+            .await
+            .with_context(|| format!("Failed to fetch UTXOs for {chain:?}"))?;
+        let slot = self
+            .slot(chain)
+            .with_context(|| format!("UtxoSet has no slot for {chain:?}"))?;
+        let count = utxos.len();
+        *slot.lock().await = utxos;
+        info!("Refreshed {chain:?} UTXO set ({count} UTXOs)");
+        Ok(())
+    }
+
+    /// Acquire the exclusive guard for `chain`. Returns `None` for non-UTXO
+    /// chains. Hold across `near_select_btc_utxos` only — drop before the
+    /// (slow) submit call.
+    pub async fn lock(&self, chain: ChainKind) -> Option<MutexGuard<'_, HashMap<String, UTXO>>> {
+        Some(self.slot(chain)?.lock().await)
+    }
+
+    /// Remove every outpoint in `selection` from the locked chain cache,
+    /// returning the removed entries so the caller can restore them via
+    /// `restore_outpoints` if the downstream submit fails. A `None` guard
+    /// or entries missing from the cache are silently skipped — the SDK
+    /// may have selected outpoints by falling back to a direct contract
+    /// query when our cache snapshot was empty.
+    pub fn take_outpoints(
+        guard: Option<&mut MutexGuard<'_, HashMap<String, UTXO>>>,
+        selection: &BtcTransferSelection,
+    ) -> Vec<(String, UTXO)> {
+        let Some(guard) = guard else {
+            return Vec::new();
+        };
+        selection
+            .out_points
+            .iter()
+            .filter_map(|op| {
+                let key = format!("{}@{}", op.txid, op.vout);
+                guard.remove(&key).map(|utxo| (key, utxo))
+            })
+            .collect()
+    }
+
+    /// Re-insert entries previously taken with `take_outpoints`. No-op for
+    /// non-UTXO chains or when `removed` is empty.
+    pub async fn restore_outpoints(&self, chain: ChainKind, removed: Vec<(String, UTXO)>) {
+        if removed.is_empty() {
+            return;
+        }
+        let Some(slot) = self.slot(chain) else {
+            return;
+        };
+        let mut guard = slot.lock().await;
+        for (key, utxo) in removed {
+            guard.insert(key, utxo);
+        }
+    }
+}
 
 pub async fn lc_defer_target(
     omni_connector: &OmniConnector,
