@@ -46,7 +46,6 @@ pub async fn start_utxo_lc_poller(
     );
 
     let utxo_set = utils::utxo::UtxoSet::global();
-    utxo_set.refresh_async(omni_connector.clone(), chain);
     let mut last_refreshed_tip: Option<u64> = None;
 
     loop {
@@ -67,7 +66,7 @@ pub async fn start_utxo_lc_poller(
         };
 
         if last_refreshed_tip != Some(tip) {
-            utxo_set.refresh_async(omni_connector.clone(), chain);
+            utxo_set.mark_dirty(chain);
             last_refreshed_tip = Some(tip);
         }
 

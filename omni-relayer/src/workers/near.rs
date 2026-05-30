@@ -309,20 +309,23 @@ pub async fn process_transfer_to_utxo_event(
 
     let max_gas_fee = serde_json::from_str::<UTXOChainMsg>(&transfer_message.msg)
         .map(|msg| match msg {
-            UTXOChainMsg::MaxGasFee(max_fee) => {
-                let scaled =
-                    u128::from(max_fee.0).saturating_mul(u128::from(max_gas_fee_percent)) / 100;
-                u64::try_from(scaled).unwrap_or(max_fee.0)
-            }
+            UTXOChainMsg::MaxGasFee(max_fee) => max_fee.0,
         })
         .ok();
+    // Selector gets only `max_gas_fee_percent` of the user's cap so a
+    // later RBF can bump within the same budget; the submit itself
+    // enforces the user's real cap unchanged.
+    let max_gas_fee_for_selector = max_gas_fee.map(|m| {
+        let scaled = u128::from(m).saturating_mul(u128::from(max_gas_fee_percent)) / 100;
+        u64::try_from(scaled).unwrap_or(m)
+    });
 
     // The lock is held only across selection: pick UTXOs, then remove them
     // from the cache so concurrent submitters can't pick the same inputs.
     // The (slow) submit runs without the lock; on failure we put the
     // removed UTXOs back.
     let utxo_set = utils::utxo::UtxoSet::global();
-    let mut utxos_guard = utxo_set.lock(destination_chain).await;
+    let mut utxos_guard = utxo_set.lock(&omni_connector, destination_chain).await;
     let utxos_snapshot = utxos_guard.as_ref().map(|g| (**g).clone());
 
     let mut removed: Vec<(String, utxo_utils::UTXO)> = Vec::new();
@@ -333,7 +336,7 @@ pub async fn process_transfer_to_utxo_event(
             recipient.clone(),
             transfer_message.amount.0 - transfer_message.fee.fee.0,
             fee_rate,
-            max_gas_fee,
+            max_gas_fee_for_selector,
             Some(change_reserve),
             None,
             utxos_snapshot,
@@ -417,7 +420,7 @@ pub async fn process_transfer_to_utxo_event(
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                utxo_set.refresh_async(omni_connector.clone(), destination_chain);
+                utxo_set.mark_dirty(destination_chain);
 
                 match near_rpc_error {
                     NearRpcError::NonceError
