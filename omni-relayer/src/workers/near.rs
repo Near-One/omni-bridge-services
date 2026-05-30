@@ -325,7 +325,7 @@ pub async fn process_transfer_to_utxo_event(
     // The (slow) submit runs without the lock; on failure we put the
     // removed UTXOs back.
     let utxo_set = utils::utxo::UtxoSet::global();
-    let mut utxos_guard = utxo_set.lock(destination_chain).await;
+    let mut utxos_guard = utxo_set.lock(&omni_connector, destination_chain).await;
     let utxos_snapshot = utxos_guard.as_ref().map(|g| (**g).clone());
 
     let mut removed: Vec<(String, utxo_utils::UTXO)> = Vec::new();
@@ -420,7 +420,7 @@ pub async fn process_transfer_to_utxo_event(
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                utxo_set.refresh_async(omni_connector.clone(), destination_chain);
+                utxo_set.mark_dirty(destination_chain);
 
                 match near_rpc_error {
                     NearRpcError::NonceError
