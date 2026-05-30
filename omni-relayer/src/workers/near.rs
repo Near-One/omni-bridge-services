@@ -310,9 +310,8 @@ pub async fn process_transfer_to_utxo_event(
     let max_gas_fee = serde_json::from_str::<UTXOChainMsg>(&transfer_message.msg)
         .map(|msg| match msg {
             UTXOChainMsg::MaxGasFee(max_fee) => {
-                let scaled = u128::from(max_fee.0)
-                    .saturating_mul(u128::from(max_gas_fee_percent))
-                    / 100;
+                let scaled =
+                    u128::from(max_fee.0).saturating_mul(u128::from(max_gas_fee_percent)) / 100;
                 u64::try_from(scaled).unwrap_or(max_fee.0)
             }
         })
