@@ -299,9 +299,22 @@ pub async fn process_transfer_to_utxo_event(
         .reserve_nonce()
         .context("Failed to reserve nonce for near transaction")?;
 
+    let utxo_cfg = match destination_chain {
+        ChainKind::Btc => config.btc.as_ref(),
+        ChainKind::Zcash => config.zcash.as_ref(),
+        _ => None,
+    };
+    let max_gas_fee_percent = utxo_cfg.map_or(75u8, |u| u.max_gas_fee_percent);
+    let change_reserve = utxo_cfg.map_or(5000u128, |u| u.change_reserve);
+
     let max_gas_fee = serde_json::from_str::<UTXOChainMsg>(&transfer_message.msg)
         .map(|msg| match msg {
-            UTXOChainMsg::MaxGasFee(max_fee) => max_fee.0,
+            UTXOChainMsg::MaxGasFee(max_fee) => {
+                let scaled = u128::from(max_fee.0)
+                    .saturating_mul(u128::from(max_gas_fee_percent))
+                    / 100;
+                u64::try_from(scaled).unwrap_or(max_fee.0)
+            }
         })
         .ok();
 
@@ -322,7 +335,7 @@ pub async fn process_transfer_to_utxo_event(
             transfer_message.amount.0 - transfer_message.fee.fee.0,
             fee_rate,
             max_gas_fee,
-            None,
+            Some(change_reserve),
             None,
             utxos_snapshot,
         )
