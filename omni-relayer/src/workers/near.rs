@@ -309,13 +309,16 @@ pub async fn process_transfer_to_utxo_event(
 
     let max_gas_fee = serde_json::from_str::<UTXOChainMsg>(&transfer_message.msg)
         .map(|msg| match msg {
-            UTXOChainMsg::MaxGasFee(max_fee) => {
-                let scaled =
-                    u128::from(max_fee.0).saturating_mul(u128::from(max_gas_fee_percent)) / 100;
-                u64::try_from(scaled).unwrap_or(max_fee.0)
-            }
+            UTXOChainMsg::MaxGasFee(max_fee) => max_fee.0,
         })
         .ok();
+    // Selector gets only `max_gas_fee_percent` of the user's cap so a
+    // later RBF can bump within the same budget; the submit itself
+    // enforces the user's real cap unchanged.
+    let max_gas_fee_for_selector = max_gas_fee.map(|m| {
+        let scaled = u128::from(m).saturating_mul(u128::from(max_gas_fee_percent)) / 100;
+        u64::try_from(scaled).unwrap_or(m)
+    });
 
     // The lock is held only across selection: pick UTXOs, then remove them
     // from the cache so concurrent submitters can't pick the same inputs.
@@ -333,7 +336,7 @@ pub async fn process_transfer_to_utxo_event(
             recipient.clone(),
             transfer_message.amount.0 - transfer_message.fee.fee.0,
             fee_rate,
-            max_gas_fee,
+            max_gas_fee_for_selector,
             Some(change_reserve),
             None,
             utxos_snapshot,
