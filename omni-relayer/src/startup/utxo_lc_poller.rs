@@ -45,6 +45,10 @@ pub async fn start_utxo_lc_poller(
         utxo_config.lc_polling_interval_secs
     );
 
+    let utxo_set = utils::utxo::UtxoSet::global();
+    utxo_set.refresh_async(omni_connector.clone(), chain);
+    let mut last_refreshed_tip: Option<u64> = None;
+
     loop {
         tokio::time::sleep(interval).await;
 
@@ -61,6 +65,11 @@ pub async fn start_utxo_lc_poller(
                 continue;
             }
         };
+
+        if last_refreshed_tip != Some(tip) {
+            utxo_set.refresh_async(omni_connector.clone(), chain);
+            last_refreshed_tip = Some(tip);
+        }
 
         let Some(ready) = utils::redis::zrangebyscore::<PendingLcEvent>(
             &config,

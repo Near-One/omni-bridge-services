@@ -450,10 +450,28 @@ pub struct Utxo {
     pub sign_delay_secs: u64,
     #[serde(default)]
     pub active_utxo_management: Option<ActiveUtxoManagement>,
+    /// Percent of the user's `max_gas_fee` actually offered to the UTXO
+    /// selector. The remainder is reserved for fee bumping. 0..=100.
+    #[serde(default = "default_max_gas_fee_percent")]
+    pub max_gas_fee_percent: u8,
+    /// Extra headroom (sats) above `min_change_amount` to leave in the
+    /// change output, so a later RBF can bump the fee without driving
+    /// change below the contract minimum. Only honoured on the
+    /// anchor-fill path (`max_gas_fee` set).
+    #[serde(default = "default_change_reserve")]
+    pub change_reserve: u128,
 }
 
 const fn default_lc_polling_interval_secs() -> u64 {
     30
+}
+
+const fn default_max_gas_fee_percent() -> u8 {
+    75
+}
+
+const fn default_change_reserve() -> u128 {
+    5000
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -299,31 +299,79 @@ pub async fn process_transfer_to_utxo_event(
         .reserve_nonce()
         .context("Failed to reserve nonce for near transaction")?;
 
-    match omni_connector
-        .near_submit_btc_transfer(
-            transfer_message.recipient.get_chain(),
-            recipient,
+    let utxo_cfg = match destination_chain {
+        ChainKind::Btc => config.btc.as_ref(),
+        ChainKind::Zcash => config.zcash.as_ref(),
+        _ => None,
+    };
+    let max_gas_fee_percent = utxo_cfg.map_or(75u8, |u| u.max_gas_fee_percent);
+    let change_reserve = utxo_cfg.map_or(5000u128, |u| u.change_reserve);
+
+    let max_gas_fee = serde_json::from_str::<UTXOChainMsg>(&transfer_message.msg)
+        .map(|msg| match msg {
+            UTXOChainMsg::MaxGasFee(max_fee) => {
+                let scaled =
+                    u128::from(max_fee.0).saturating_mul(u128::from(max_gas_fee_percent)) / 100;
+                u64::try_from(scaled).unwrap_or(max_fee.0)
+            }
+        })
+        .ok();
+
+    // The lock is held only across selection: pick UTXOs, then remove them
+    // from the cache so concurrent submitters can't pick the same inputs.
+    // The (slow) submit runs without the lock; on failure we put the
+    // removed UTXOs back.
+    let utxo_set = utils::utxo::UtxoSet::global();
+    let mut utxos_guard = utxo_set.lock(destination_chain).await;
+    let utxos_snapshot = utxos_guard.as_ref().map(|g| (**g).clone());
+
+    let mut removed: Vec<(String, utxo_utils::UTXO)> = Vec::new();
+
+    let submit_result = match omni_connector
+        .near_select_btc_utxos(
+            destination_chain,
+            recipient.clone(),
             transfer_message.amount.0 - transfer_message.fee.fee.0,
             fee_rate,
-            TransferId {
-                origin_chain: transfer_message.sender.get_chain(),
-                origin_nonce: transfer_message.origin_nonce,
-            },
-            // TODO: uncomment once orchard-related PR is merged in bridge-sdk-rs main branch
-            // true,
-            TransactionOptions {
-                nonce: Some(nonce),
-                wait_until: near_primitives::views::TxExecutionStatus::Final,
-                wait_final_outcome_timeout_sec: None,
-            },
-            serde_json::from_str::<UTXOChainMsg>(&transfer_message.msg)
-                .map(|msg| match msg {
-                    UTXOChainMsg::MaxGasFee(max_fee) => max_fee.0,
-                })
-                .ok(),
+            max_gas_fee,
+            Some(change_reserve),
+            None,
+            utxos_snapshot,
         )
         .await
     {
+        Ok(selection) => {
+            removed = utils::utxo::UtxoSet::take_outpoints(utxos_guard.as_mut(), &selection);
+            drop(utxos_guard);
+
+            omni_connector
+                .near_submit_prepared_btc_transfer(
+                    recipient,
+                    TransferId {
+                        origin_chain: transfer_message.sender.get_chain(),
+                        origin_nonce: transfer_message.origin_nonce,
+                    },
+                    TransactionOptions {
+                        nonce: Some(nonce),
+                        wait_until: near_primitives::views::TxExecutionStatus::Final,
+                        wait_final_outcome_timeout_sec: None,
+                    },
+                    max_gas_fee,
+                    selection,
+                )
+                .await
+        }
+        Err(err) => {
+            drop(utxos_guard);
+            Err(err)
+        }
+    };
+
+    if submit_result.is_err() {
+        utxo_set.restore_outpoints(destination_chain, removed).await;
+    }
+
+    match submit_result {
         Ok(tx_hash) => {
             info!(
                 "Submitted NEAR->{destination_chain:?} transfer on NEAR ({:?}:{}): near_submit_tx_hash={tx_hash:?}",
@@ -369,6 +417,8 @@ pub async fn process_transfer_to_utxo_event(
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
+                utxo_set.refresh_async(omni_connector.clone(), destination_chain);
+
                 match near_rpc_error {
                     NearRpcError::NonceError
                     | NearRpcError::FinalizationError
