@@ -139,17 +139,20 @@ error_selectors_to_remove = [
 	"696e76616c696420666565" # Wormhole's "invalid fee"
 ]
 
-# [hyperevm]
-# rpc_http_url = ""
-# rpc_ws_url = ""
-# omni_bridge_address = ""
-# block_processing_batch_size = 10_000
-# expected_finalization_time = 6
-# safe_confirmations = 5
-# error_selectors_to_remove = [
-# 	"0x8baa579f", # InvalidSignature()
-# 	"0xdcf35db0", # FailedToSendEther()
-# ]
+[hyperevm]
+rpc_http_url = "https://rpc.hyperliquid-testnet.xyz/evm"
+# Hyperliquid's native RPC has no WebSocket support; use a third-party provider (e.g. Alchemy, QuickNode, Chainstack)
+# rpc_ws_url = "wss://hyperliquid-testnet.g.alchemy.com/v2/ALCHEMY_API_KEY"
+omni_bridge_address = "0xf353b40fC144d1c6c5BCdda712fa6De833016aF9"
+wormhole_address = "0xBB73cB66C26740F31d1FabDC6b7A46a038A300dd"
+block_processing_batch_size = 10_000
+expected_finalization_time = 2
+safe_confirmations = 1
+error_selectors_to_remove = [
+	"0x8baa579f", # InvalidSignature()
+	"0xdcf35db0", # FailedToSendEther()
+	"696e76616c696420666565" # Wormhole's "invalid fee"
+]
 
 [abs]
 rpc_http_url = "https://api.testnet.abs.xyz"

@@ -292,8 +292,8 @@ pub async fn build_omni_connector(
         build_evm_bridge_client(config, ChainKind::Bnb, mpc_finalities.as_ref())?;
     let pol_bridge_client =
         build_evm_bridge_client(config, ChainKind::Pol, mpc_finalities.as_ref())?;
-    // TODO: enable once hyperevm contract is deployed
-    // let hyperevm_bridge_client = build_evm_bridge_client(config, ChainKind::HyperEvm)?;
+    let hyperevm_bridge_client =
+        build_evm_bridge_client(config, ChainKind::HyperEvm, mpc_finalities.as_ref())?;
     let abs_bridge_client =
         build_evm_bridge_client(config, ChainKind::Abs, mpc_finalities.as_ref())?;
     let solana_bridge_client = build_svm_bridge_client(config.solana.as_ref(), ChainKind::Sol)?;
@@ -314,7 +314,7 @@ pub async fn build_omni_connector(
         .arb_bridge_client(arb_bridge_client)
         .bnb_bridge_client(bnb_bridge_client)
         .pol_bridge_client(pol_bridge_client)
-        .hyperevm_bridge_client(None)
+        .hyperevm_bridge_client(hyperevm_bridge_client)
         .abs_bridge_client(abs_bridge_client)
         .solana_bridge_client(solana_bridge_client)
         .fogo_bridge_client(fogo_bridge_client)
