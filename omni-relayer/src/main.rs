@@ -137,6 +137,12 @@ async fn main() -> Result<()> {
 
     init_logging(config.near.network).context("Failed to initialize logging")?;
 
+    info!(
+        "Starting omni-relayer v{} on {}",
+        env!("CARGO_PKG_VERSION"),
+        config.near.network
+    );
+
     match (
         std::env::var("KYT_API_URL").is_ok(),
         std::env::var("KYT_API_KEY").is_ok(),

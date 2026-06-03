@@ -1,13 +1,160 @@
-use std::{collections::HashMap, sync::OnceLock, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
-use omni_connector::OmniConnector;
+use omni_connector::{BtcTransferSelection, OmniConnector};
 use omni_types::{ChainKind, OmniAddress};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::{Mutex, MutexGuard};
+use tracing::{info, warn};
+use utxo_utils::UTXO;
 
 use crate::{config, utils};
+
+struct ChainSlot {
+    utxos: Mutex<HashMap<String, UTXO>>,
+    dirty: AtomicBool,
+}
+
+impl ChainSlot {
+    fn new() -> Self {
+        Self {
+            utxos: Mutex::new(HashMap::new()),
+            dirty: AtomicBool::new(true),
+        }
+    }
+}
+
+/// In-memory cache of UTXOs held by the bridge contract on NEAR, with a
+/// separate mutex per chain. Each chain also tracks a `dirty` flag: the
+/// LC poller marks it on tip advance, and the next `lock` caller pays
+/// for the contract RPC before being handed the guard. Submitters hold
+/// the lock only across selection (see `lock`), drain the selected
+/// outpoints with `take_outpoints`, drop the lock, and restore via
+/// `restore_outpoints` if the downstream submit fails.
+pub struct UtxoSet {
+    btc: ChainSlot,
+    zcash: ChainSlot,
+}
+
+impl UtxoSet {
+    pub fn global() -> &'static Self {
+        static INSTANCE: OnceLock<UtxoSet> = OnceLock::new();
+        INSTANCE.get_or_init(|| Self {
+            btc: ChainSlot::new(),
+            zcash: ChainSlot::new(),
+        })
+    }
+
+    fn slot(&self, chain: ChainKind) -> Option<&ChainSlot> {
+        match chain {
+            ChainKind::Btc => Some(&self.btc),
+            ChainKind::Zcash => Some(&self.zcash),
+            _ => None,
+        }
+    }
+
+    /// Mark the chain's UTXO set as stale. The next `lock` caller pulls
+    /// the contract's state before being given the guard. Cheap & sync;
+    /// safe to call from anywhere. No-op for non-UTXO chains.
+    pub fn mark_dirty(&self, chain: ChainKind) {
+        if let Some(slot) = self.slot(chain) {
+            slot.dirty.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Acquire the exclusive guard for `chain`. If the set has been
+    /// marked dirty (LC tip advanced, post-submit invalidation, or
+    /// never populated), the contract's UTXO set is fetched and
+    /// installed under the guard before it is returned. Returns `None`
+    /// for non-UTXO chains. A failed refresh re-arms the dirty flag and
+    /// hands back the guard with whatever was cached — the next caller
+    /// retries.
+    ///
+    /// Hold the guard across `near_select_btc_utxos` only; drop it
+    /// before the (slow) submit call.
+    pub async fn lock(
+        &self,
+        omni_connector: &OmniConnector,
+        chain: ChainKind,
+    ) -> Option<MutexGuard<'_, HashMap<String, UTXO>>> {
+        let slot = self.slot(chain)?;
+        let mut guard = slot.utxos.lock().await;
+        if slot.dirty.swap(false, Ordering::SeqCst) {
+            match Self::fetch(omni_connector, chain).await {
+                Ok(fresh) => {
+                    let count = fresh.len();
+                    *guard = fresh;
+                    info!("Refreshed {chain:?} UTXO set ({count} UTXOs)");
+                }
+                Err(err) => {
+                    slot.dirty.store(true, Ordering::SeqCst);
+                    warn!("Refresh of {chain:?} UTXO set failed, using cached data: {err:?}");
+                }
+            }
+        }
+        Some(guard)
+    }
+
+    async fn fetch(
+        omni_connector: &OmniConnector,
+        chain: ChainKind,
+    ) -> Result<HashMap<String, UTXO>> {
+        let client = omni_connector
+            .near_bridge_client()
+            .context("NEAR bridge client unavailable for UTXO refresh")?;
+        client
+            .get_utxos(chain)
+            .await
+            .with_context(|| format!("Failed to fetch UTXOs for {chain:?}"))
+    }
+
+    /// Remove every outpoint in `selection` from the locked chain cache,
+    /// returning the removed entries so the caller can restore them via
+    /// `restore_outpoints` if the downstream submit fails. A `None` guard
+    /// or entries missing from the cache are silently skipped — the SDK
+    /// may have selected outpoints by falling back to a direct contract
+    /// query when our cache snapshot was empty.
+    pub fn take_outpoints(
+        guard: Option<&mut MutexGuard<'_, HashMap<String, UTXO>>>,
+        selection: &BtcTransferSelection,
+    ) -> Vec<(String, UTXO)> {
+        let Some(guard) = guard else {
+            return Vec::new();
+        };
+        selection
+            .out_points
+            .iter()
+            .filter_map(|op| {
+                let key = format!("{}@{}", op.txid, op.vout);
+                guard.remove(&key).map(|utxo| (key, utxo))
+            })
+            .collect()
+    }
+
+    /// Re-insert entries previously taken with `take_outpoints`. No-op for
+    /// non-UTXO chains or when `removed` is empty.
+    pub async fn restore_outpoints(&self, chain: ChainKind, removed: Vec<(String, UTXO)>) {
+        if removed.is_empty() {
+            return;
+        }
+        let Some(slot) = self.slot(chain) else {
+            return;
+        };
+        let mut guard = slot.utxos.lock().await;
+        for (key, utxo) in removed {
+            guard.insert(key, utxo);
+        }
+    }
+}
 
 pub async fn lc_defer_target(
     omni_connector: &OmniConnector,
