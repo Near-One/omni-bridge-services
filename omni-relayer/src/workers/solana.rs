@@ -45,7 +45,8 @@ pub async fn process_init_transfer_event(
         ..
     } = transfer
     else {
-        anyhow::bail!("Expected SolanaInitTransferWithTimestamp, got: {transfer:?}");
+        warn!("Routing mismatch, removing: {transfer:?}");
+        return Ok(EventAction::Remove);
     };
 
     let chain_kind = sender.get_chain();
@@ -90,7 +91,10 @@ pub async fn process_init_transfer_event(
         .is_transfer_finalised(Some(chain_kind), ChainKind::Near, sequence)
         .await
     {
-        Ok(true) => anyhow::bail!("Transfer is already finalised: {transfer_id:?}"),
+        Ok(true) => {
+            warn!("Transfer is already finalised, removing: {transfer_id:?}");
+            return Ok(EventAction::Remove);
+        }
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
@@ -99,9 +103,10 @@ pub async fn process_init_transfer_event(
     }
 
     if config.is_bridge_api_enabled() {
-        let token = OmniAddress::new_from_slice(chain_kind, &token.to_bytes()).map_err(|err| {
-            anyhow::anyhow!("Failed to parse \"{token}\" as `OmniAddress`: {err:?}")
-        })?;
+        let Ok(token) = OmniAddress::new_from_slice(chain_kind, &token.to_bytes()) else {
+            warn!("Failed to parse token \"{token}\" as `OmniAddress`, removing");
+            return Ok(EventAction::Remove);
+        };
 
         let Ok(needed_fee) =
             utils::bridge_api::TransferFee::get_transfer_fee(config, sender, recipient, &token)
@@ -196,24 +201,6 @@ pub async fn process_init_transfer_event(
             .await)
         }
         Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to finalize transfer, retrying: {near_rpc_error:?}",);
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!("Failed to finalize transfer: {near_rpc_error:?}");
-                    }
-                };
-            }
-
             anyhow::bail!("Failed to finalize transfer: {err:?}");
         }
     }
@@ -235,7 +222,8 @@ pub async fn process_fin_transfer_event(
         creation_timestamp,
     } = fin_transfer
     else {
-        anyhow::bail!("Expected Solana FinTransfer, got: {fin_transfer:?}");
+        warn!("Routing mismatch, removing: {fin_transfer:?}");
+        return Ok(EventAction::Remove);
     };
 
     let expected_finalization_time = match chain_kind {
@@ -316,23 +304,6 @@ pub async fn process_fin_transfer_event(
         )
         .await),
         Err(err) => {
-            if let BridgeSdkError::NearRpcError(ref near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to claim fee, retrying: {near_rpc_error:?}");
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!("Failed to claim fee: {err:?}");
-                    }
-                };
-            }
             anyhow::bail!("Failed to claim fee: {err:?}");
         }
     }
@@ -340,7 +311,9 @@ pub async fn process_fin_transfer_event(
 
 pub async fn process_deploy_token_event(
     config: &config::Config,
+    jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
+    signer: AccountId,
     deploy_token_event: DeployToken,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
@@ -350,7 +323,8 @@ pub async fn process_deploy_token_event(
         chain_kind,
     } = deploy_token_event
     else {
-        anyhow::bail!("Expected Solana DeployToken, got: {deploy_token_event:?}");
+        warn!("Routing mismatch, removing: {deploy_token_event:?}");
+        return Ok(EventAction::Remove);
     };
 
     info!("Processing SVM DeployToken ({chain_kind:?}:{sequence})");
@@ -391,28 +365,20 @@ pub async fn process_deploy_token_event(
 
     match omni_connector.bind_token(bind_token_args).await {
         Ok(tx_hash) => {
-            info!("Bound token: {tx_hash:?}");
-            Ok(EventAction::Remove)
+            info!("Bound token: {tx_hash}");
+            let Ok(crypto_hash) = tx_hash.parse() else {
+                warn!("Failed to parse {tx_hash} as CryptoHash, removing");
+                return Ok(EventAction::Remove);
+            };
+            Ok(utils::near::resolve_tx_action(
+                jsonrpc_client,
+                crypto_hash,
+                signer,
+                &["Request has timed out."],
+            )
+            .await)
         }
         Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to bind token, retrying: {near_rpc_error:?}");
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!("Failed to bind token: {near_rpc_error:?}");
-                    }
-                };
-            }
-
             anyhow::bail!("Failed to bind token: {err:?}");
         }
     }

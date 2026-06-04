@@ -65,6 +65,34 @@ pub enum EventAction {
     Remove,
 }
 
+#[derive(Debug)]
+enum NatsAckDecision {
+    Ack,
+    NakWithBackoff(Duration),
+    Term,
+}
+
+fn compute_ack_decision(
+    result: &Result<EventAction>,
+    age: Duration,
+    delivered: u32,
+    max_backoff: Duration,
+    max_message_age: Duration,
+) -> NatsAckDecision {
+    if let Ok(EventAction::Remove) = result {
+        return NatsAckDecision::Ack;
+    }
+
+    if age > max_message_age {
+        return NatsAckDecision::Term;
+    }
+    let backoff = match result {
+        Ok(EventAction::RetryAfter(d)) => (*d).min(max_backoff),
+        _ => Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1))).min(max_backoff),
+    };
+    NatsAckDecision::NakWithBackoff(backoff)
+}
+
 pub enum WorkerEvent {
     OmniBridge(Box<OmniBridgeEvent>),
     NearToUtxo(Box<Transfer>),
@@ -199,43 +227,39 @@ async fn handle_nats_ack(
     result: &Result<EventAction>,
     config: &config::RelayerConsumer,
 ) {
+    if let Ok(EventAction::Remove) = result {
+        msg.ack().await.ok();
+        return;
+    }
+
+    if let Err(err) = result {
+        warn!("Worker returned error, will retry: {err:?}");
+    }
+
     let max_backoff = Duration::from_secs(config.max_backoff_hours * 3600);
     let max_message_age = Duration::from_secs(config.max_message_age_hours * 3600);
 
-    match result {
-        Ok(EventAction::Retry | EventAction::RetryAfter(_)) => {
-            if let Ok(info) = msg.info() {
-                let now = chrono::Utc::now().timestamp();
-                let published_at = info.published.unix_timestamp();
-                let age = Duration::from_secs(now.saturating_sub(published_at).unsigned_abs());
+    if let Ok(info) = msg.info() {
+        let now = chrono::Utc::now().timestamp();
+        let published_at = info.published.unix_timestamp();
+        let age = Duration::from_secs(now.saturating_sub(published_at).unsigned_abs());
+        let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
 
-                if age > max_message_age {
-                    warn!("Message exceeded max age ({age:?}), terminating");
-                    msg.ack_with(async_nats::jetstream::AckKind::Term)
-                        .await
-                        .ok();
-                    return;
-                }
-
-                let backoff = if let Ok(EventAction::RetryAfter(delay)) = result {
-                    (*delay).min(max_backoff)
-                } else {
-                    let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
-                    Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
-                        .min(max_backoff)
-                };
+        match compute_ack_decision(result, age, delivered, max_backoff, max_message_age) {
+            NatsAckDecision::Ack => {
+                msg.ack().await.ok();
+            }
+            NatsAckDecision::Term => {
+                warn!("Message exceeded max age ({age:?}), terminating");
+                msg.ack_with(async_nats::jetstream::AckKind::Term)
+                    .await
+                    .ok();
+            }
+            NatsAckDecision::NakWithBackoff(backoff) => {
                 msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
                     .await
                     .ok();
             }
-        }
-        Ok(EventAction::Remove) => {
-            msg.ack().await.ok();
-        }
-        Err(_) => {
-            msg.ack_with(async_nats::jetstream::AckKind::Term)
-                .await
-                .ok();
         }
     }
 }
@@ -441,7 +465,8 @@ async fn process_message(
                     Err(err) => (Err(err), Vec::new()),
                 };
 
-                let fee_key_to_remove = action.is_err().then_some(fee_key);
+                let fee_key_to_remove =
+                    matches!(&action, Ok(EventAction::Remove)).then_some(fee_key);
                 MessageResult {
                     action,
                     needs_evm_nonce_resync: false,
@@ -472,7 +497,7 @@ async fn process_message(
                 .await;
 
                 let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
+                    matches!(&result, Ok(EventAction::Remove)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
@@ -504,7 +529,7 @@ async fn process_message(
                 .unwrap_or_default();
 
                 let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
+                    matches!(&result, Ok(EventAction::Remove)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
@@ -516,7 +541,9 @@ async fn process_message(
                 let result = utxo::process_near_to_utxo_init_transfer_event(
                     config,
                     redis,
+                    jsonrpc_client,
                     omni_connector.clone(),
+                    signer.clone(),
                     transfer,
                     near_omni_nonce.clone(),
                 )
@@ -562,7 +589,7 @@ async fn process_message(
                 .unwrap_or_default();
 
                 let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
+                    matches!(&result, Ok(EventAction::Remove)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
@@ -572,19 +599,22 @@ async fn process_message(
             }
             Transfer::Fast { .. } => {
                 let Some(near_fast_nonce) = near_fast_nonce.clone() else {
+                    warn!("Fast transfer event but fast nonce manager not configured, removing");
                     return MessageResult {
-                        action: Err(anyhow::anyhow!(
-                            "Fast transfer event found but near fast nonce manager is not configured"
-                        )),
+                        action: Ok(EventAction::Remove),
                         needs_evm_nonce_resync: false,
                         fee_key_to_remove: None,
                         produced_events: Vec::new(),
                     };
                 };
 
-                let result =
-                    near::initiate_fast_transfer(fast_connector.clone(), transfer, near_fast_nonce)
-                        .await;
+                let result = near::initiate_fast_transfer(
+                    jsonrpc_client,
+                    fast_connector.clone(),
+                    transfer,
+                    near_fast_nonce,
+                )
+                .await;
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
@@ -612,8 +642,7 @@ async fn process_message(
             )
             .await;
 
-            let fee_key_to_remove =
-                matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
+            let fee_key_to_remove = matches!(&result, Ok(EventAction::Remove)).then_some(fee_key);
             MessageResult {
                 action: result,
                 needs_evm_nonce_resync: is_evm,
@@ -621,8 +650,9 @@ async fn process_message(
                 produced_events: Vec::new(),
             }
         } else {
+            warn!("Unhandled OmniBridgeEvent, removing: {event}");
             MessageResult {
-                action: Err(anyhow::anyhow!("Unhandled OmniBridgeEvent: {event}")),
+                action: Ok(EventAction::Remove),
                 needs_evm_nonce_resync: false,
                 fee_key_to_remove: None,
                 produced_events: Vec::new(),
@@ -672,7 +702,9 @@ async fn process_message(
         let result = match deploy_token_event {
             DeployToken::Evm { .. } => {
                 evm::process_deploy_token_event(
+                    jsonrpc_client,
                     omni_connector.clone(),
+                    signer.clone(),
                     deploy_token_event,
                     near_omni_nonce.clone(),
                 )
@@ -681,7 +713,9 @@ async fn process_message(
             DeployToken::Solana { .. } => {
                 solana::process_deploy_token_event(
                     config,
+                    jsonrpc_client,
                     omni_connector.clone(),
+                    signer.clone(),
                     deploy_token_event,
                     near_omni_nonce.clone(),
                 )
@@ -689,7 +723,9 @@ async fn process_message(
             }
             DeployToken::Starknet { .. } => {
                 starknet::process_deploy_token_event(
+                    jsonrpc_client,
                     omni_connector.clone(),
+                    signer.clone(),
                     deploy_token_event,
                     near_omni_nonce.clone(),
                 )
@@ -735,8 +771,9 @@ async fn process_message(
             produced_events: Vec::new(),
         }
     } else {
+        warn!("Unknown event type, removing: {event}");
         MessageResult {
-            action: Err(anyhow::anyhow!("Unknown event type: {event}")),
+            action: Ok(EventAction::Remove),
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
             produced_events: Vec::new(),
@@ -809,5 +846,137 @@ async fn publish_event(
     let subject = format!("{}.{chain}", nats_config.relayer_subject);
     if let Err(err) = nats_client.publish(subject, &info.key, info.payload).await {
         warn!("Failed to publish produced event to NATS: {err:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn make_decision(
+        result: &Result<EventAction>,
+        age_secs: u64,
+        delivered: u32,
+    ) -> NatsAckDecision {
+        compute_ack_decision(
+            result,
+            Duration::from_secs(age_secs),
+            delivered,
+            Duration::from_hours(1),      // max_backoff = 1h
+            Duration::from_hours(7 * 24), // max_message_age = 7 days
+        )
+    }
+
+    #[test]
+    fn err_within_age_retries() {
+        let result: Result<EventAction> = Err(anyhow::anyhow!("some rpc failure"));
+        assert!(matches!(
+            make_decision(&result, 10, 1),
+            NatsAckDecision::NakWithBackoff(_)
+        ));
+    }
+
+    #[test]
+    fn retry_within_age_naks() {
+        let result: Result<EventAction> = Ok(EventAction::Retry);
+        assert!(matches!(
+            make_decision(&result, 10, 1),
+            NatsAckDecision::NakWithBackoff(_)
+        ));
+    }
+
+    #[test]
+    fn retry_exceeded_age_terminates() {
+        let result: Result<EventAction> = Ok(EventAction::Retry);
+        let over_max = 8 * 24 * 3600; // 8 days > 7 days
+        assert!(matches!(
+            make_decision(&result, over_max, 1),
+            NatsAckDecision::Term
+        ));
+    }
+
+    #[test]
+    fn err_exceeded_age_terminates() {
+        let result: Result<EventAction> = Err(anyhow::anyhow!("old failure"));
+        let over_max = 8 * 24 * 3600;
+        assert!(matches!(
+            make_decision(&result, over_max, 1),
+            NatsAckDecision::Term
+        ));
+    }
+
+    #[test]
+    fn retry_after_uses_explicit_delay() {
+        let delay = Duration::from_secs(30);
+        let result: Result<EventAction> = Ok(EventAction::RetryAfter(delay));
+        match make_decision(&result, 10, 1) {
+            NatsAckDecision::NakWithBackoff(d) => assert_eq!(d, delay),
+            other => panic!("expected NakWithBackoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exponential_backoff_first_delivery() {
+        // delivered=1: 3^(1-1) = 3^0 = 1 second
+        let result: Result<EventAction> = Ok(EventAction::Retry);
+        match make_decision(&result, 10, 1) {
+            NatsAckDecision::NakWithBackoff(d) => assert_eq!(d, Duration::from_secs(1)),
+            other => panic!("expected NakWithBackoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exponential_backoff_second_delivery() {
+        // delivered=2: 3^(2-1) = 3^1 = 3 seconds
+        let result: Result<EventAction> = Ok(EventAction::Retry);
+        match make_decision(&result, 10, 2) {
+            NatsAckDecision::NakWithBackoff(d) => assert_eq!(d, Duration::from_secs(3)),
+            other => panic!("expected NakWithBackoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_acks() {
+        // Ok(EventAction::Remove) should always result in Ack, regardless of age or delivery count
+        let result: Result<EventAction> = Ok(EventAction::Remove);
+        assert!(matches!(
+            make_decision(&result, 10, 1),
+            NatsAckDecision::Ack
+        ));
+    }
+
+    #[test]
+    fn exact_max_age_retries() {
+        let result = Ok(EventAction::Retry);
+        let max_age_secs = 7 * 24 * 3600_u64;
+        // Exactly at the limit — should NOT terminate (strict > comparison)
+        assert!(matches!(
+            make_decision(&result, max_age_secs, 1),
+            NatsAckDecision::NakWithBackoff(_)
+        ));
+    }
+
+    #[test]
+    fn retry_after_capped_at_max_backoff() {
+        let two_hours = Duration::from_hours(2);
+        let result = Ok(EventAction::RetryAfter(two_hours));
+        // max_backoff in make_decision is 1h
+        let decision = make_decision(&result, 0, 1);
+        assert!(matches!(
+            decision,
+            NatsAckDecision::NakWithBackoff(d) if d == Duration::from_hours(1)
+        ));
+    }
+
+    #[test]
+    fn exponential_backoff_capped_at_max_backoff() {
+        let result = Ok(EventAction::Retry);
+        // delivered=20 → 3^19 ≈ 3.5 years >> 1h max_backoff
+        let decision = make_decision(&result, 0, 20);
+        assert!(matches!(
+            decision,
+            NatsAckDecision::NakWithBackoff(d) if d == Duration::from_hours(1)
+        ));
     }
 }
