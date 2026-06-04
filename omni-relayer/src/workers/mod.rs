@@ -264,9 +264,12 @@ async fn handle_nats_ack(
                     .is_ok()
             }
             NatsAckDecision::NakWithBackoff(backoff) => {
-                msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
+                if let Err(err) = msg
+                    .ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
                     .await
-                    .ok();
+                {
+                    warn!("Failed to NAK message (backoff={backoff:?}): {err:?}");
+                }
                 false
             }
         };
