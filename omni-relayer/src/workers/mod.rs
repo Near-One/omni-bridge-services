@@ -233,16 +233,17 @@ async fn handle_nats_ack(
     config: &config::RelayerConsumer,
 ) -> bool {
     if let Ok(EventAction::Remove) = result {
-        msg.ack().await.ok();
-        return true;
+        // Terminal only if the ack actually landed; otherwise NATS may redeliver,
+        // so the caller must keep any terminal-only state (e.g. the fee cache).
+        return msg.ack().await.is_ok();
     }
 
     if let Err(err) = result {
-        warn!("Worker returned error, will retry: {err:?}");
+        warn!("Worker returned error: {err:?}");
     }
 
-    let max_backoff = Duration::from_secs(config.max_backoff_hours * 3600);
-    let max_message_age = Duration::from_secs(config.max_message_age_hours * 3600);
+    let max_backoff = Duration::from_secs(config.max_backoff_hours.saturating_mul(3600));
+    let max_message_age = Duration::from_secs(config.max_message_age_hours.saturating_mul(3600));
 
     if let Ok(info) = msg.info() {
         let now = chrono::Utc::now().timestamp();
@@ -250,25 +251,23 @@ async fn handle_nats_ack(
         let age = Duration::from_secs(now.saturating_sub(published_at).unsigned_abs());
         let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
 
-        match compute_ack_decision(result, age, delivered, max_backoff, max_message_age) {
-            NatsAckDecision::Ack => {
-                msg.ack().await.ok();
-                return true;
-            }
+        // Ack/Term are terminal only if the ack landed; a failed Nak (or failed
+        // Ack/Term) means NATS will redeliver, so we are not done with the event.
+        return match compute_ack_decision(result, age, delivered, max_backoff, max_message_age) {
+            NatsAckDecision::Ack => msg.ack().await.is_ok(),
             NatsAckDecision::Term => {
                 warn!("Message exceeded max age ({age:?}), terminating");
                 msg.ack_with(async_nats::jetstream::AckKind::Term)
                     .await
-                    .ok();
-                return true;
+                    .is_ok()
             }
             NatsAckDecision::NakWithBackoff(backoff) => {
                 msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
                     .await
                     .ok();
-                return false;
+                false
             }
-        }
+        };
     }
 
     // msg.info() failed: no ack sent, NATS will redeliver after ack-wait — not terminal.
