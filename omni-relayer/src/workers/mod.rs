@@ -101,7 +101,9 @@ pub enum WorkerEvent {
 struct MessageResult {
     action: Result<EventAction>,
     needs_evm_nonce_resync: bool,
-    fee_key_to_remove: Option<String>,
+    /// `FEE_MAPPING` key for this event, if it has one. Removed only when the
+    /// event leaves the queue (Remove or max-age Term), not on retry.
+    fee_key: Option<String>,
     produced_events: Vec<WorkerEvent>,
 }
 
@@ -222,14 +224,17 @@ pub enum DeployToken {
     },
 }
 
+/// Acknowledges the NATS message according to the worker result and message age.
+/// Returns `true` if the event left the queue (acked or terminated), `false` if
+/// it was re-queued for retry — the caller uses this to clean up terminal state.
 async fn handle_nats_ack(
     msg: &async_nats::jetstream::message::Message,
     result: &Result<EventAction>,
     config: &config::RelayerConsumer,
-) {
+) -> bool {
     if let Ok(EventAction::Remove) = result {
         msg.ack().await.ok();
-        return;
+        return true;
     }
 
     if let Err(err) = result {
@@ -248,20 +253,26 @@ async fn handle_nats_ack(
         match compute_ack_decision(result, age, delivered, max_backoff, max_message_age) {
             NatsAckDecision::Ack => {
                 msg.ack().await.ok();
+                return true;
             }
             NatsAckDecision::Term => {
                 warn!("Message exceeded max age ({age:?}), terminating");
                 msg.ack_with(async_nats::jetstream::AckKind::Term)
                     .await
                     .ok();
+                return true;
             }
             NatsAckDecision::NakWithBackoff(backoff) => {
                 msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
                     .await
                     .ok();
+                return false;
             }
         }
     }
+
+    // msg.info() failed: no ack sent, NATS will redeliver after ack-wait — not terminal.
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -377,11 +388,6 @@ pub async fn process_events(
                 warn!("{err:?}");
             }
 
-            if let Some(ref fee_key) = message_result.fee_key_to_remove {
-                utils::redis::remove_event(&config, &mut redis, utils::redis::FEE_MAPPING, fee_key)
-                    .await;
-            }
-
             if message_result.needs_evm_nonce_resync
                 && matches!(
                     message_result.action,
@@ -395,7 +401,15 @@ pub async fn process_events(
                 publish_event(&config, &nats_client, event).await;
             }
 
-            handle_nats_ack(&msg, &message_result.action, &consumer_config).await;
+            let left_queue = handle_nats_ack(&msg, &message_result.action, &consumer_config).await;
+
+            // Clean up the cached required-fee only when the event leaves the queue
+            // (acked on Remove, or terminated by max age). Retries keep it so the fee
+            // check doesn't re-fetch and re-store the entry on every attempt.
+            if left_queue && let Some(ref fee_key) = message_result.fee_key {
+                utils::redis::remove_event(&config, &mut redis, utils::redis::FEE_MAPPING, fee_key)
+                    .await;
+            }
 
             drop(permit);
         });
@@ -465,12 +479,10 @@ async fn process_message(
                     Err(err) => (Err(err), Vec::new()),
                 };
 
-                let fee_key_to_remove =
-                    matches!(&action, Ok(EventAction::Remove)).then_some(fee_key);
                 MessageResult {
                     action,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    fee_key: Some(fee_key),
                     produced_events,
                 }
             }
@@ -496,12 +508,10 @@ async fn process_message(
                 )
                 .await;
 
-                let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    fee_key: Some(fee_key),
                     produced_events: Vec::new(),
                 }
             }
@@ -528,12 +538,10 @@ async fn process_message(
                 })
                 .unwrap_or_default();
 
-                let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    fee_key: Some(fee_key),
                     produced_events: Vec::new(),
                 }
             }
@@ -551,7 +559,7 @@ async fn process_message(
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove: None,
+                    fee_key: None,
                     produced_events: Vec::new(),
                 }
             }
@@ -566,7 +574,7 @@ async fn process_message(
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove: None,
+                    fee_key: None,
                     produced_events: Vec::new(),
                 }
             }
@@ -588,12 +596,10 @@ async fn process_message(
                 })
                 .unwrap_or_default();
 
-                let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    fee_key: Some(fee_key),
                     produced_events: Vec::new(),
                 }
             }
@@ -603,7 +609,7 @@ async fn process_message(
                     return MessageResult {
                         action: Ok(EventAction::Remove),
                         needs_evm_nonce_resync: false,
-                        fee_key_to_remove: None,
+                        fee_key: None,
                         produced_events: Vec::new(),
                     };
                 };
@@ -618,7 +624,7 @@ async fn process_message(
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove: None,
+                    fee_key: None,
                     produced_events: Vec::new(),
                 }
             }
@@ -642,11 +648,10 @@ async fn process_message(
             )
             .await;
 
-            let fee_key_to_remove = matches!(&result, Ok(EventAction::Remove)).then_some(fee_key);
             MessageResult {
                 action: result,
                 needs_evm_nonce_resync: is_evm,
-                fee_key_to_remove,
+                fee_key: Some(fee_key),
                 produced_events: Vec::new(),
             }
         } else {
@@ -654,7 +659,7 @@ async fn process_message(
             MessageResult {
                 action: Ok(EventAction::Remove),
                 needs_evm_nonce_resync: false,
-                fee_key_to_remove: None,
+                fee_key: None,
                 produced_events: Vec::new(),
             }
         }
@@ -695,7 +700,7 @@ async fn process_message(
         MessageResult {
             action: result,
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
         }
     } else if let Ok(deploy_token_event) = serde_json::from_value::<DeployToken>(event.clone()) {
@@ -735,7 +740,7 @@ async fn process_message(
         MessageResult {
             action: result,
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
         }
     } else if let Ok(sign_utxo_transaction_event) =
@@ -751,7 +756,7 @@ async fn process_message(
         MessageResult {
             action: result,
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
         }
     } else if let Ok(confirmed_tx_hash) =
@@ -767,7 +772,7 @@ async fn process_message(
         MessageResult {
             action: result,
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
         }
     } else {
@@ -775,7 +780,7 @@ async fn process_message(
         MessageResult {
             action: Ok(EventAction::Remove),
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
         }
     }
