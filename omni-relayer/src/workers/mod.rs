@@ -227,6 +227,8 @@ pub enum DeployToken {
 /// Acknowledges the NATS message according to the worker result and message age.
 /// Returns `true` if the event left the queue (acked or terminated), `false` if
 /// it was re-queued for retry — the caller uses this to clean up terminal state.
+/// If `msg.info()` is unavailable, nothing is acked and NATS redelivers after
+/// `ack_wait`; this returns `false` (not terminal).
 async fn handle_nats_ack(
     msg: &async_nats::jetstream::message::Message,
     result: &Result<EventAction>,
