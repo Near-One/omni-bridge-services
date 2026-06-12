@@ -260,7 +260,7 @@ fn build_light_client(config: &config::Config, chain: ChainKind) -> Result<Optio
         .transpose()
 }
 
-pub async fn build_omni_connector(
+pub fn build_omni_connector(
     config: &config::Config,
     near_signer: &InMemorySigner,
 ) -> Result<OmniConnector> {
