@@ -26,6 +26,7 @@ use omni_types::{
 
 use crate::{config, utils};
 
+mod aptos;
 mod evm;
 mod near;
 mod solana;
@@ -117,6 +118,18 @@ pub enum Transfer {
         #[serde(default)]
         creation_timestamp: i64,
     },
+    Aptos {
+        tx_hash: String,
+        sender: OmniAddress,
+        token: OmniAddress,
+        origin_nonce: u64,
+        amount: U128,
+        fee: Fee,
+        recipient: OmniAddress,
+        message: String,
+        #[serde(default)]
+        creation_timestamp: i64,
+    },
     Utxo {
         utxo_transfer_message: UtxoFinTransferMsg,
         new_transfer_id: UnifiedTransferId,
@@ -172,6 +185,10 @@ pub enum FinTransfer {
         tx_hash: String,
         transfer_id: TransferId,
     },
+    Aptos {
+        tx_hash: String,
+        transfer_id: TransferId,
+    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -190,6 +207,9 @@ pub enum DeployToken {
         chain_kind: ChainKind,
     },
     Starknet {
+        tx_hash: String,
+    },
+    Aptos {
         tx_hash: String,
     },
 }
@@ -570,6 +590,33 @@ async fn process_message(
                     produced_events: Vec::new(),
                 }
             }
+            Transfer::Aptos { origin_nonce, .. } => {
+                let result = aptos::process_init_transfer_event(
+                    config,
+                    redis,
+                    jsonrpc_client,
+                    omni_connector,
+                    signer,
+                    transfer,
+                    near_omni_nonce.clone(),
+                )
+                .await;
+
+                let fee_key = serde_json::to_string(&TransferId {
+                    origin_nonce,
+                    origin_chain: ChainKind::Aptos,
+                })
+                .unwrap_or_default();
+
+                let fee_key_to_remove =
+                    matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
+                MessageResult {
+                    action: result,
+                    needs_evm_nonce_resync: false,
+                    fee_key_to_remove,
+                    produced_events: Vec::new(),
+                }
+            }
             Transfer::Fast { .. } => {
                 let Some(near_fast_nonce) = near_fast_nonce.clone() else {
                     return MessageResult {
@@ -661,6 +708,16 @@ async fn process_message(
                 )
                 .await
             }
+            FinTransfer::Aptos { .. } => {
+                aptos::process_fin_transfer_event(
+                    jsonrpc_client,
+                    omni_connector.clone(),
+                    signer,
+                    fin_transfer_event,
+                    near_omni_nonce,
+                )
+                .await
+            }
         };
         MessageResult {
             action: result,
@@ -689,6 +746,14 @@ async fn process_message(
             }
             DeployToken::Starknet { .. } => {
                 starknet::process_deploy_token_event(
+                    omni_connector.clone(),
+                    deploy_token_event,
+                    near_omni_nonce.clone(),
+                )
+                .await
+            }
+            DeployToken::Aptos { .. } => {
+                aptos::process_deploy_token_event(
                     omni_connector.clone(),
                     deploy_token_event,
                     near_omni_nonce.clone(),

@@ -219,6 +219,10 @@ rpc_http_url = "https://starknet-sepolia-rpc.publicnode.com"
 chain_id = "SN_SEPOLIA"
 omni_bridge_address = "0x02830785fd87b181c5391819f4a5e6a0b2d76c49d92b7f748a2433495eead162"
 
+# [aptos]
+# rpc_http_url = "https://fullnode.testnet.aptoslabs.com/v1"
+# omni_bridge_address = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
 [btc]
 rpc_http_url = "https://bitcoin-testnet-rpc.publicnode.com"
 light_client = "btc-client-v4.testnet"

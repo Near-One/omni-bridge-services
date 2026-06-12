@@ -54,6 +54,7 @@ fn get_evm_config(config: &config::Config, chain_kind: ChainKind) -> Result<&con
         | ChainKind::Sol
         | ChainKind::Fogo
         | ChainKind::Strk
+        | ChainKind::Aptos
         | ChainKind::Btc
         | ChainKind::Zcash => {
             anyhow::bail!("Unsupported chain kind for EVM: {chain_kind:?}")
@@ -113,6 +114,9 @@ fn is_whitelisted_transaction_event(
         OmniTransferMessage::StarknetInitTransfer(init_transfer) => config
             .bridge_indexer
             .is_token_whitelisted(&init_transfer.token),
+        OmniTransferMessage::AptosInitTransfer(init_transfer) => config
+            .bridge_indexer
+            .is_token_whitelisted(&init_transfer.token),
         OmniTransferMessage::NearUtxoTransferMessage { token_id, .. } => config
             .bridge_indexer
             .is_token_whitelisted(&OmniAddress::Near(token_id.clone())),
@@ -134,6 +138,7 @@ fn is_whitelisted_transaction_event(
         | OmniTransferMessage::EvmFinTransferMessage(_)
         | OmniTransferMessage::SolanaFinTransfer(_)
         | OmniTransferMessage::StarknetFinTransfer(_)
+        | OmniTransferMessage::AptosFinTransfer(_)
         | OmniTransferMessage::NearFastTransferMessage { .. }
         | OmniTransferMessage::NearFailedTransferMessage { .. }
         | OmniTransferMessage::UtxoVerifyDeposit { .. }
@@ -590,6 +595,73 @@ pub(super) async fn handle_transaction_event(
             )
             .await;
         }
+        OmniTransferMessage::AptosInitTransfer(init_transfer) => {
+            let OmniTransactionOrigin::AptosTransaction {
+                block_timestamp, ..
+            } = origin
+            else {
+                anyhow::bail!("Expected AptosTransaction for AptosInitTransfer: {init_transfer:?}");
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_timestamp) else {
+                anyhow::bail!("Failed to parse block_timestamp as i64: {block_timestamp}");
+            };
+
+            info!(
+                "Received AptosInitTransfer ({:?}:{}): {origin_transaction_id}",
+                ChainKind::Aptos,
+                init_transfer.origin_nonce
+            );
+
+            let redis_key = utils::redis::composite_key(&["aptos", &origin_transaction_id]);
+
+            add_event(
+                config,
+                redis_connection_manager,
+                nats,
+                &redis_key,
+                ChainKind::Near,
+                crate::workers::Transfer::Aptos {
+                    tx_hash: origin_transaction_id,
+                    sender: init_transfer.sender,
+                    token: init_transfer.token,
+                    origin_nonce: init_transfer.origin_nonce,
+                    amount: init_transfer.amount.0.into(),
+                    fee: init_transfer.fee,
+                    recipient: init_transfer.recipient,
+                    message: init_transfer.message,
+                    creation_timestamp,
+                },
+            )
+            .await;
+        }
+        OmniTransferMessage::AptosFinTransfer(_fin_transfer) => {
+            info!(
+                "Received AptosFinTransfer ({:?}): {origin_transaction_id}",
+                ChainKind::Aptos
+            );
+
+            let Some(transfer_id) = (&unified_transfer_id).try_into().ok() else {
+                anyhow::bail!(
+                    "Failed to convert unified_transfer_id to TransferId for AptosFinTransfer: {unified_transfer_id:?}"
+                );
+            };
+
+            let redis_key = utils::redis::composite_key(&["aptos", &origin_transaction_id]);
+
+            add_event(
+                config,
+                redis_connection_manager,
+                nats,
+                &redis_key,
+                ChainKind::Near,
+                crate::workers::FinTransfer::Aptos {
+                    tx_hash: origin_transaction_id,
+                    transfer_id,
+                },
+            )
+            .await;
+        }
         OmniTransferMessage::UtxoSignTransaction {
             destination_chain,
             relayer,
@@ -976,6 +1048,26 @@ pub(super) async fn handle_meta_event(
             )
             .await;
         }
+        OmniMetaEventDetails::AptosDeployToken { .. } => {
+            info!(
+                "Received AptosDeployToken ({:?}): {origin_transaction_id}",
+                ChainKind::Aptos
+            );
+
+            let redis_key = utils::redis::composite_key(&["aptos_deploy", &origin_transaction_id]);
+
+            add_event(
+                config,
+                redis_connection_manager,
+                nats,
+                &redis_key,
+                ChainKind::Near,
+                crate::workers::DeployToken::Aptos {
+                    tx_hash: origin_transaction_id,
+                },
+            )
+            .await;
+        }
         OmniMetaEventDetails::EVMLogMetadata(_)
         | OmniMetaEventDetails::EVMOnNearEvent { .. }
         | OmniMetaEventDetails::EVMOnNearInternalTransaction { .. }
@@ -985,6 +1077,7 @@ pub(super) async fn handle_meta_event(
         | OmniMetaEventDetails::NearBindTokenEvent { .. }
         | OmniMetaEventDetails::NearMigrateTokenEvent { .. }
         | OmniMetaEventDetails::StarknetLogMetadata { .. }
+        | OmniMetaEventDetails::AptosLogMetadata { .. }
         | OmniMetaEventDetails::NearRelayerApplyEvent { .. }
         | OmniMetaEventDetails::NearRelayerResignEvent { .. }
         | OmniMetaEventDetails::NearRelayerRejectEvent { .. }

@@ -68,7 +68,7 @@ fn blockchain_tag(chain: ChainKind) -> Option<&'static str> {
         ChainKind::Strk => Some("starknet"),
         ChainKind::Btc => Some("btc"),
         ChainKind::Zcash => Some("zec"),
-        ChainKind::HyperEvm | ChainKind::Abs | ChainKind::Fogo => None,
+        ChainKind::HyperEvm | ChainKind::Abs | ChainKind::Fogo | ChainKind::Aptos => None,
     }
 }
 

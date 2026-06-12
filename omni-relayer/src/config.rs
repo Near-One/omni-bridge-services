@@ -30,6 +30,7 @@ pub fn get_private_key(chain_kind: ChainKind, near_signer_type: Option<NearSigne
         ChainKind::Sol => "SOLANA_PRIVATE_KEY",
         ChainKind::Fogo => "FOGO_PRIVATE_KEY",
         ChainKind::Strk => "STARKNET_PRIVATE_KEY",
+        ChainKind::Aptos => "APTOS_PRIVATE_KEY",
         ChainKind::Btc | ChainKind::Zcash => unreachable!("No private key for UTXO chains"),
     };
 
@@ -39,6 +40,11 @@ pub fn get_private_key(chain_kind: ChainKind, near_signer_type: Option<NearSigne
 pub fn get_relayer_starknet_address() -> String {
     std::env::var("STARKNET_ACCOUNT_ADDRESS")
         .unwrap_or_else(|_| panic!("Failed to get `STARKNET_ACCOUNT_ADDRESS` env variable"))
+}
+
+pub fn get_relayer_aptos_account_address() -> String {
+    std::env::var("APTOS_ACCOUNT_ADDRESS")
+        .unwrap_or_else(|_| panic!("Failed to get `APTOS_ACCOUNT_ADDRESS` env variable"))
 }
 
 pub fn get_relayer_evm_address(chain_kind: ChainKind) -> Address {
@@ -120,6 +126,7 @@ pub struct Config {
     pub solana: Option<Solana>,
     pub fogo: Option<Solana>,
     pub starknet: Option<Starknet>,
+    pub aptos: Option<Aptos>,
     pub btc: Option<Utxo>,
     pub zcash: Option<Utxo>,
     pub orchard: Option<Orchard>,
@@ -159,7 +166,8 @@ impl Config {
             | ChainKind::Abs
             | ChainKind::Sol
             | ChainKind::Fogo
-            | ChainKind::Strk => {
+            | ChainKind::Strk
+            | ChainKind::Aptos => {
                 panic!("Sigining utxo transaction is not applicable for {chain:?}")
             }
         };
@@ -180,7 +188,8 @@ impl Config {
             | ChainKind::Abs
             | ChainKind::Sol
             | ChainKind::Fogo
-            | ChainKind::Strk => {
+            | ChainKind::Strk
+            | ChainKind::Aptos => {
                 panic!("Sign delay is not applicable for {chain:?}")
             }
         };
@@ -201,7 +210,8 @@ impl Config {
             | ChainKind::Abs
             | ChainKind::Sol
             | ChainKind::Fogo
-            | ChainKind::Strk => {
+            | ChainKind::Strk
+            | ChainKind::Aptos => {
                 panic!("Active UTXO management is not applicable for {chain:?}");
             }
         };
@@ -223,7 +233,8 @@ impl Config {
             | ChainKind::Abs
             | ChainKind::Sol
             | ChainKind::Fogo
-            | ChainKind::Strk => {
+            | ChainKind::Strk
+            | ChainKind::Aptos => {
                 panic!("Verifying withdraw is not applicable for {chain:?}")
             }
         };
@@ -434,6 +445,13 @@ pub struct Starknet {
     #[serde(deserialize_with = "replace_rpc_api_key")]
     pub rpc_http_url: String,
     pub chain_id: String,
+    pub omni_bridge_address: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Aptos {
+    #[serde(deserialize_with = "replace_rpc_api_key")]
+    pub rpc_http_url: String,
     pub omni_bridge_address: String,
 }
 

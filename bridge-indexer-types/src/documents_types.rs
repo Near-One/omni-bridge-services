@@ -86,6 +86,12 @@ pub enum OmniTransactionOrigin {
         block_timestamp: u64,
         event_index: Option<u64>,
     },
+    AptosTransaction {
+        version: u64,
+        block_height: u64,
+        block_timestamp: u64,
+        event_index: Option<u64>,
+    },
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -145,6 +151,8 @@ pub enum OmniTransferMessage {
     },
     StarknetInitTransfer(StarknetInitTransferMessage),
     StarknetFinTransfer(StarknetFinTransferMessage),
+    AptosInitTransfer(AptosInitTransferMessage),
+    AptosFinTransfer(AptosFinTransferMessage),
 }
 
 #[skip_serializing_none]
@@ -197,6 +205,29 @@ pub struct StarknetInitTransferMessage {
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct StarknetFinTransferMessage {
+    pub token: OmniAddress,
+    pub amount: U128,
+    pub recipient: OmniAddress,
+    pub destination_nonce: u64,
+    pub fee_recipient: Option<String>,
+    pub message: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct AptosInitTransferMessage {
+    pub amount: U128,
+    pub fee: Fee,
+    pub token: OmniAddress,
+    pub recipient: OmniAddress,
+    pub sender: OmniAddress,
+    pub origin_nonce: Nonce,
+    pub message: String,
+}
+
+#[skip_serializing_none]
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct AptosFinTransferMessage {
     pub token: OmniAddress,
     pub amount: U128,
     pub recipient: OmniAddress,
@@ -380,6 +411,20 @@ pub enum OmniMetaEventDetails {
         origin_decimals: u8,
     },
     StarknetLogMetadata {
+        token_address: String,
+        name: String,
+        symbol: String,
+        decimals: u8,
+    },
+    AptosDeployToken {
+        token_address: String,
+        near_token_id: String,
+        name: String,
+        symbol: String,
+        decimals: u8,
+        origin_decimals: u8,
+    },
+    AptosLogMetadata {
         token_address: String,
         name: String,
         symbol: String,

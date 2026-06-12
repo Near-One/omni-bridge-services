@@ -622,6 +622,12 @@ pub async fn process_sign_transfer_event(
             },
             None,
         ),
+        ChainKind::Aptos => (
+            omni_connector::FinTransferArgs::AptosFinTransfer {
+                event: omni_bridge_event.clone(),
+            },
+            None,
+        ),
         ChainKind::Btc | ChainKind::Zcash => {
             anyhow::bail!("Finishing BTC/ZEC transfers is not supported");
         }
@@ -665,6 +671,7 @@ pub async fn process_sign_transfer_event(
                     | ChainKind::Sol
                     | ChainKind::Fogo
                     | ChainKind::Strk
+                    | ChainKind::Aptos
                     | ChainKind::Btc
                     | ChainKind::Zcash => {
                         anyhow::bail!(
