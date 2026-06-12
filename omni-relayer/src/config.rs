@@ -168,7 +168,7 @@ impl Config {
             | ChainKind::Fogo
             | ChainKind::Strk
             | ChainKind::Aptos => {
-                panic!("Sigining utxo transaction is not applicable for {chain:?}")
+                panic!("Signing utxo transaction is not applicable for {chain:?}")
             }
         };
         config.is_some_and(|utxo| utxo.signing_enabled)
