@@ -18,6 +18,6 @@ pub enum LoggerError {
     FailedToParseUrl(#[from] url::ParseError),
     #[error("Error while setting up Loki: {0:?}")]
     TracingLokiError(#[from] tracing_loki::Error),
-    #[error("Error while setting up Loki subscriber: {0:?}")]
-    TracingSubscriberLokiError(#[from] tracing_subscriber::util::TryInitError),
+    #[error("Error while setting up tracing subscriber: {0:?}")]
+    TracingSubscriberInitError(#[from] tracing_subscriber::util::TryInitError),
 }
