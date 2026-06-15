@@ -24,6 +24,9 @@ impl<'de> Deserialize<'de> for Prefix {
                 "prefix must be under {MAX_PREFIX_LEN} bytes"
             )));
         }
+        if !prefix.starts_with('/') {
+            return Err(de::Error::custom("prefix must start with `/`"));
+        }
         if !prefix
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b == b'-' || b == b'/')
@@ -74,21 +77,18 @@ mod tests {
 
     #[test]
     fn test_valid_prefixes() {
-        let prefixes = [
-            "eth",
-            "/eth",
-            "/eth-beacon",
-            "/ws/solana",
-            Box::leak("a".repeat(MAX_PREFIX_LEN).into_boxed_str()),
-        ];
-        for prefix in prefixes {
+        let max_len: &'static str =
+            Box::leak(format!("/{}", "a".repeat(MAX_PREFIX_LEN - 1)).into_boxed_str());
+        for prefix in ["/eth", "/eth-beacon", "/ws/solana", max_len] {
             assert_de_tokens(&Prefix(prefix.to_string()), &[Token::Str(prefix)]);
         }
     }
 
     #[test]
     fn test_invalid_prefixes() {
-        for prefix in ["ETH", "Eth", "eth1", "eth!"] {
+        assert_de_tokens_error::<Prefix>(&[Token::Str("eth")], "prefix must start with `/`");
+
+        for prefix in ["/ETH", "/Eth", "/eth1", "/eth!"] {
             assert_de_tokens_error::<Prefix>(
                 &[Token::Str(prefix)],
                 "prefix must contain only lowercase letters/dashes/slashes",

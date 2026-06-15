@@ -230,7 +230,7 @@ impl ProxyHttp for RpcProxy {
         };
         let upstream = &state.route.upstreams()[ctx.upstream_idx];
 
-        upstream_request.insert_header("Host", upstream.sni())?;
+        upstream_request.insert_header("Host", upstream.authority())?;
         if let Some(auth) = upstream.auth_header() {
             upstream_request.insert_header("Authorization", auth)?;
         }
@@ -276,7 +276,7 @@ impl ProxyHttp for RpcProxy {
         };
 
         let scheme = if upstream.is_tls() { "https" } else { "http" };
-        let abs_uri = format!("{scheme}://{}{}", upstream.sni(), new_uri);
+        let abs_uri = format!("{scheme}://{}{}", upstream.authority(), new_uri);
         upstream_request.set_uri(
             abs_uri
                 .parse()
@@ -314,10 +314,11 @@ impl ProxyHttp for RpcProxy {
         ctx: &mut Self::CTX,
     ) -> Result<Option<Duration>> {
         if let Some(ref mut buf) = ctx.body_buf {
-            if let Some(chunk) = body
-                && buf.len() < MAX_RPC_BODY_BYTES
-            {
-                buf.extend_from_slice(chunk);
+            if let Some(chunk) = body {
+                let take = chunk
+                    .len()
+                    .min(MAX_RPC_BODY_BYTES.saturating_sub(buf.len()));
+                buf.extend_from_slice(&chunk[..take]);
             }
 
             if end_of_stream

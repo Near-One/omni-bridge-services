@@ -8,6 +8,8 @@ pub enum ConfigError {
     FailedToParseConfig(#[from] toml::de::Error),
     #[error("route `{0}` has no upstreams")]
     EmptyUpstreams(String),
+    #[error("duplicate route prefix `{0}`")]
+    DuplicatePrefix(String),
 }
 
 #[derive(Error, Debug)]

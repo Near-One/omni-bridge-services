@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -57,6 +58,14 @@ impl Upstream {
 
     pub(crate) fn sni(&self) -> String {
         self.url.host_str().unwrap_or("").to_owned()
+    }
+
+    pub(crate) fn authority(&self) -> String {
+        let host = self.url.host_str().unwrap_or("");
+        match self.url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_owned(),
+        }
     }
 
     pub(crate) fn timeout(&self) -> Option<Duration> {
@@ -176,9 +185,15 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
+        let mut seen = HashSet::new();
         for route in &self.routes {
             if route.upstreams.is_empty() {
                 return Err(ConfigError::EmptyUpstreams(
+                    route.prefix.as_str().to_owned(),
+                ));
+            }
+            if !seen.insert(route.prefix.as_str()) {
+                return Err(ConfigError::DuplicatePrefix(
                     route.prefix.as_str().to_owned(),
                 ));
             }
@@ -278,5 +293,43 @@ upstreams = []
             config.validate(),
             Err(ConfigError::EmptyUpstreams(_))
         ));
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_prefix() {
+        let config: Config = toml::from_str(
+            r#"
+[[routes]]
+prefix = "/eth"
+upstreams = [{ url = "https://a.example" }]
+
+[[routes]]
+prefix = "/eth"
+upstreams = [{ url = "https://b.example" }]
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::DuplicatePrefix(_))
+        ));
+    }
+
+    #[test]
+    fn test_authority_includes_only_non_default_port() {
+        let config: Config = toml::from_str(
+            r#"
+[[routes]]
+prefix = "/a"
+upstreams = [
+  { url = "https://host.example" },
+  { url = "http://host.example:8545" },
+]
+"#,
+        )
+        .unwrap();
+        let upstreams = &config.routes[0].upstreams;
+        assert_eq!(upstreams[0].authority(), "host.example");
+        assert_eq!(upstreams[1].authority(), "host.example:8545");
     }
 }
