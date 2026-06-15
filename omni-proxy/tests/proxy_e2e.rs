@@ -40,7 +40,7 @@ fn start_proxy(config_toml: &str, proxy_port: u16) {
         .expect("test config must be valid TOML")
         .routes;
 
-    let addr = format!("0.0.0.0:{proxy_port}");
+    let addr = format!("127.0.0.1:{proxy_port}");
     thread::spawn(move || {
         let mut server = pingora::server::Server::new(None).unwrap();
         server.bootstrap();
