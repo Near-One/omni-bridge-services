@@ -142,7 +142,7 @@ impl RpcProxy {
             .iter()
             .filter(|(prefix, _)| {
                 let p = prefix.as_str();
-                path == p || path.starts_with(&format!("{p}/"))
+                path == p || (path.starts_with(p) && path.as_bytes().get(p.len()) == Some(&b'/'))
             })
             .max_by_key(|(prefix, _)| prefix.as_str().len())
             .map(|(_, state)| state)
