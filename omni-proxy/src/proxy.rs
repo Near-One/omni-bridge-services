@@ -16,6 +16,8 @@ use crate::types::Prefix;
 
 const MAX_RPC_BODY_BYTES: usize = 256 * 1024;
 
+const SERVICE_QUERY_PREFIX: &str = "omni-proxy-service=";
+
 struct UpstreamHealth {
     failures: Mutex<VecDeque<Instant>>,
 }
@@ -184,7 +186,7 @@ impl ProxyHttp for RpcProxy {
             .query()
             .and_then(|q| {
                 q.split('&')
-                    .find_map(|p| p.strip_prefix("omni-proxy-service="))
+                    .find_map(|p| p.strip_prefix(SERVICE_QUERY_PREFIX))
             })
             .map_or_else(|| "unknown".to_owned(), sanitize_service);
 
@@ -262,7 +264,7 @@ impl ProxyHttp for RpcProxy {
             .query()
             .unwrap_or("")
             .split('&')
-            .filter(|p| !p.is_empty() && !p.starts_with("omni-proxy-service="))
+            .filter(|p| !p.is_empty() && !p.starts_with(SERVICE_QUERY_PREFIX))
             .collect::<Vec<_>>()
             .join("&");
         let client_query = if client_query.is_empty() {
