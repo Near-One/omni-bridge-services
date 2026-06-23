@@ -6,7 +6,27 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-omni-types = { git = "https://github.com/near-one/omni-bridge", package = "omni-types", rev = "8c2886043e366bafa810ca3e757f301b8c0df4fc" }
+omni-types = { git = "https://github.com/near-one/omni-bridge", package = "omni-types", rev = "d3f97d6de01d8cb6a39af553031a439612cee42a" }
+
+# These patches mirror the ones in the bridge-sdk-rs workspace root (rev 2e88e4a). Cargo
+# `[patch]` sections only apply from the consuming workspace root, so they do not transit
+# through git dependencies and must be replicated here for the dependency tree to resolve.
+# (bridge-sdk-rs also patches curve25519-dalek, but that fork is not pulled into this
+# workspace's crate graph, so it is omitted to avoid an unused-patch warning.)
+#
+# The librustzcash fork declares `orchard = "0.12"` from crates.io, but orchard 0.11..0.13
+# are all yanked on crates.io (only 0.14 is live). Redirect to the Near-One orchard fork at
+# 0.12.0, which carries the `core2 -> corez` fix so it actually resolves.
+[patch.crates-io.orchard]
+git = "https://github.com/Near-One/orchard"
+rev = "872a2192238f4085ce4c8dd2f0222bd6ce26fba7"
+
+# zcash pins bip32 =0.6.0-pre.1, which exact-pins the RustCrypto pre-release digest-0.11
+# chain and clashes with near-sdk 5.28.1's stable sha2 0.11. bridge-sdk-rs vendors a
+# patched bip32 0.6.0-pre.1; point at that vendored crate in the bridge-sdk-rs repo.
+[patch.crates-io.bip32]
+git = "https://github.com/Near-One/bridge-sdk-rs"
+rev = "707d2d0077cb09bf486033e9ee50291e9977163d"
 
 # Config for 'dist'
 [workspace.metadata.dist]

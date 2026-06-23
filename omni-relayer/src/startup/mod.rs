@@ -7,11 +7,11 @@ use light_client::{LightClient, LightClientBuilder};
 use near_bridge_client::{NearBridgeClientBuilder, UTXOChainAccounts};
 use near_crypto::InMemorySigner;
 use omni_connector::{OmniConnector, OmniConnectorBuilder};
-use omni_types::ChainKind;
+use omni_types::{ChainKind, mpc_types::MpcFinality};
 use solana_bridge_client::{SolanaBridgeClient, SolanaBridgeClientBuilder};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use starknet_bridge_client::{StarknetBridgeClient, StarknetBridgeClientBuilder};
-use tracing::info;
+use tracing::{info, warn};
 use utxo_bridge_client::{AuthOptions, UTXOBridgeClient};
 use wormhole_bridge_client::{WormholeBridgeClient, WormholeBridgeClientBuilder};
 
@@ -99,6 +99,7 @@ fn build_near_bridge_client(
 fn build_evm_bridge_client(
     config: &config::Config,
     chain_kind: ChainKind,
+    mpc_finalities: Option<&HashMap<ChainKind, MpcFinality>>,
 ) -> Result<Option<EvmBridgeClient>> {
     let evm = match chain_kind {
         ChainKind::Eth => &config.eth,
@@ -119,6 +120,17 @@ fn build_evm_bridge_client(
         }
     };
 
+    let evm_finality = mpc_finalities
+        .as_ref()
+        .and_then(|mpc_finalities| mpc_finalities.get(&chain_kind).cloned())
+        .and_then(|mpc_finality| {
+            if let MpcFinality::Evm(evm_finality) = mpc_finality {
+                Some(evm_finality)
+            } else {
+                None
+            }
+        });
+
     evm.as_ref()
         .map(|evm| {
             EvmBridgeClientBuilder::default()
@@ -126,6 +138,7 @@ fn build_evm_bridge_client(
                 .private_key(Some(crate::config::get_private_key(chain_kind, None)))
                 .omni_bridge_address(Some(evm.omni_bridge_address.to_string()))
                 .wormhole_core_address(evm.wormhole_address.map(|address| address.to_string()))
+                .mpc_finality(evm_finality)
                 .build()
                 .context(format!("Failed to build EvmBridgeClient ({chain_kind:?})"))
         })
@@ -156,7 +169,21 @@ fn build_svm_bridge_client(
     .transpose()
 }
 
-fn build_starknet_bridge_client(config: &config::Config) -> Result<Option<StarknetBridgeClient>> {
+fn build_starknet_bridge_client(
+    config: &config::Config,
+    mpc_finalities: Option<&HashMap<ChainKind, MpcFinality>>,
+) -> Result<Option<StarknetBridgeClient>> {
+    let starknet_finality = mpc_finalities
+        .as_ref()
+        .and_then(|mpc_finalities| mpc_finalities.get(&ChainKind::Strk).cloned())
+        .and_then(|mpc_finality| {
+            if let MpcFinality::Starknet(starknet_finality) = mpc_finality {
+                Some(starknet_finality)
+            } else {
+                None
+            }
+        });
+
     config
         .starknet
         .as_ref()
@@ -167,6 +194,7 @@ fn build_starknet_bridge_client(config: &config::Config) -> Result<Option<Starkn
                 .account_address(Some(crate::config::get_relayer_starknet_address()))
                 .omni_bridge_address(Some(starknet.omni_bridge_address.clone()))
                 .chain_id(Some(starknet.chain_id.clone()))
+                .mpc_finality(starknet_finality)
                 .build()
                 .context("Failed to build StarknetBridgeClient")
         })
@@ -260,23 +288,37 @@ fn build_light_client(config: &config::Config, chain: ChainKind) -> Result<Optio
         .transpose()
 }
 
-pub fn build_omni_connector(
+pub async fn build_omni_connector(
     config: &config::Config,
     near_signer: &InMemorySigner,
 ) -> Result<OmniConnector> {
     info!("Building Omni connector");
 
     let near_bridge_client = build_near_bridge_client(config, near_signer)?;
-    let eth_bridge_client = build_evm_bridge_client(config, ChainKind::Eth)?;
-    let base_bridge_client = build_evm_bridge_client(config, ChainKind::Base)?;
-    let arb_bridge_client = build_evm_bridge_client(config, ChainKind::Arb)?;
-    let bnb_bridge_client = build_evm_bridge_client(config, ChainKind::Bnb)?;
-    let pol_bridge_client = build_evm_bridge_client(config, ChainKind::Pol)?;
-    let hyperevm_bridge_client = build_evm_bridge_client(config, ChainKind::HyperEvm)?;
-    let abs_bridge_client = build_evm_bridge_client(config, ChainKind::Abs)?;
+    let mpc_finalities = match near_bridge_client.get_mpc_finalities().await {
+        Ok(mpc_finalities) => Some(mpc_finalities),
+        Err(err) => {
+            warn!("Failed to fetch mpc finalities: {err:?}");
+            None
+        }
+    };
+    let eth_bridge_client =
+        build_evm_bridge_client(config, ChainKind::Eth, mpc_finalities.as_ref())?;
+    let base_bridge_client =
+        build_evm_bridge_client(config, ChainKind::Base, mpc_finalities.as_ref())?;
+    let arb_bridge_client =
+        build_evm_bridge_client(config, ChainKind::Arb, mpc_finalities.as_ref())?;
+    let bnb_bridge_client =
+        build_evm_bridge_client(config, ChainKind::Bnb, mpc_finalities.as_ref())?;
+    let pol_bridge_client =
+        build_evm_bridge_client(config, ChainKind::Pol, mpc_finalities.as_ref())?;
+    let hyperevm_bridge_client =
+        build_evm_bridge_client(config, ChainKind::HyperEvm, mpc_finalities.as_ref())?;
+    let abs_bridge_client =
+        build_evm_bridge_client(config, ChainKind::Abs, mpc_finalities.as_ref())?;
     let solana_bridge_client = build_svm_bridge_client(config.solana.as_ref(), ChainKind::Sol)?;
     let fogo_bridge_client = build_svm_bridge_client(config.fogo.as_ref(), ChainKind::Fogo)?;
-    let starknet_bridge_client = build_starknet_bridge_client(config)?;
+    let starknet_bridge_client = build_starknet_bridge_client(config, mpc_finalities.as_ref())?;
     let aptos_bridge_client = build_aptos_bridge_client(config)?;
     let btc_bridge_client = build_utxo_bridge_client(config, ChainKind::Btc)?;
     let zcash_bridge_client = build_utxo_bridge_client(config, ChainKind::Zcash)?;
