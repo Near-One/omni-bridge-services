@@ -182,7 +182,10 @@ impl ProxyHttp for RpcProxy {
 
         ctx.service = uri
             .query()
-            .and_then(|q| q.split('&').find_map(|p| p.strip_prefix("service=")))
+            .and_then(|q| {
+                q.split('&')
+                    .find_map(|p| p.strip_prefix("omni-proxy-service="))
+            })
             .map_or_else(|| "unknown".to_owned(), sanitize_service);
 
         let state = self
@@ -259,7 +262,7 @@ impl ProxyHttp for RpcProxy {
             .query()
             .unwrap_or("")
             .split('&')
-            .filter(|p| !p.is_empty() && !p.starts_with("service="))
+            .filter(|p| !p.is_empty() && !p.starts_with("omni-proxy-service="))
             .collect::<Vec<_>>()
             .join("&");
         let client_query = if client_query.is_empty() {

@@ -101,15 +101,15 @@ failover = {{ status_codes = [500] }}
     m.assert_hits(1);
 }
 
-/// The ?service= query param must be stripped before forwarding to upstream.
+/// The ?omni-proxy-service= query param must be stripped before forwarding to upstream.
 #[test]
 fn test_service_param_is_stripped() {
     let upstream = MockServer::start();
     let port = alloc_port();
 
-    // If ?service= is leaked through, this mock fires and returns 500 (test fails).
+    // If ?omni-proxy-service= is leaked through, this mock fires and returns 500 (test fails).
     let fail_if_leaked = upstream.mock(|when, then| {
-        when.query_param_exists("service");
+        when.query_param_exists("omni-proxy-service");
         then.status(500);
     });
     // Catch-all for the correctly stripped request.
@@ -131,9 +131,9 @@ failover = {{ status_codes = [500] }}
         port,
     );
 
-    // Client sends ?service=omni-relayer; proxy must strip it.
+    // Client sends ?omni-proxy-service=omni-relayer; proxy must strip it.
     let resp = Client::new()
-        .post(proxy_url(port, "/near?service=omni-relayer"))
+        .post(proxy_url(port, "/near?omni-proxy-service=omni-relayer"))
         .send()
         .unwrap();
 

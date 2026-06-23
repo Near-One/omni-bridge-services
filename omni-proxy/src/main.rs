@@ -76,7 +76,7 @@ fn init_logging(network: &Network) -> Result<(), LoggerError> {
     Ok(())
 }
 
-fn init_metrics() {
+fn init_metrics(network: &Network) {
     let otlp_url = std::env::var("GRAFANA_OTLP_URL").ok();
     let otlp_user = std::env::var("GRAFANA_OTLP_USER").ok();
     let api_key = std::env::var("GRAFANA_CLOUD_API_KEY").ok();
@@ -96,17 +96,20 @@ fn init_metrics() {
         return;
     };
 
+    let network = network.to_string();
     let (tx, rx) = std::sync::mpsc::channel::<Result<()>>();
 
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_multi_thread()
+        let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("metrics runtime");
 
         rt.block_on(async move {
             let result = (|| -> Result<()> {
+                use opentelemetry::KeyValue;
                 use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
+                use opentelemetry_sdk::Resource;
                 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 
                 let mut headers = HashMap::new();
@@ -123,7 +126,14 @@ fn init_metrics() {
                     .with_interval(Duration::from_secs(30))
                     .build();
 
-                let provider = SdkMeterProvider::builder().with_reader(reader).build();
+                let resource = Resource::new([
+                    KeyValue::new("service.name", "omni-proxy"),
+                    KeyValue::new("network", network),
+                ]);
+                let provider = SdkMeterProvider::builder()
+                    .with_reader(reader)
+                    .with_resource(resource)
+                    .build();
                 opentelemetry::global::set_meter_provider(provider);
                 Ok(())
             })();
@@ -148,7 +158,7 @@ fn main() -> Result<()> {
     let config = Config::load_config(args.config)?;
 
     init_logging(&args.network)?;
-    init_metrics();
+    init_metrics(&args.network);
 
     info!(
         "Starting omni-proxy v{} on {} port {}",
