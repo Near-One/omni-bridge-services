@@ -533,7 +533,6 @@ impl ProxyHttp for RpcProxy {
             }
 
             if end_of_stream
-                && !ctx.is_failure
                 && buf.len() < MAX_RPC_BODY_BYTES
                 && let Some(ref prefix) = ctx.route_prefix
                 && let Some(state) = self.routes.get(prefix)
@@ -713,6 +712,7 @@ failover = {{ status_codes = [500], failure_threshold = {threshold}, window_secs
             }
         }
         assert_eq!(state.select(), Selection::AllDegraded);
+        assert_eq!(state.select().index(), 0); // still routes to the primary
     }
 
     #[test]
