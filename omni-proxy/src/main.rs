@@ -126,10 +126,17 @@ fn init_metrics(network: &Network) {
                     .with_interval(Duration::from_secs(30))
                     .build();
 
-                let resource = Resource::new([
+                let mut attributes = vec![
                     KeyValue::new("service.name", "omni-proxy"),
                     KeyValue::new("network", network),
-                ]);
+                ];
+                if let Ok(cluster) = std::env::var("CLUSTER_NAME") {
+                    attributes.push(KeyValue::new("k8s.cluster.name", cluster));
+                }
+                if let Ok(pod) = std::env::var("POD_NAME") {
+                    attributes.push(KeyValue::new("k8s.pod.name", pod));
+                }
+                let resource = Resource::new(attributes);
                 let provider = SdkMeterProvider::builder()
                     .with_reader(reader)
                     .with_resource(resource)
