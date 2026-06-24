@@ -8,7 +8,6 @@ on:
       - 'omni-proxy/**'
       - 'bridge-indexer-types/**'
       - 'Cargo.toml'
-      - 'Cargo.lock'
   release:
     types: [published]
   workflow_dispatch:
@@ -20,9 +19,10 @@ env:
 
 jobs:
   # Detect which service's files changed so each image builds independently.
-  # omni-proxy is standalone; omni-relayer additionally depends on
-  # bridge-indexer-types. Workspace files (Cargo.toml/Cargo.lock) affect both.
-  # On release / manual dispatch the build jobs ignore this and build all.
+  # omni-relayer also depends on bridge-indexer-types; omni-proxy is standalone.
+  # The root Cargo.toml (workspace manifest) rebuilds both; Cargo.lock is NOT a
+  # trigger, so a per-crate version bump (which only touches that crate's
+  # Cargo.toml + Cargo.lock) rebuilds just that one image. release/dispatch all.
   changes:
     runs-on: warp-ubuntu-latest-x64-2x
     outputs:
@@ -41,11 +41,9 @@ jobs:
               - 'omni-relayer/**'
               - 'bridge-indexer-types/**'
               - 'Cargo.toml'
-              - 'Cargo.lock'
             proxy:
               - 'omni-proxy/**'
               - 'Cargo.toml'
-              - 'Cargo.lock'
 
   omni-relayer:
     needs: changes
