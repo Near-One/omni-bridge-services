@@ -267,6 +267,41 @@ fn register_observable_gauges(
         })
         .build();
 
+    let recent_failures_routes = Arc::clone(routes);
+    meter
+        .u64_observable_gauge("rpc_upstream_recent_failures")
+        .with_description("Failures recorded for an upstream within the failover window (leading indicator; climbs toward failure_threshold before the breaker trips)")
+        .with_callback(move |observer| {
+            for state in recent_failures_routes.values() {
+                let window = state.route.failover().window();
+                for (idx, health) in state.health.iter().enumerate() {
+                    let count = u64::try_from(health.recent_failures(window)).unwrap_or(u64::MAX);
+                    observer.observe(
+                        count,
+                        &[
+                            KeyValue::new("route", state.route_label.clone()),
+                            KeyValue::new("upstream", state.route.upstreams()[idx].sni()),
+                            KeyValue::new("upstream_index", i64::try_from(idx).unwrap_or(i64::MAX)),
+                        ],
+                    );
+                }
+            }
+        })
+        .build();
+
+    let threshold_routes = Arc::clone(routes);
+    meter
+        .u64_observable_gauge("rpc_upstream_failure_threshold")
+        .with_description("Configured failure_threshold per route (the breaker trips at this many failures within the window)")
+        .with_callback(move |observer| {
+            for state in threshold_routes.values() {
+                let threshold =
+                    u64::try_from(state.route.failover().failure_threshold()).unwrap_or(u64::MAX);
+                observer.observe(threshold, &[KeyValue::new("route", state.route_label.clone())]);
+            }
+        })
+        .build();
+
     let in_flight = Arc::clone(in_flight);
     meter
         .i64_observable_gauge("rpc_requests_in_flight")
