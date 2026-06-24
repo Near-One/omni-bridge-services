@@ -1,0 +1,15 @@
+# Build artifacts (rebuilt inside the image)
+target/
+
+# Version control and CI config
+.git/
+.github/
+
+# Sandbox worktrees
+.sbx/
+
+# Local environment files — never bake into images
+**/.env
+
+# Docs
+**/*.md

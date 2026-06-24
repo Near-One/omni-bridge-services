@@ -2,6 +2,7 @@
 members = [
     "bridge-indexer-types",
     "omni-relayer",
+    "omni-proxy",
 ]
 resolver = "2"
 

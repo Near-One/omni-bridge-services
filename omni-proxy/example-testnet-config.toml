@@ -1,0 +1,149 @@
+[[routes]]
+prefix = "/eth"
+upstreams = [
+  { url = "https://sepolia.infura.io/v3/${INFURA_API_KEY}" },
+]
+failover = { status_codes = [500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/eth-beacon"
+upstreams = [
+  { url = "http://unstable.sepolia.beacon-api.nimbus.team" },
+  { url = "https://rpc.ankr.com/premium-http/eth_sepolia_beacon/${ANKR_API_KEY}" },
+  { url = "https://lodestar-sepolia.chainsafe.io" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/arb"
+upstreams = [
+  { url = "https://arbitrum-sepolia.infura.io/v3/${INFURA_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/base"
+upstreams = [
+  { url = "https://base-sepolia.infura.io/v3/${INFURA_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/bnb"
+upstreams = [
+  { url = "https://bsc-testnet.infura.io/v3/${INFURA_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/pol"
+upstreams = [
+  { url = "https://polygon-amoy.infura.io/v3/${INFURA_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/hlevm"
+upstreams = [
+  { url = "https://hyperevm-testnet.infura.io/v3/${INFURA_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/abs"
+upstreams = [
+  { url = "https://api.testnet.abs.xyz", timeout_ms = 20000 },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/aurora"
+upstreams = [
+  { url = "https://testnet.aurora.dev" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/near"
+upstreams = [
+  { url = "https://rpc.testnet.fastnear.com?apiKey=${FASTNEAR_API_KEY}", timeout_ms = 20000 },
+  { url = "https://x-api-key:${TATUM_API_KEY}@near-testnet.gateway.tatum.io/", timeout_ms = 20000 },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/solana"
+upstreams = [
+  { url = "https://x-api-key:${TATUM_API_KEY}@solana-devnet.gateway.tatum.io", timeout_ms = 20000 },
+  { url = "https://api.devnet.solana.com", timeout_ms = 20000 },
+]
+failover = { status_codes = [429, 500, 502, 503, 504], rpc_codes = [-32005] }
+
+[[routes]]
+prefix = "/starknet"
+upstreams = [
+  { url = "https://starknet-sepolia-rpc.publicnode.com", timeout_ms = 20000 },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/btc"
+upstreams = [
+  { url = "https://x-api-key:${TATUM_API_KEY}@bitcoin-testnet.gateway.tatum.io" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/zcash"
+upstreams = [
+  { url = "https://x-api-key:${TATUM_API_KEY}@zcash-testnet-zebrad.gateway.tatum.io" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/ws/eth"
+upstreams = [
+  { url = "wss://sepolia.infura.io/ws/v3/${INFURA_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/arb"
+upstreams = [
+  { url = "wss://arbitrum-sepolia.infura.io/ws/v3/${INFURA_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/base"
+upstreams = [
+  { url = "wss://base-sepolia.infura.io/ws/v3/${INFURA_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/bnb"
+upstreams = [
+  { url = "wss://rpc.ankr.com/bsc_testnet_chapel/ws/${ANKR_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/pol"
+upstreams = [
+  { url = "wss://polygon-amoy.infura.io/ws/v3/${INFURA_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/abs"
+upstreams = [
+  { url = "wss://api.testnet.abs.xyz/ws" },
+]
+
+[[routes]]
+prefix = "/ws/aurora"
+upstreams = [
+  { url = "wss://testnet.aurora.dev" },
+]
+
+[[routes]]
+prefix = "/ws/solana"
+upstreams = [
+  { url = "wss://api.devnet.solana.com" },
+]
