@@ -14,7 +14,7 @@ upstreams = [
   { url = "http://unstable.mainnet.beacon-api.nimbus.team" },
   { url = "https://lodestar-mainnet.chainsafe.io" },
 ]
-failover = { status_codes = [429, 500, 502, 503, 504] }
+failover = { status_codes = [429, 500, 502, 503, 504], failure_threshold = 1, window_secs = 300 }
 
 [[routes]]
 prefix = "/arb"
