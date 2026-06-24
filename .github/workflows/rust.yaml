@@ -7,7 +7,7 @@ on:
 
 jobs:
   ci:
-    name: workspace (1.88.0)
+    name: workspace (1.96.0)
     runs-on: warp-ubuntu-2204-x64-16x
     steps:
       - name: Checkout code
@@ -19,45 +19,7 @@ jobs:
           toolchain: 1.96.0
           components: clippy, rustfmt
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-provider: warpbuild
-          cache-on-failure: true
-          cache-all-crates: true
-
-      # omni-proxy is pinned to a newer toolchain (see omni-proxy/rust-toolchain)
-      # and is built/tested in its own job below, so it is excluded here.
-      - name: Run fmt
-        run: cargo fmt --package omni-relayer --package bridge-indexer-types -- --check
-
-      - name: Run clippy
-        run: |
-          cargo clippy --workspace --exclude omni-proxy --all-targets --no-deps --lib -- \
-            -D clippy::all -D clippy::pedantic \
-            -D clippy::as_conversions \
-            -A clippy::missing_errors_doc -A clippy::missing_panics_doc \
-            -A clippy::must_use_candidate -A clippy::unreadable_literal \
-            -A clippy::similar_names -A clippy::too_long_first_doc_paragraph
-
-      - name: Test
-        run: cargo test --workspace --exclude omni-proxy
-
-  omni-proxy:
-    name: omni-proxy (1.96.0)
-    runs-on: warp-ubuntu-2204-x64-16x
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # Pinned to match omni-proxy/rust-toolchain.
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.96.0
-          components: clippy, rustfmt
-
-      # pingora (libz-ng-sys / openssl-sys) needs a C/C++ toolchain and cmake.
+      # omni-proxy's pingora (libz-ng-sys / openssl-sys) needs a C/C++ toolchain and cmake.
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev pkg-config
 
@@ -67,14 +29,13 @@ jobs:
           cache-provider: warpbuild
           cache-on-failure: true
           cache-all-crates: true
-          key: omni-proxy
 
       - name: Run fmt
-        run: cargo fmt --package omni-proxy -- --check
+        run: cargo fmt --all -- --check
 
       - name: Run clippy
         run: |
-          cargo clippy --package omni-proxy --all-targets --no-deps -- \
+          cargo clippy --workspace --all-targets --no-deps -- \
             -D clippy::all -D clippy::pedantic \
             -D clippy::as_conversions \
             -A clippy::missing_errors_doc -A clippy::missing_panics_doc \
@@ -82,4 +43,4 @@ jobs:
             -A clippy::similar_names -A clippy::too_long_first_doc_paragraph
 
       - name: Test
-        run: cargo test --package omni-proxy
+        run: cargo test --workspace

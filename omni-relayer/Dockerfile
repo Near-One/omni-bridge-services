@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.88.0-bookworm AS builder
+FROM rust:1.96.0-bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
