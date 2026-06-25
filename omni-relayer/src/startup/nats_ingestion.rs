@@ -5,7 +5,7 @@ use async_nats::jetstream::consumer::PullConsumer;
 use bridge_indexer_types::documents_types::{OmniEvent, OmniEventData};
 use omni_connector::OmniConnector;
 use tokio_stream::StreamExt;
-use tracing::{info, warn};
+use tracing::{Instrument, info, warn};
 
 use crate::{config, utils};
 
@@ -20,6 +20,12 @@ async fn process_nats_message(
 ) -> Result<()> {
     match event.event {
         OmniEventData::Transaction(transaction_event) => {
+            let span = tracing::info_span!(
+                "transfer",
+                transfer_id = tracing::field::Empty,
+                kind = tracing::field::Empty,
+                tx = tracing::field::Empty,
+            );
             handle_transaction_event(
                 config,
                 redis_connection_manager,
@@ -30,6 +36,7 @@ async fn process_nats_message(
                 event.origin,
                 transaction_event,
             )
+            .instrument(span)
             .await?;
         }
         OmniEventData::Meta(meta_event) => {
