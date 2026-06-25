@@ -107,7 +107,6 @@ impl Selection {
     }
 }
 
-#[allow(clippy::struct_excessive_bools)]
 pub struct RequestCtx {
     upstream_idx: usize,
     all_degraded: bool,
@@ -119,7 +118,6 @@ pub struct RequestCtx {
     status_code: u16,
     start: Option<Instant>,
     ws_upgraded: bool,
-    in_flight_counted: bool,
 }
 
 impl Default for RequestCtx {
@@ -135,7 +133,6 @@ impl Default for RequestCtx {
             status_code: 0,
             start: None,
             ws_upgraded: false,
-            in_flight_counted: false,
         }
     }
 }
@@ -329,12 +326,18 @@ impl ProxyHttp for RpcProxy {
         }
     }
 
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool>
+    async fn early_request_filter(&self, _session: &mut Session, _ctx: &mut Self::CTX) -> Result<()>
     where
         Self::CTX: Send + Sync,
     {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
-        ctx.in_flight_counted = true;
+        Ok(())
+    }
+
+    async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool>
+    where
+        Self::CTX: Send + Sync,
+    {
         if session.req_header().uri.path() == "/healthz" {
             let resp = ResponseHeader::build(200, None)?;
             session.write_response_header(Box::new(resp), false).await?;
@@ -555,9 +558,7 @@ impl ProxyHttp for RpcProxy {
     where
         Self::CTX: Send + Sync,
     {
-        if ctx.in_flight_counted {
-            self.in_flight.fetch_sub(1, Ordering::Relaxed);
-        }
+        self.in_flight.fetch_sub(1, Ordering::Relaxed);
         if ctx.ws_upgraded {
             self.ws_active.fetch_sub(1, Ordering::Relaxed);
         }
