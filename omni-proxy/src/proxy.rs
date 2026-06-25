@@ -105,40 +105,37 @@ impl Selection {
             Selection::Primary | Selection::AllDegraded => 0,
         }
     }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Selection::Primary => "primary",
-            Selection::Fallback(_) => "fallback",
-            Selection::AllDegraded => "all_degraded",
-        }
-    }
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct RequestCtx {
     upstream_idx: usize,
+    all_degraded: bool,
     route_prefix: Option<Prefix>,
     body_buf: Option<Vec<u8>>,
     is_failure: bool,
     pub service: String,
-    upstream_host: String,
+    upstream_host: Arc<str>,
     status_code: u16,
     start: Option<Instant>,
     ws_upgraded: bool,
+    in_flight_counted: bool,
 }
 
 impl Default for RequestCtx {
     fn default() -> Self {
         Self {
             upstream_idx: 0,
+            all_degraded: false,
             route_prefix: None,
             body_buf: None,
             is_failure: false,
             service: "unknown".to_owned(),
-            upstream_host: String::new(),
+            upstream_host: Arc::from(""),
             status_code: 0,
             start: None,
             ws_upgraded: false,
+            in_flight_counted: false,
         }
     }
 }
@@ -193,7 +190,7 @@ impl RpcProxy {
             .build();
         let selected = meter
             .u64_counter("rpc_upstream_selected_total")
-            .with_description("Requests by which upstream the failover logic picked: 'primary' (healthy primary used), 'fallback' (primary degraded, a backup used), or 'all_degraded' (every upstream degraded, primary used as a last resort)")
+            .with_description("Requests by the upstream that served them (counted once per request): 'upstream_index' is the position in the route's upstream list (0 = primary, 1+ = the backup used), and 'degraded' is true only when every upstream was degraded and the primary was used as a last resort")
             .build();
         let route_not_matched = meter
             .u64_counter("rpc_route_not_matched_total")
@@ -332,11 +329,12 @@ impl ProxyHttp for RpcProxy {
         }
     }
 
-    async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool>
+    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> Result<bool>
     where
         Self::CTX: Send + Sync,
     {
         self.in_flight.fetch_add(1, Ordering::Relaxed);
+        ctx.in_flight_counted = true;
         if session.req_header().uri.path() == "/healthz" {
             let resp = ResponseHeader::build(200, None)?;
             session.write_response_header(Box::new(resp), false).await?;
@@ -382,16 +380,10 @@ impl ProxyHttp for RpcProxy {
 
         let selection = state.select();
         let idx = selection.index();
-        self.selected.add(
-            1,
-            &[
-                KeyValue::new("route", state.route_label.clone()),
-                KeyValue::new("selection", selection.as_str()),
-            ],
-        );
         let upstream = &state.route.upstreams()[idx];
 
         ctx.upstream_idx = idx;
+        ctx.all_degraded = matches!(selection, Selection::AllDegraded);
         ctx.route_prefix = Some(state.route.prefix().clone());
         if !state.route.failover().rpc_codes().is_empty() {
             ctx.body_buf = Some(Vec::new());
@@ -399,7 +391,11 @@ impl ProxyHttp for RpcProxy {
 
         ctx.upstream_host = upstream.sni();
 
-        let mut peer = HttpPeer::new(upstream.addr(), upstream.is_tls(), upstream.sni());
+        let mut peer = HttpPeer::new(
+            upstream.addr(),
+            upstream.is_tls(),
+            upstream.sni().to_string(),
+        );
         if upstream.is_tls() && !upstream.is_websocket() {
             peer.options.set_http_version(2, 1);
         }
@@ -559,7 +555,9 @@ impl ProxyHttp for RpcProxy {
     where
         Self::CTX: Send + Sync,
     {
-        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        if ctx.in_flight_counted {
+            self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        }
         if ctx.ws_upgraded {
             self.ws_active.fetch_sub(1, Ordering::Relaxed);
         }
@@ -598,6 +596,18 @@ impl ProxyHttp for RpcProxy {
                     KeyValue::new("upstream", ctx.upstream_host.clone()),
                     KeyValue::new("status", ctx.status_code.to_string()),
                     KeyValue::new("outcome", outcome),
+                ],
+            );
+
+            self.selected.add(
+                1,
+                &[
+                    KeyValue::new("route", route.clone()),
+                    KeyValue::new(
+                        "upstream_index",
+                        i64::try_from(ctx.upstream_idx).unwrap_or(i64::MAX),
+                    ),
+                    KeyValue::new("degraded", ctx.all_degraded),
                 ],
             );
 

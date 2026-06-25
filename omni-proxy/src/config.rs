@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose};
@@ -38,11 +39,32 @@ impl std::fmt::Display for Network {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Debug)]
 pub(crate) struct Upstream {
-    #[serde(deserialize_with = "de_inject_secrets_into_url")]
     url: url::Url,
     timeout_ms: Option<u32>,
+    sni: Arc<str>,
+}
+
+impl<'de> Deserialize<'de> for Upstream {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(deserialize_with = "de_inject_secrets_into_url")]
+            url: url::Url,
+            timeout_ms: Option<u32>,
+        }
+        let Raw { url, timeout_ms } = Raw::deserialize(deserializer)?;
+        let sni: Arc<str> = url.host_str().unwrap_or("").into();
+        Ok(Self {
+            url,
+            timeout_ms,
+            sni,
+        })
+    }
 }
 
 impl Upstream {
@@ -56,8 +78,8 @@ impl Upstream {
         matches!(self.url.scheme(), "https" | "wss")
     }
 
-    pub(crate) fn sni(&self) -> String {
-        self.url.host_str().unwrap_or("").to_owned()
+    pub(crate) fn sni(&self) -> Arc<str> {
+        Arc::clone(&self.sni)
     }
 
     pub(crate) fn authority(&self) -> String {
