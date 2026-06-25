@@ -193,7 +193,7 @@ impl RpcProxy {
             .build();
         let selected = meter
             .u64_counter("rpc_upstream_selected_total")
-            .with_description("Upstream selections by category")
+            .with_description("Requests by which upstream the failover logic picked: 'primary' (healthy primary used), 'fallback' (primary degraded, a backup used), or 'all_degraded' (every upstream degraded, primary used as a last resort)")
             .build();
         let route_not_matched = meter
             .u64_counter("rpc_route_not_matched_total")
