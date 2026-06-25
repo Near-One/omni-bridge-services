@@ -8,11 +8,10 @@ failover = { status_codes = [500, 502, 503, 504] }
 [[routes]]
 prefix = "/eth-beacon"
 upstreams = [
-  { url = "http://unstable.sepolia.beacon-api.nimbus.team" },
   { url = "https://rpc.ankr.com/premium-http/eth_sepolia_beacon/${ANKR_API_KEY}" },
   { url = "https://lodestar-sepolia.chainsafe.io" },
 ]
-failover = { status_codes = [429, 500, 502, 503, 504] }
+failover = { status_codes = [429, 500, 502, 503, 504], failure_threshold = 1, window_secs = 300 }
 
 [[routes]]
 prefix = "/arb"
