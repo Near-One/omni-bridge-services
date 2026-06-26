@@ -46,18 +46,16 @@ fn default_sol_chain_kind() -> ChainKind {
 /// - `tx`: origin transaction hash (explorer-facing), where the event carries it.
 struct LogContext {
     transfer_id: Option<UnifiedTransferId>,
-    kind: Option<&'static str>,
+    kind: &'static str,
     tx: Option<String>,
 }
 
 impl LogContext {
     fn record(self) {
         let span = tracing::Span::current();
+        span.record("kind", self.kind);
         if let Some(transfer_id) = self.transfer_id {
             span.record("transfer_id", tracing::field::display(transfer_id));
-        }
-        if let Some(kind) = self.kind {
-            span.record("kind", kind);
         }
         if let Some(ref tx) = self.tx {
             span.record("tx", tx.as_str());
@@ -234,7 +232,7 @@ impl Transfer {
         };
         LogContext {
             transfer_id: self.transfer_id(),
-            kind: Some(kind),
+            kind,
             tx,
         }
     }
@@ -286,7 +284,7 @@ impl FinTransfer {
         };
         LogContext {
             transfer_id: self.transfer_id(),
-            kind: Some(kind),
+            kind,
             tx,
         }
     }
@@ -321,7 +319,7 @@ impl DeployToken {
         };
         LogContext {
             transfer_id: None,
-            kind: Some(kind),
+            kind,
             tx,
         }
     }
@@ -751,7 +749,7 @@ async fn process_message(
         {
             LogContext {
                 transfer_id: Some(message_payload.transfer_id.into()),
-                kind: Some("OmniBridgeEvent::SignTransferEvent"),
+                kind: "OmniBridgeEvent::SignTransferEvent",
                 tx: None,
             }
             .record();
