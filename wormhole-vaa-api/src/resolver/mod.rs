@@ -8,7 +8,7 @@
 pub mod evm;
 pub mod svm;
 
-use futures::future::join_all;
+use futures::stream::{FuturesUnordered, StreamExt};
 use serde_json::json;
 
 use crate::config::{Config, Family};
@@ -100,21 +100,28 @@ impl Resolver {
             return Ok(Vec::new());
         }
         let params = json!([hash]);
-        let probes = self.evm.iter().map(|t| {
-            let proxy = self.proxy.clone();
-            let params = params.clone();
-            async move {
-                (
-                    t,
-                    proxy
-                        .rpc(&t.prefix, "eth_getTransactionReceipt", params)
-                        .await,
-                )
-            }
-        });
+        let mut probes: FuturesUnordered<_> = self
+            .evm
+            .iter()
+            .map(|t| {
+                let proxy = self.proxy.clone();
+                let params = params.clone();
+                async move {
+                    (
+                        t,
+                        proxy
+                            .rpc(&t.prefix, "eth_getTransactionReceipt", params)
+                            .await,
+                    )
+                }
+            })
+            .collect();
 
+        // Return as soon as any chain yields a match, rather than waiting for the slowest
+        // probe (a single degraded RPC must not delay a found VAA). Remaining probes are
+        // dropped on early return.
         let mut any_err = false;
-        for (target, result) in join_all(probes).await {
+        while let Some((target, result)) = probes.next().await {
             match result {
                 Ok(receipt) => {
                     if !receipt.is_null() {
@@ -150,14 +157,18 @@ impl Resolver {
             hash,
             { "encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0 }
         ]);
-        let probes = self.svm.iter().map(|t| {
-            let proxy = self.proxy.clone();
-            let params = params.clone();
-            async move { (t, proxy.rpc(&t.prefix, "getTransaction", params).await) }
-        });
+        let mut probes: FuturesUnordered<_> = self
+            .svm
+            .iter()
+            .map(|t| {
+                let proxy = self.proxy.clone();
+                let params = params.clone();
+                async move { (t, proxy.rpc(&t.prefix, "getTransaction", params).await) }
+            })
+            .collect();
 
         let mut any_err = false;
-        for (target, result) in join_all(probes).await {
+        while let Some((target, result)) = probes.next().await {
             match result {
                 Ok(tx) => {
                     if !tx.is_null() {

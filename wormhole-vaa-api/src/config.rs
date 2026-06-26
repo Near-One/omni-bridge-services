@@ -345,7 +345,9 @@ proxy_prefix = "/base"
 
     #[test]
     fn expands_env_vars() {
-        // Safe: single-threaded test.
+        // `set_var` is sound here despite the multi-threaded test harness: this var name
+        // is unique to this test and no other test in the crate reads or writes the
+        // environment, so there is no concurrent env access to race with.
         unsafe {
             std::env::set_var("WVAA_TEST_REDIS", "redis://secret-host:6379");
         }

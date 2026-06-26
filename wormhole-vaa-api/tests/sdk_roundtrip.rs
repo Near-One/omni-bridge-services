@@ -75,13 +75,16 @@ async fn client_parses_endpoint_two_by_txhash() {
 
 #[tokio::test]
 async fn client_treats_empty_data_array_as_no_vaa() {
-    // Our endpoint (2) 404 body is `{"data":[]}`; the client deserializes it and
-    // `.first()` yields None → a "No VAA found" error (the relayer then retries).
+    // Our endpoint (2) miss returns 404 with `{"data":[]}`. The SDK client does not call
+    // `error_for_status`, so it deserializes the body regardless of status: `.first()`
+    // yields None → a "No VAA found" error (the relayer retries / the proxy fails over).
     let server = MockServer::start_async().await;
     server
         .mock_async(|when, then| {
-            when.method(GET).path("/api/v1/vaas/");
-            then.status(200)
+            when.method(GET)
+                .path("/api/v1/vaas/")
+                .query_param("txHash", "0xdeadbeef");
+            then.status(404)
                 .header("content-type", "application/json")
                 .json_body(serde_json::json!({ "data": [] }));
         })
