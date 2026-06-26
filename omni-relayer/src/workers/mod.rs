@@ -463,6 +463,7 @@ pub async fn process_events(
 
         let span = tracing::info_span!(
             "transfer",
+            topic = %msg.subject,
             transfer_id = tracing::field::Empty,
             kind = tracing::field::Empty,
             tx = tracing::field::Empty,
@@ -864,6 +865,13 @@ async fn process_message(
     } else if let Ok(sign_utxo_transaction_event) =
         serde_json::from_value::<utxo::SignUtxoTransaction>(event.clone())
     {
+        LogContext {
+            transfer_id: None,
+            kind: "SignUtxoTransaction",
+            tx: sign_utxo_transaction_event.btc_pending_id.clone(),
+        }
+        .record();
+
         let result = utxo::process_sign_transaction_event(
             config,
             redis,
@@ -880,6 +888,13 @@ async fn process_message(
     } else if let Ok(confirmed_tx_hash) =
         serde_json::from_value::<utxo::ConfirmedTxHash>(event.clone())
     {
+        LogContext {
+            transfer_id: None,
+            kind: "ConfirmedTxHash",
+            tx: Some(confirmed_tx_hash.btc_tx_hash.clone()),
+        }
+        .record();
+
         let result = utxo::process_confirmed_tx_hash(
             jsonrpc_client,
             omni_connector.clone(),
