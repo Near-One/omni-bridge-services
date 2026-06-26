@@ -1,0 +1,14 @@
+# Observability (optional; same vars as omni-proxy/omni-relayer). When unset, the
+# service logs to stdout and metrics are disabled.
+GRAFANA_LOKI_URL=
+GRAFANA_LOKI_USER=
+GRAFANA_OTLP_URL=
+GRAFANA_OTLP_USER=
+GRAFANA_CLOUD_API_KEY=
+
+# Optional resource attributes attached to OTLP metrics.
+CLUSTER_NAME=
+POD_NAME=
+
+# Log filter (default "info"), e.g. "info,wormhole_vaa_api=debug".
+RUST_LOG=

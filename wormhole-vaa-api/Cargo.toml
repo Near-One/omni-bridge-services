@@ -1,0 +1,45 @@
+[package]
+name = "wormhole-vaa-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2.0.18"
+
+clap = { version = "4.6.1", features = ["derive"] }
+dotenv = "0.15.0"
+toml = "1.1.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+hex = "0.4.3"
+base64 = "0.22.1"
+bs58 = "0.5.1"
+url = "2.5"
+
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "signal"] }
+tokio-stream = "0.1"
+futures = "0.3"
+
+axum = "0.7.9"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tonic = "0.12.3"
+prost = "0.13"
+redis = { version = "0.32.7", features = ["aio", "tokio-comp", "connection-manager"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "chrono"] }
+tracing-loki = "0.2"
+opentelemetry = { version = "0.27", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.27", features = ["metrics", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["metrics", "http-proto", "reqwest-client"] }
+
+[build-dependencies]
+tonic-build = "0.12.3"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+httpmock = "0.7"
+sha3 = "0.10"
+wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "91a61f61f559d1d8cfab89323223478abbec05e4" }

@@ -1,0 +1,81 @@
+# wormhole-vaa-api — mainnet config.
+#
+# `${ENV}` references are expanded at load time (same scheme as omni-proxy), so
+# secrets/hosts can come from the environment. Nothing here is secret (all in-cluster,
+# unauthenticated), so literal cluster DNS values are fine.
+
+# Wormhole spy gRPC (guardiand spy), plaintext h2c.
+spy_addr = "wormhole-spy.wormhole-vaa-api-mainnet.svc.cluster.local:7073"
+# Redis store (TTL'd VAA cache + txHash-resolution cache).
+redis_url = "redis://wormhole-vaa-api-redis.wormhole-vaa-api-mainnet.svc.cluster.local:6379"
+# omni-proxy base URL used to reach chain RPCs.
+proxy_base_url = "http://omni-proxy.omni-proxy-mainnet.svc.cluster.local"
+
+# Stored VAAs live ≥14 days so a redeploy does not drop recent VAAs.
+vaa_ttl_secs = 1296000   # 15 days
+# Cached txHash → resolution.
+txres_ttl_secs = 86400   # 1 day
+
+# Canonical Wormhole chain ids (network-agnostic). HyperEVM = 47 (verified; NOT
+# HyperCore=65000). EVM `emitter` is our omni_bridge contract; `core` is the Wormhole
+# core bridge. SVM `emitter` is the bridge `config` PDA's 32-byte address (hex).
+
+[[chains]]
+name = "arb"
+family = "evm"
+wh_chain_id = 23
+emitter = "0xd025b38762B4A4E36F0Cde483b86CB13ea00D989"
+core = "0xa5f208e072434bC67592E4C49C1B991BA79BCA46"
+proxy_prefix = "/arb"
+
+[[chains]]
+name = "base"
+family = "evm"
+wh_chain_id = 30
+emitter = "0xd025b38762B4A4E36F0Cde483b86CB13ea00D989"
+core = "0xbebdb6C8ddC678FfA9f8748f85C815C556Dd8ac6"
+proxy_prefix = "/base"
+
+[[chains]]
+name = "bnb"
+family = "evm"
+wh_chain_id = 4
+emitter = "0x073C8a225c8Cf9d3f9157F5C1a1DbE02407f5720"
+core = "0x98f3c9e6E3fAce36bAAd05FE09d375Ef1464288B"
+proxy_prefix = "/bnb"
+
+[[chains]]
+name = "pol"
+family = "evm"
+wh_chain_id = 5
+emitter = "0xd025b38762B4A4E36F0Cde483b86CB13ea00D989"
+core = "0x7A4B5a56256163F07b2C80A7cA55aBE66c4ec4d7"
+proxy_prefix = "/pol"
+
+[[chains]]
+name = "hyperevm"
+family = "evm"
+wh_chain_id = 47
+emitter = "0xf353b40fC144d1c6c5BCdda712fa6De833016aF9"
+core = "0x7C0faFc4384551f063e05aee704ab943b8B53aB3"
+proxy_prefix = "/hlevm"
+
+# Solana emitter = find_program_address([b"config"], dahPEoZGXfyV58JqqH85okdHmpN8U2q8owgPUXSCPxe)
+# = 2iANpDh96GgithLPTVMZjZFtnbrYBUCLqnEvaytbwTQq (verified against live wormholescan VAAs).
+[[chains]]
+name = "solana"
+family = "svm"
+wh_chain_id = 1
+emitter = "19671a08a9cef6f3a04314ed478fc332a4966f41ad3e6fea76933dede9c6cdfe"
+program_id = "dahPEoZGXfyV58JqqH85okdHmpN8U2q8owgPUXSCPxe"
+proxy_prefix = "/solana"
+
+# Fogo shares the Solana bridge program id → same emitter config PDA; distinguished by
+# its own RPC route. Different Wormhole core, but core is unused for SVM resolution.
+[[chains]]
+name = "fogo"
+family = "svm"
+wh_chain_id = 51
+emitter = "19671a08a9cef6f3a04314ed478fc332a4966f41ad3e6fea76933dede9c6cdfe"
+program_id = "dahPEoZGXfyV58JqqH85okdHmpN8U2q8owgPUXSCPxe"
+proxy_prefix = "/fogo"
