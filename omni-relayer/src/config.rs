@@ -294,10 +294,16 @@ pub struct RelayerConsumer {
     pub max_message_age_hours: u64,
     #[serde(default = "default_worker_count")]
     pub worker_count: usize,
+    #[serde(default = "default_max_ack_pending")]
+    pub max_ack_pending: i64,
 }
 
 fn default_worker_count() -> usize {
     1
+}
+
+const fn default_max_ack_pending() -> i64 {
+    -1
 }
 
 #[derive(Debug, Clone, Deserialize)]
