@@ -3,6 +3,7 @@ members = [
     "bridge-indexer-types",
     "omni-relayer",
     "omni-proxy",
+    "wormhole-vaa-api",
 ]
 resolver = "2"
 
