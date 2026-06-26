@@ -160,6 +160,11 @@ pub(super) async fn handle_transaction_event(
     origin: OmniTransactionOrigin,
     event: OmniTransactionEvent,
 ) -> Result<()> {
+    let span = tracing::Span::current();
+    span.record("transfer_id", tracing::field::display(&unified_transfer_id));
+    span.record("kind", <&str>::from(&event.transfer_message));
+    span.record("tx", origin_transaction_id.as_str());
+
     if config.bridge_indexer.is_whitelist_active()
         && !is_whitelisted_transaction_event(
             config,
