@@ -22,7 +22,12 @@ use crate::store::Store;
 use crate::vaa::parse_vaa_id;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+// guardiand's spy gRPC server uses grpc-go's default keepalive EnforcementPolicy
+// (MinTime = 5min, PermitWithoutStream = false): a client that sends HTTP/2 keepalive
+// pings more often than once per 5min is hit with GOAWAY(ENHANCE_YOUR_CALM,
+// "too_many_pings") and the stream is closed. At 30s this tore the SubscribeSignedVAA
+// stream down every ~2min, so the service ingested nothing. Stay safely above 5min.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(600);
 const BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
@@ -79,15 +84,16 @@ async fn subscribe_once(
         .connect()
         .await?;
 
+    status.connected.store(true, Ordering::Relaxed);
+    *backoff = BACKOFF_INITIAL;
+
     let mut client = SpyRpcServiceClient::new(channel);
     let filters = build_filters(config)?;
     let filter_count = filters.len();
     let request = SubscribeSignedVaaRequest { filters };
+    info!(filters = filter_count, "spy channel connected");
 
     let mut stream = client.subscribe_signed_vaa(request).await?.into_inner();
-    status.connected.store(true, Ordering::Relaxed);
-    *backoff = BACKOFF_INITIAL;
-    info!(filters = filter_count, "spy connected");
 
     while let Some(message) = stream.next().await {
         let message = message?;
