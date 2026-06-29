@@ -10,6 +10,9 @@ spy_addr = "wormhole-spy.wormhole-vaa-api-mainnet.svc.cluster.local:7073"
 redis_url = "redis://wormhole-vaa-api-redis.wormhole-vaa-api-mainnet.svc.cluster.local:6379"
 # omni-proxy base URL used to reach chain RPCs.
 proxy_base_url = "http://omni-proxy.omni-proxy-mainnet.svc.cluster.local"
+# Public wormholescan, queried per-request when our store is missing a VAA (and cached).
+# Omit to disable the fallback and serve only from our own store.
+wormholescan_base_url = "https://api.wormholescan.io"
 
 # Stored VAAs live ≥14 days so a redeploy does not drop recent VAAs.
 vaa_ttl_secs = 1296000   # 15 days

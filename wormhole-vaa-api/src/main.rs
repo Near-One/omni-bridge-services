@@ -13,8 +13,10 @@ use wormhole_vaa_api::proxy_client::ProxyClient;
 use wormhole_vaa_api::resolver::Resolver;
 use wormhole_vaa_api::spy::{self, SpyStatus};
 use wormhole_vaa_api::store::Store;
+use wormhole_vaa_api::wormholescan::WormholescanClient;
 
 const PROXY_RPC_TIMEOUT: Duration = Duration::from_secs(20);
+const WORMHOLESCAN_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -44,6 +46,14 @@ async fn main() -> Result<()> {
     let resolver = Resolver::from_config(&config, proxy)?;
     let spy_status = Arc::new(SpyStatus::default());
 
+    let wormholescan = if let Some(url) = &config.wormholescan_base_url {
+        info!("wormholescan fallback enabled ({url})");
+        Some(WormholescanClient::new(url, WORMHOLESCAN_TIMEOUT)?)
+    } else {
+        info!("wormholescan fallback disabled (wormholescan_base_url not set)");
+        None
+    };
+
     // Metrics handles must be built after `init_metrics` set the global provider.
     let app_metrics = Metrics::new();
     metrics::register_spy_gauges(Arc::clone(&spy_status));
@@ -60,6 +70,7 @@ async fn main() -> Result<()> {
         spy_status,
         config: Arc::clone(&config),
         metrics: app_metrics,
+        wormholescan,
     };
     let app = api::router(state);
 

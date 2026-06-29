@@ -4,6 +4,8 @@
 spy_addr = "wormhole-spy.wormhole-vaa-api-testnet.svc.cluster.local:7073"
 redis_url = "redis://wormhole-vaa-api-redis.wormhole-vaa-api-testnet.svc.cluster.local:6379"
 proxy_base_url = "http://omni-proxy.omni-proxy-testnet.svc.cluster.local"
+# Public wormholescan (testnet), queried per-request on a store miss (and cached).
+wormholescan_base_url = "https://api.testnet.wormholescan.io"
 
 vaa_ttl_secs = 1296000   # 15 days
 txres_ttl_secs = 86400   # 1 day

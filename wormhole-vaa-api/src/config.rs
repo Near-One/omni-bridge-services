@@ -106,6 +106,11 @@ pub struct Config {
     /// omni-proxy base URL, e.g. `http://omni-proxy.omni-proxy-mainnet.svc.cluster.local`.
     #[serde(deserialize_with = "de_env")]
     pub proxy_base_url: String,
+    /// Public wormholescan base URL for per-request fallback, e.g.
+    /// `https://api.wormholescan.io` (testnet: `https://api.testnet.wormholescan.io`).
+    /// When unset, the service serves only from its own store (no fallback).
+    #[serde(default)]
+    pub wormholescan_base_url: Option<String>,
     /// TTL applied to stored VAAs (default 15 days).
     #[serde(default = "default_vaa_ttl_secs")]
     pub vaa_ttl_secs: u64,
