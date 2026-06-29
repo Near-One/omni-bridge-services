@@ -56,6 +56,9 @@ zcash = "nzcash.n-bridge.testnet"
 # fast_credentials_path = "/Users/username/.near-credentials/testnet/fast-relayer.testnet.json"
 # We won't check fee before signing transfer if account id matches on in array
 sign_without_checking_fee = ["near:aurora"]
+# Restrict which NEAR senders may relay NEAR -> HyperEVM transfers.
+# Omit this key to allow all senders (default). An empty list blocks all NEAR -> HyperEVM transfers.
+# hyperevm_allowed_senders = ["near:alice.near", "near:vault.near"]
 # To enable fast relayer, uncomment the line below
 # fast_relayer_enabled = true
 

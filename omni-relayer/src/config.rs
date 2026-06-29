@@ -371,6 +371,18 @@ pub struct Near {
     pub sign_without_checking_fee: Option<Vec<OmniAddress>>,
     #[serde(default)]
     pub fast_relayer_enabled: bool,
+    pub hyperevm_allowed_senders: Option<Vec<OmniAddress>>,
+}
+
+impl Near {
+    /// Returns `true` if `sender` is permitted to relay NEAR -> `HyperEVM`
+    /// transfers. When `hyperevm_allowed_senders` is unset the restriction is
+    /// disabled and every sender is allowed.
+    pub fn is_hyperevm_sender_allowed(&self, sender: &OmniAddress) -> bool {
+        self.hyperevm_allowed_senders
+            .as_ref()
+            .is_none_or(|allowed| allowed.contains(sender))
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -523,5 +535,59 @@ impl Wormhole {
                 .expect("wormhole.fogo_chain_id must be configured when [fogo] is enabled"),
             _ => panic!("svm_chain_id called for non-SVM chain {chain_kind:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    fn near_with_allowlist(hyperevm_allowed_senders: Option<Vec<OmniAddress>>) -> Near {
+        Near {
+            network: Network::Mainnet,
+            rpc_url: "http://localhost".to_string(),
+            omni_bridge_id: AccountId::from_str("omni.bridge.near").unwrap(),
+            mpc_omni_prover_id: None,
+            btc_connector: None,
+            btc: None,
+            zcash_connector: None,
+            zcash: None,
+            omni_credentials_path: None,
+            fast_credentials_path: None,
+            sign_without_checking_fee: None,
+            fast_relayer_enabled: false,
+            hyperevm_allowed_senders,
+        }
+    }
+
+    fn near_sender(account_id: &str) -> OmniAddress {
+        OmniAddress::Near(AccountId::from_str(account_id).unwrap())
+    }
+
+    #[test]
+    fn allowlist_unset_allows_any_sender() {
+        let near = near_with_allowlist(None);
+        assert!(near.is_hyperevm_sender_allowed(&near_sender("alice.near")));
+        assert!(near.is_hyperevm_sender_allowed(&near_sender("bob.near")));
+    }
+
+    #[test]
+    fn allowlist_with_entries_allows_listed_sender() {
+        let near = near_with_allowlist(Some(vec![near_sender("alice.near")]));
+        assert!(near.is_hyperevm_sender_allowed(&near_sender("alice.near")));
+    }
+
+    #[test]
+    fn allowlist_with_entries_blocks_unlisted_sender() {
+        let near = near_with_allowlist(Some(vec![near_sender("alice.near")]));
+        assert!(!near.is_hyperevm_sender_allowed(&near_sender("bob.near")));
+    }
+
+    #[test]
+    fn allowlist_empty_blocks_every_sender() {
+        let near = near_with_allowlist(Some(Vec::new()));
+        assert!(!near.is_hyperevm_sender_allowed(&near_sender("alice.near")));
     }
 }

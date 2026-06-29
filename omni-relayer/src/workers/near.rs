@@ -108,6 +108,19 @@ pub async fn process_transfer_event(
     }
 
     let context = format!("({origin_chain:?}:{origin_nonce})");
+
+    if transfer_message.get_destination_chain() == ChainKind::HyperEvm
+        && !config
+            .near
+            .is_hyperevm_sender_allowed(&transfer_message.sender)
+    {
+        warn!(
+            "Sender {} is not in the HyperEVM allowlist, dropping NEAR->HyperEVM transfer {context}",
+            transfer_message.sender
+        );
+        return Ok((EventAction::Remove, Vec::new()));
+    }
+
     if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
         return Ok((action, Vec::new()));
     }
@@ -522,7 +535,10 @@ pub async fn process_sign_transfer_event(
         }
     }
 
-    if config.is_bridge_api_enabled() {
+    let hyperevm_allowlist_active = message_payload.recipient.get_chain() == ChainKind::HyperEvm
+        && config.near.hyperevm_allowed_senders.is_some();
+
+    if config.is_bridge_api_enabled() || hyperevm_allowlist_active {
         let transfer_message = match omni_connector
             .near_get_transfer_message(message_payload.transfer_id)
             .await
@@ -545,29 +561,45 @@ pub async fn process_sign_transfer_event(
             }
         };
 
-        let Ok(needed_fee) = utils::bridge_api::TransferFee::get_transfer_fee(
-            config,
-            &transfer_message.sender,
-            &transfer_message.recipient,
-            &transfer_message.token,
-        )
-        .await
-        else {
-            warn!("Failed to get transfer fee for transfer: {transfer_message:?}");
-            return Ok(EventAction::Retry);
-        };
+        if hyperevm_allowlist_active
+            && !config
+                .near
+                .is_hyperevm_sender_allowed(&transfer_message.sender)
+        {
+            warn!(
+                "Sender {} is not in the HyperEVM allowlist, dropping NEAR->HyperEVM finalization ({:?}:{})",
+                transfer_message.sender,
+                message_payload.transfer_id.origin_chain,
+                message_payload.transfer_id.origin_nonce
+            );
+            return Ok(EventAction::Remove);
+        }
 
-        if let Some(event_action) = needed_fee
-            .check_fee(
+        if config.is_bridge_api_enabled() {
+            let Ok(needed_fee) = utils::bridge_api::TransferFee::get_transfer_fee(
                 config,
-                redis_connection_manager,
-                &transfer_message,
-                transfer_message.get_transfer_id(),
-                &transfer_message.fee,
+                &transfer_message.sender,
+                &transfer_message.recipient,
+                &transfer_message.token,
             )
             .await
-        {
-            return Ok(event_action);
+            else {
+                warn!("Failed to get transfer fee for transfer: {transfer_message:?}");
+                return Ok(EventAction::Retry);
+            };
+
+            if let Some(event_action) = needed_fee
+                .check_fee(
+                    config,
+                    redis_connection_manager,
+                    &transfer_message,
+                    transfer_message.get_transfer_id(),
+                    &transfer_message.fee,
+                )
+                .await
+            {
+                return Ok(event_action);
+            }
         }
     }
 
