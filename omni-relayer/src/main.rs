@@ -79,10 +79,10 @@ fn init_logging(network: Network) -> Result<()> {
         // aggregate ALL services in an environment (`{cluster_name="mainnet"}` across indexer
         // + relayer). Falls back to the network name if CLUSTER_NAME is unset.
         let cluster_name = std::env::var("CLUSTER_NAME").unwrap_or_else(|_| network.to_string());
-        let pod_name =
-            std::env::var("POD_NAME").unwrap_or_else(|_| format!("omni-relayer-{network}"));
+        let service_name =
+            std::env::var("SERVICE_NAME").unwrap_or_else(|_| "omni-relayer".to_string());
         let (loki_layer, loki_task) = tracing_loki::builder()
-            .label("pod_name", pod_name)?
+            .label("service_name", service_name)?
             .label("cluster_name", cluster_name)?
             .http_header("Authorization", format!("Basic {encoded}"))?
             .build_url(base)?;
