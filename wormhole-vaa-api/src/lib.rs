@@ -14,6 +14,7 @@ pub mod resolver;
 pub mod spy;
 pub mod store;
 pub mod vaa;
+pub mod wormholescan;
 
 /// Generated Wormhole spy gRPC client (from `proto/spy.proto`).
 #[allow(clippy::all, clippy::pedantic, clippy::as_conversions)]

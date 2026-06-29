@@ -27,6 +27,8 @@ pub struct Metrics {
     pub vaa_lookups: Counter<u64>,
     /// txHash resolutions, labeled by `outcome` (`resolved`/`empty`/`error`/`cache_hit`).
     pub resolutions: Counter<u64>,
+    /// Per-request wormholescan fallback, labeled by `outcome` (`hit`/`miss`/`error`).
+    pub wormholescan_fallback: Counter<u64>,
 }
 
 impl Metrics {
@@ -45,6 +47,10 @@ impl Metrics {
             resolutions: meter
                 .u64_counter("wvaa_txhash_resolutions_total")
                 .with_description("txHash resolutions by outcome")
+                .build(),
+            wormholescan_fallback: meter
+                .u64_counter("wvaa_wormholescan_fallback_total")
+                .with_description("Per-request wormholescan fallback by outcome (hit/miss/error)")
                 .build(),
         }
     }
