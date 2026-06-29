@@ -92,9 +92,9 @@ pub async fn start_utxo_lc_poller(
         }
 
         info!(
-            tip,
+            block_height = tip,
             pending = ready.len(),
-            "LC tip reached; replaying pending event(s)"
+            "LC reached block height; replaying pending event(s)"
         );
 
         for pending in ready {
