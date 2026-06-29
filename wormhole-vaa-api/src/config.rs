@@ -108,7 +108,8 @@ pub struct Config {
     pub proxy_base_url: String,
     /// Public wormholescan base URL for per-request fallback, e.g.
     /// `https://api.wormholescan.io` (testnet: `https://api.testnet.wormholescan.io`).
-    /// When unset, the service serves only from its own store (no fallback).
+    /// When unset, the service serves only from its own store (no fallback). A plain
+    /// literal (no `${ENV}` expansion) — it's a fixed public URL, not a secret or host.
     #[serde(default)]
     pub wormholescan_base_url: Option<String>,
     /// TTL applied to stored VAAs (default 15 days).

@@ -47,7 +47,7 @@ relayer ─▶ omni-proxy /wormhole-api ─▶ wormhole-vaa-api ──(store mis
 |---|---|---|
 | VAA found (store or wormholescan) | `200` | `{"data":{"vaa":"<b64>"}}` (endpoint 1) / `{"data":[{"vaa":"<b64>"}]}` (endpoint 2) |
 | Neither store nor wormholescan has it (yet) | `404` | `{"code":5,"message":"NOT FOUND"}` (1) / `{"data":[]}` (2) |
-| Internal error (Redis down) | `5xx` | `{"code":13,"message":"INTERNAL"}` |
+| Internal error (Redis down, or wormholescan errored on a store miss) | `5xx` | `{"code":13,"message":"INTERNAL"}` |
 
 `200` is **only** ever returned with a real, fully-signed VAA. `vaa` is standard padded
 base64, identical to wormholescan. The infra `/wormhole-api` route is a **single upstream**
@@ -68,9 +68,10 @@ wormhole-vaa-api --network mainnet --config /config/config.toml --port 8080
 ### Config
 
 See [`example-mainnet-config.toml`](example-mainnet-config.toml) /
-[`example-testnet-config.toml`](example-testnet-config.toml). `${ENV}` references are
-expanded at load time. Top-level keys: `spy_addr`, `redis_url`, `proxy_base_url`,
-`wormholescan_base_url` (optional — enables the per-request fallback; omit to disable),
+[`example-testnet-config.toml`](example-testnet-config.toml). `${ENV}` references in the
+in-cluster URLs (`spy_addr`, `redis_url`, `proxy_base_url`) are expanded at load time.
+Top-level keys: those three, plus `wormholescan_base_url` (optional literal — enables the
+per-request fallback; omit to disable),
 `vaa_ttl_secs` (default 15d), `txres_ttl_secs` (default 1d), and a `[[chains]]` table of
 `{ name, family (evm|svm), wh_chain_id, emitter, core (EVM only), program_id (SVM only,
 base58 bridge program — scopes Solana sequence attribution), proxy_prefix }`.

@@ -4,7 +4,8 @@
 //! our store first, then wormholescan per-request (caching any hit). Status contract:
 //!   * `200` with a real, fully-signed VAA — from our store, or from wormholescan.
 //!   * `404` when neither our store nor wormholescan has it (yet).
-//!   * `5xx` on internal errors (Redis down).
+//!   * `5xx` on internal errors (Redis down, or wormholescan errored on a store miss so we
+//!     could not determine availability — never a false "not found").
 //!
 //! `vaa` is standard padded base64, matching wormholescan exactly.
 
@@ -115,11 +116,13 @@ async fn get_vaa(
         }
         Ok(None) => {
             state.metrics.vaa_lookups.add(1, &[kv("result", "miss")]);
-            // Not in our store — fall back to wormholescan per-request and cache any hit.
-            if let Some(bytes) = fallback_get_vaa(&state, chain, &emitter, sequence).await {
-                return record(&state, "by_id", ok_single(&bytes));
+            // Not in our store — fall back to wormholescan per-request, caching any hit.
+            // A wormholescan *error* is 5xx (we couldn't determine), not a 404.
+            match fallback_get_vaa(&state, chain, &emitter, sequence).await {
+                Ok(Some(bytes)) => record(&state, "by_id", ok_single(&bytes)),
+                Ok(None) => record(&state, "by_id", not_found_single()),
+                Err(_) => record(&state, "by_id", internal_error()),
             }
-            record(&state, "by_id", not_found_single())
         }
         Err(e) => {
             warn!("store error on get_vaa: {e}");
@@ -129,13 +132,19 @@ async fn get_vaa(
 }
 
 /// Query wormholescan for a VAA our store is missing; cache any hit so the gap self-heals.
+///
+/// `Ok(Some)` = found (already cached); `Ok(None)` = wormholescan confirms it doesn't have
+/// it (or no fallback configured) → caller should 404; `Err` = wormholescan errored, so we
+/// could *not* determine availability → caller should 5xx (not a false "not found").
 async fn fallback_get_vaa(
     state: &AppState,
     chain: u16,
     emitter: &[u8; 32],
     sequence: u64,
-) -> Option<Vec<u8>> {
-    let ws = state.wormholescan.as_ref()?;
+) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(ws) = state.wormholescan.as_ref() else {
+        return Ok(None);
+    };
     match ws.get_vaa(chain, &emitter_hex(emitter), sequence).await {
         Ok(Some(bytes)) => {
             state
@@ -143,14 +152,14 @@ async fn fallback_get_vaa(
                 .wormholescan_fallback
                 .add(1, &[kv("outcome", "hit")]);
             cache_vaa(state, &bytes).await;
-            Some(bytes)
+            Ok(Some(bytes))
         }
         Ok(None) => {
             state
                 .metrics
                 .wormholescan_fallback
                 .add(1, &[kv("outcome", "miss")]);
-            None
+            Ok(None)
         }
         Err(e) => {
             warn!(
@@ -161,7 +170,7 @@ async fn fallback_get_vaa(
                 .metrics
                 .wormholescan_fallback
                 .add(1, &[kv("outcome", "error")]);
-            None
+            Err(e)
         }
     }
 }
@@ -207,7 +216,16 @@ async fn get_vaa_by_tx(State(state): State<AppState>, Query(q): Query<TxQuery>) 
             Ok(Some(bytes)) => data.push(VaaData {
                 vaa: STANDARD.encode(bytes),
             }),
-            Ok(None) => {}
+            // Store miss for this identity — fill it from wormholescan so a multi-message
+            // tx with partial store coverage still returns the complete set. A wormholescan
+            // error is 5xx (couldn't determine), not a silent gap.
+            Ok(None) => match fallback_get_vaa(&state, r.chain, &r.emitter, r.sequence).await {
+                Ok(Some(bytes)) => data.push(VaaData {
+                    vaa: STANDARD.encode(&bytes),
+                }),
+                Ok(None) => {}
+                Err(_) => return record(&state, "by_tx", internal_error()),
+            },
             Err(e) => {
                 warn!("store error on get_vaa_by_tx: {e}");
                 return record(&state, "by_tx", internal_error());
@@ -215,9 +233,9 @@ async fn get_vaa_by_tx(State(state): State<AppState>, Query(q): Query<TxQuery>) 
         }
     }
 
-    // Nothing in our store for this tx — fall back to wormholescan (it resolves the tx
-    // itself), caching any hit so the gap self-heals.
-    if data.is_empty()
+    // We couldn't resolve the tx to any of our identities — ask wormholescan to resolve it
+    // directly (covers resolver gaps / txs we don't recognize). A wormholescan error is 5xx.
+    if resolutions.is_empty()
         && let Some(ws) = state.wormholescan.as_ref()
     {
         match ws.get_vaa_by_tx(&hash).await {
@@ -243,6 +261,7 @@ async fn get_vaa_by_tx(State(state): State<AppState>, Query(q): Query<TxQuery>) 
                     .metrics
                     .wormholescan_fallback
                     .add(1, &[kv("outcome", "error")]);
+                return record(&state, "by_tx", internal_error());
             }
         }
     }
