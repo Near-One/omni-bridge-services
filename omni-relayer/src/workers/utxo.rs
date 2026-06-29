@@ -449,6 +449,13 @@ pub async fn process_confirmed_tx_hash(
         .await
     {
         Ok(info) => info,
+        Err(BridgeSdkError::InvalidArgument(err)) if err == "BTC pending info not found" => {
+            anyhow::bail!(
+                "BTC pending info is not found for {} ({:?})",
+                confirmed_tx_hash.btc_tx_hash,
+                confirmed_tx_hash.chain,
+            );
+        }
         Err(err) => {
             warn!(
                 "Failed to fetch BTC pending info for {} ({:?}), retrying: {err:?}",
