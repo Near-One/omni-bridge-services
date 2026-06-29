@@ -73,8 +73,18 @@ fn init_logging(network: Network) -> Result<()> {
 
         let base = Url::parse(&url).context("Failed to parse `GRAFANA_LOKI_URL` as a valid URL")?;
 
+        // bridge-indexer-rs labels its Loki streams with a separate `cluster_name`
+        // (= CLUSTER_NAME, e.g. `mainnet`/`testnet`) label rather than baking the network
+        // into `app`. Emit a matching `cluster_name` label here too so a single query can
+        // aggregate ALL services in an environment (`{cluster_name="mainnet"}` across indexer
+        // + relayer). Falls back to the network name if CLUSTER_NAME is unset.
+        let cluster_name =
+            std::env::var("CLUSTER_NAME").unwrap_or_else(|_| network.to_string());
+        let pod_name =
+            std::env::var("POD_NAME").unwrap_or_else(|_| format!("omni-relayer-{network}"));
         let (loki_layer, loki_task) = tracing_loki::builder()
-            .label("app", format!("omni-relayer-{network}"))?
+            .label("pod_name", pod_name)?
+            .label("cluster_name", cluster_name)?
             .http_header("Authorization", format!("Basic {encoded}"))?
             .build_url(base)?;
 
