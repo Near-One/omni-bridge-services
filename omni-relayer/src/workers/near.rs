@@ -27,68 +27,6 @@ enum UTXOChainMsg {
     MaxGasFee(U64),
 }
 
-pub(super) async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
-    check_kyt_senders(std::slice::from_ref(sender), context).await
-}
-
-pub(super) async fn check_kyt_senders(
-    senders: &[OmniAddress],
-    context: &str,
-) -> Option<EventAction> {
-    if !config::Config::is_kyt_enabled() {
-        return None;
-    }
-
-    match utils::kyt::check_senders(senders).await {
-        Ok(utils::kyt::SuggestedAction::StopRelaying) => {
-            warn!(
-                "KYT suggested STOP_RELAYING for senders {senders:?}, rejecting transfer {context}"
-            );
-            Some(EventAction::Remove)
-        }
-        Ok(utils::kyt::SuggestedAction::None) => None,
-        Err(err) => {
-            warn!("KYT check failed for {senders:?}: {err:?}, retrying");
-            Some(EventAction::Retry)
-        }
-    }
-}
-
-/// Enforces the configured sender allowlist for `destination_chain`. Returns
-/// `Some(EventAction::Remove)` (and logs) if `sender` is not allowed to bridge
-/// to `destination_chain`, otherwise `None`.
-pub(super) fn enforce_sender_allowlist(
-    config: &config::Config,
-    sender: &OmniAddress,
-    destination_chain: ChainKind,
-    context: &str,
-) -> Option<EventAction> {
-    if config.is_sender_allowed(sender, destination_chain) {
-        return None;
-    }
-
-    warn!(
-        "Sender {sender} is not allowed to bridge to {destination_chain:?}, dropping transfer {context}"
-    );
-    Some(EventAction::Remove)
-}
-
-/// Validates a transfer's sender before relaying: first the configured sender
-/// allowlist (local), then KYT screening (network). Returns the `EventAction`
-/// to take if the transfer must not be relayed, or `None` if it may proceed.
-pub(super) async fn validate_sender(
-    config: &config::Config,
-    sender: &OmniAddress,
-    destination_chain: ChainKind,
-    context: &str,
-) -> Option<EventAction> {
-    if let Some(action) = enforce_sender_allowlist(config, sender, destination_chain, context) {
-        return Some(action);
-    }
-
-    check_kyt(sender, context).await
-}
-
 pub async fn process_transfer_event(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
@@ -145,7 +83,7 @@ pub async fn process_transfer_event(
     let context = format!("({origin_chain:?}:{origin_nonce})");
 
     let destination_chain = transfer_message.get_destination_chain();
-    if let Some(action) = validate_sender(
+    if let Some(action) = utils::validation::validate_sender(
         config,
         &transfer_message.sender,
         destination_chain,
@@ -305,7 +243,7 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.origin_nonce
     );
     let destination_chain = transfer_message.get_destination_chain();
-    if let Some(action) = validate_sender(
+    if let Some(action) = utils::validation::validate_sender(
         config,
         &transfer_message.sender,
         destination_chain,
@@ -601,7 +539,7 @@ pub async fn process_sign_transfer_event(
             }
         };
 
-        if let Some(action) = enforce_sender_allowlist(
+        if let Some(action) = utils::validation::enforce_sender_allowlist(
             config,
             &transfer_message.sender,
             destination_chain,
@@ -827,7 +765,9 @@ pub async fn initiate_fast_transfer(
         "({:?}:{})",
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
-    if let Some(action) = enforce_sender_allowlist(config, &sender, ChainKind::Near, &context) {
+    if let Some(action) =
+        utils::validation::enforce_sender_allowlist(config, &sender, ChainKind::Near, &context)
+    {
         return Ok(action);
     }
 

@@ -83,7 +83,7 @@ pub async fn process_init_transfer_event(
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
     if let Some(action) =
-        super::near::validate_sender(config, sender, ChainKind::Near, &context).await
+        utils::validation::validate_sender(config, sender, ChainKind::Near, &context).await
     {
         return Ok(action);
     }

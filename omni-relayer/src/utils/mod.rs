@@ -9,3 +9,4 @@ pub mod redis;
 pub mod solana;
 pub mod storage;
 pub mod utxo;
+pub mod validation;
