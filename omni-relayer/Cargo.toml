@@ -1,6 +1,6 @@
 [package]
 name = "omni-relayer"
-version = "0.6.24"
+version = "0.6.28"
 edition = "2024"
 repository = "https://github.com/Near-One/omni-bridge"
 
@@ -52,20 +52,20 @@ async-nats = "0.45"
 reqwest = "0.12"
 uuid = { version = "1", features = ["v4", "fast-rng"] }
 
-bridge-connector-common = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "bridge-connector-common", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
-near-rpc-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-rpc-client", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
+bridge-connector-common = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "bridge-connector-common", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
+near-rpc-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-rpc-client", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
 
-near-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-bridge-client", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
-evm-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "evm-bridge-client", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
-solana-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "solana-bridge-client", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
-starknet-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "starknet-bridge-client", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
-aptos-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "aptos-bridge-client", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
-utxo-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-bridge-client", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
-utxo-utils = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-utils", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
-wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
-light-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "light-client", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
+near-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-bridge-client", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
+evm-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "evm-bridge-client", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
+solana-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "solana-bridge-client", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
+starknet-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "starknet-bridge-client", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
+aptos-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "aptos-bridge-client", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
+utxo-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-bridge-client", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
+utxo-utils = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-utils", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
+wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
+light-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "light-client", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
 
-omni-connector = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "omni-connector", rev = "707d2d0077cb09bf486033e9ee50291e9977163d" }
+omni-connector = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "omni-connector", rev = "0970f86cee7385c9032820df552af090aa80fb0d" }
 
 [features]
 default = ["nats-ingestion"]

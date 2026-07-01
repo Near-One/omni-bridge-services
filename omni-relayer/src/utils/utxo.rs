@@ -501,10 +501,11 @@ mod tests {
     /// Smoke test: prints the transparent input addresses for the configured BTC
     /// tx. Useful before running the full KYT path to confirm the BTC RPC route.
     /// Run with:
+    ///
     /// ```text
     /// CONFIG_PATH=/path/to/mainnet-config.toml \
-    /// cargo test btc_input_addresses_lists_transparent_inputs \
-    ///     -- --ignored --nocapture
+    ///   cargo test btc_input_addresses_lists_transparent_inputs \
+    ///       -- --ignored --nocapture
     /// ```
     #[tokio::test]
     #[ignore = "needs live BTC RPC"]
@@ -529,12 +530,13 @@ mod tests {
 
     /// Full pipeline: fetches BTC inputs and asserts the KYT provider returns
     /// `STOP_RELAYING` for the configured (known-tainted) tx. Run with:
+    ///
     /// ```text
     /// CONFIG_PATH=/path/to/mainnet-config.toml \
-    /// KYT_API_URL=https://... \
-    /// KYT_API_KEY=... \
-    /// cargo test btc_input_kyt_flags_known_tainted_tx \
-    ///     -- --ignored --nocapture
+    ///   KYT_API_URL=https://... \
+    ///   KYT_API_KEY=... \
+    ///   cargo test btc_input_kyt_flags_known_tainted_tx \
+    ///       -- --ignored --nocapture
     /// ```
     #[tokio::test]
     #[ignore = "needs live BTC RPC + KYT credentials"]

@@ -151,7 +151,6 @@ fn build_svm_bridge_client(
 ) -> Result<Option<SolanaBridgeClient>> {
     svm.map(|svm| {
         SolanaBridgeClientBuilder::default()
-            .chain(Some(chain_kind))
             .client(Some(RpcClient::new(svm.rpc_http_url.clone())))
             .program_id(Some(svm.program_id.parse()?))
             .wormhole_core(Some(svm.wormhole_id.parse()?))

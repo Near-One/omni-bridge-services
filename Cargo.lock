@@ -1007,7 +1007,7 @@ checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 [[package]]
 name = "aptos-bridge-client"
 version = "0.1.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "bcs",
  "ed25519-dalek 2.2.0",
@@ -2099,6 +2099,8 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
+ "hyper 1.8.1",
+ "hyper-util",
  "itoa",
  "matchit",
  "memchr",
@@ -2107,10 +2109,15 @@ dependencies = [
  "pin-project-lite",
  "rustversion",
  "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_urlencoded",
  "sync_wrapper",
+ "tokio",
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -2131,6 +2138,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -2294,7 +2302,7 @@ dependencies = [
 [[package]]
 name = "bip32"
 version = "0.6.0-pre.1"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "bs58 0.5.1",
  "hmac 0.13.0",
@@ -2632,13 +2640,14 @@ dependencies = [
 
 [[package]]
 name = "bridge-connector-common"
-version = "0.3.3"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+version = "0.3.5"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "alloy",
  "aptos-bridge-client",
  "eth-proof",
  "evm-bridge-client",
+ "hypercore-bridge-client",
  "near-rpc-client",
  "serde_json",
  "solana-bridge-client",
@@ -2659,6 +2668,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "strum 0.27.2",
  "utoipa",
 ]
 
@@ -3652,7 +3662,7 @@ dependencies = [
 [[package]]
 name = "crypto-utils"
 version = "0.2.2"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "crypto-shared 0.1.0 (git+https://github.com/near-one/mpc?rev=463172481597ee09b12020b72c61d6b01da7b167)",
  "k256",
@@ -4467,7 +4477,7 @@ dependencies = [
 [[package]]
 name = "eth-proof"
 version = "0.2.2"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "borsh 1.6.1",
  "cita_trie",
@@ -4566,8 +4576,8 @@ dependencies = [
 
 [[package]]
 name = "evm-bridge-client"
-version = "0.3.6"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+version = "0.3.7"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "alloy",
  "borsh 1.6.1",
@@ -5670,6 +5680,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypercore-bridge-client"
+version = "0.1.0"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+dependencies = [
+ "alloy",
+ "hex",
+ "omni-types",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6344,7 +6370,7 @@ dependencies = [
 [[package]]
 name = "light-client"
 version = "0.2.2"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "borsh 1.6.1",
  "bridge-connector-common",
@@ -6784,6 +6810,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "multimap"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
+
+[[package]]
 name = "native-tls"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6819,8 +6851,8 @@ dependencies = [
 
 [[package]]
 name = "near-bridge-client"
-version = "0.2.25"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+version = "0.2.27"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "base64 0.21.7",
  "bitcoin",
@@ -7348,8 +7380,9 @@ dependencies = [
 [[package]]
 name = "near-rpc-client"
 version = "0.2.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
+ "base64 0.22.1",
  "borsh 1.6.1",
  "lazy_static",
  "near-crypto 0.34.4",
@@ -7930,8 +7963,8 @@ dependencies = [
 
 [[package]]
 name = "omni-connector"
-version = "0.4.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+version = "0.4.3"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "alloy",
  "aptos-bridge-client",
@@ -7944,6 +7977,7 @@ dependencies = [
  "eth-proof",
  "evm-bridge-client",
  "hex",
+ "hypercore-bridge-client",
  "light-client",
  "near-bridge-client",
  "near-contract-standards",
@@ -7979,7 +8013,7 @@ dependencies = [
 
 [[package]]
 name = "omni-proxy"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8007,7 +8041,7 @@ dependencies = [
 
 [[package]]
 name = "omni-relayer"
-version = "0.6.24"
+version = "0.6.28"
 dependencies = [
  "alloy",
  "anyhow",
@@ -8063,7 +8097,7 @@ dependencies = [
 [[package]]
 name = "omni-types"
 version = "3.3.3"
-source = "git+https://github.com/near-one/omni-bridge?rev=d3f97d6de01d8cb6a39af553031a439612cee42a#d3f97d6de01d8cb6a39af553031a439612cee42a"
+source = "git+https://github.com/near-one/omni-bridge?rev=f499d46c2d58869e4cbb5d19cff703ff7d2731d6#f499d46c2d58869e4cbb5d19cff703ff7d2731d6"
 dependencies = [
  "alloy",
  "borsh 1.6.1",
@@ -9060,6 +9094,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa06bd51638b6e76ac9ba9b6afb4164fa647bd2916d722f2623fbb6d1ed8bdba"
 
 [[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "primeorder"
 version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9212,6 +9256,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-build"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
+dependencies = [
+ "heck 0.5.0",
+ "itertools 0.14.0",
+ "log",
+ "multimap",
+ "once_cell",
+ "petgraph 0.7.1",
+ "prettyplease",
+ "prost",
+ "prost-types",
+ "regex",
+ "syn 2.0.117",
+ "tempfile",
+]
+
+[[package]]
 name = "prost-derive"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9238,6 +9302,70 @@ name = "protobuf"
 version = "2.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
+
+[[package]]
+name = "protoc-bin-vendored"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1c381df33c98266b5f08186583660090a4ffa0889e76c7e9a5e175f645a67fa"
+dependencies = [
+ "protoc-bin-vendored-linux-aarch_64",
+ "protoc-bin-vendored-linux-ppcle_64",
+ "protoc-bin-vendored-linux-s390_64",
+ "protoc-bin-vendored-linux-x86_32",
+ "protoc-bin-vendored-linux-x86_64",
+ "protoc-bin-vendored-macos-aarch_64",
+ "protoc-bin-vendored-macos-x86_64",
+ "protoc-bin-vendored-win32",
+]
+
+[[package]]
+name = "protoc-bin-vendored-linux-aarch_64"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c350df4d49b5b9e3ca79f7e646fde2377b199e13cfa87320308397e1f37e1a4c"
+
+[[package]]
+name = "protoc-bin-vendored-linux-ppcle_64"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a55a63e6c7244f19b5c6393f025017eb5d793fd5467823a099740a7a4222440c"
+
+[[package]]
+name = "protoc-bin-vendored-linux-s390_64"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1dba5565db4288e935d5330a07c264a4ee8e4a5b4a4e6f4e83fad824cc32f3b0"
+
+[[package]]
+name = "protoc-bin-vendored-linux-x86_32"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8854774b24ee28b7868cd71dccaae8e02a2365e67a4a87a6cd11ee6cdbdf9cf5"
+
+[[package]]
+name = "protoc-bin-vendored-linux-x86_64"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b38b07546580df720fa464ce124c4b03630a6fb83e05c336fea2a241df7e5d78"
+
+[[package]]
+name = "protoc-bin-vendored-macos-aarch_64"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89278a9926ce312e51f1d999fee8825d324d603213344a9a706daa009f1d8092"
+
+[[package]]
+name = "protoc-bin-vendored-macos-x86_64"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81745feda7ccfb9471d7a4de888f0652e806d5795b61480605d4943176299756"
+
+[[package]]
+name = "protoc-bin-vendored-win32"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 
 [[package]]
 name = "ptr_meta"
@@ -9738,12 +9866,14 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls 0.26.4",
+ "tokio-util",
  "tower 0.5.3",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots 1.0.5",
 ]
@@ -10557,6 +10687,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_path_to_error"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_regex"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11093,8 +11234,8 @@ dependencies = [
 
 [[package]]
 name = "solana-bridge-client"
-version = "0.2.9"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+version = "0.2.10"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "base64 0.22.1",
  "bitvec",
@@ -13774,7 +13915,7 @@ dependencies = [
 [[package]]
 name = "starknet-bridge-client"
 version = "0.1.3"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "async-trait",
  "hex",
@@ -14621,6 +14762,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonic-build"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9557ce109ea773b399c9b9e5dca39294110b74f1f342cb347a80d1fce8c26a11"
+dependencies = [
+ "prettyplease",
+ "proc-macro2",
+ "prost-build",
+ "prost-types",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "tower"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15101,8 +15256,8 @@ dependencies = [
 
 [[package]]
 name = "utxo-bridge-client"
-version = "0.2.5"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+version = "0.2.7"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "bitcoin",
  "bitcoincore-rpc",
@@ -15125,7 +15280,7 @@ dependencies = [
 [[package]]
 name = "utxo-utils"
 version = "0.4.1"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "bitcoin",
  "k256",
@@ -15339,6 +15494,19 @@ checksum = "ac92cf547bc18d27ecc521015c08c353b4f18b84ab388bb6d1b6b682c620d9b6"
 dependencies = [
  "leb128fmt",
  "wasmparser 0.248.0",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -16146,7 +16314,7 @@ checksum = "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5"
 [[package]]
 name = "wormhole-bridge-client"
 version = "0.2.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=707d2d0077cb09bf486033e9ee50291e9977163d#707d2d0077cb09bf486033e9ee50291e9977163d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
 dependencies = [
  "bridge-connector-common",
  "derive_builder",
@@ -16155,6 +16323,42 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "wormhole-vaa-api"
+version = "0.1.3"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "bs58 0.5.1",
+ "clap",
+ "dotenv",
+ "futures",
+ "hex",
+ "httpmock",
+ "opentelemetry 0.27.1",
+ "opentelemetry-otlp 0.27.0",
+ "opentelemetry_sdk 0.27.1",
+ "prost",
+ "protoc-bin-vendored",
+ "redis",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha3 0.10.8",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "toml 1.1.2+spec-1.1.0",
+ "tonic 0.12.3",
+ "tonic-build",
+ "tracing",
+ "tracing-loki",
+ "tracing-subscriber",
+ "url",
+ "wormhole-bridge-client",
 ]
 
 [[package]]

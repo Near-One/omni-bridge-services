@@ -27,33 +27,6 @@ enum UTXOChainMsg {
     MaxGasFee(U64),
 }
 
-pub(super) async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
-    check_kyt_senders(std::slice::from_ref(sender), context).await
-}
-
-pub(super) async fn check_kyt_senders(
-    senders: &[OmniAddress],
-    context: &str,
-) -> Option<EventAction> {
-    if !config::Config::is_kyt_enabled() {
-        return None;
-    }
-
-    match utils::kyt::check_senders(senders).await {
-        Ok(utils::kyt::SuggestedAction::StopRelaying) => {
-            warn!(
-                "KYT suggested STOP_RELAYING for senders {senders:?}, rejecting transfer {context}"
-            );
-            Some(EventAction::Remove)
-        }
-        Ok(utils::kyt::SuggestedAction::None) => None,
-        Err(err) => {
-            warn!("KYT check failed for {senders:?}: {err:?}, retrying");
-            Some(EventAction::Retry)
-        }
-    }
-}
-
 pub async fn process_transfer_event(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
@@ -108,7 +81,16 @@ pub async fn process_transfer_event(
     }
 
     let context = format!("({origin_chain:?}:{origin_nonce})");
-    if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
+
+    let destination_chain = transfer_message.get_destination_chain();
+    if let Some(action) = utils::validation::validate_sender(
+        config,
+        &transfer_message.sender,
+        destination_chain,
+        &context,
+    )
+    .await
+    {
         return Ok((action, Vec::new()));
     }
 
@@ -260,7 +242,15 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.get_origin_chain(),
         transfer_message.origin_nonce
     );
-    if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
+    let destination_chain = transfer_message.get_destination_chain();
+    if let Some(action) = utils::validation::validate_sender(
+        config,
+        &transfer_message.sender,
+        destination_chain,
+        &context,
+    )
+    .await
+    {
         return Ok((action, Vec::new()));
     }
 
@@ -277,8 +267,6 @@ pub async fn process_transfer_to_utxo_event(
             transfer_message.recipient
         );
     };
-
-    let destination_chain = transfer_message.recipient.get_chain();
 
     let fee_rate = if destination_chain == ChainKind::Btc && config.is_bridge_api_enabled() {
         match utils::bridge_api::get_btc_fee_rate(config).await {
@@ -522,7 +510,13 @@ pub async fn process_sign_transfer_event(
         }
     }
 
-    if config.is_bridge_api_enabled() {
+    // The sender allowlist is enforced on the finalization path too, not just at
+    // signing. The allowlist needs the transfer's sender, which is resolved from
+    // the transfer message (the sign payload does not carry it).
+    let destination_chain = message_payload.recipient.get_chain();
+    let allowlist_active = config.is_destination_restricted(destination_chain);
+
+    if config.is_bridge_api_enabled() || allowlist_active {
         let transfer_message = match omni_connector
             .near_get_transfer_message(message_payload.transfer_id)
             .await
@@ -545,29 +539,43 @@ pub async fn process_sign_transfer_event(
             }
         };
 
-        let Ok(needed_fee) = utils::bridge_api::TransferFee::get_transfer_fee(
+        if let Some(action) = utils::validation::enforce_sender_allowlist(
             config,
             &transfer_message.sender,
-            &transfer_message.recipient,
-            &transfer_message.token,
-        )
-        .await
-        else {
-            warn!("Failed to get transfer fee for transfer: {transfer_message:?}");
-            return Ok(EventAction::Retry);
-        };
+            destination_chain,
+            &format!(
+                "({:?}:{})",
+                message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
+            ),
+        ) {
+            return Ok(action);
+        }
 
-        if let Some(event_action) = needed_fee
-            .check_fee(
+        if config.is_bridge_api_enabled() {
+            let Ok(needed_fee) = utils::bridge_api::TransferFee::get_transfer_fee(
                 config,
-                redis_connection_manager,
-                &transfer_message,
-                transfer_message.get_transfer_id(),
-                &transfer_message.fee,
+                &transfer_message.sender,
+                &transfer_message.recipient,
+                &transfer_message.token,
             )
             .await
-        {
-            return Ok(event_action);
+            else {
+                warn!("Failed to get transfer fee for transfer: {transfer_message:?}");
+                return Ok(EventAction::Retry);
+            };
+
+            if let Some(event_action) = needed_fee
+                .check_fee(
+                    config,
+                    redis_connection_manager,
+                    &transfer_message,
+                    transfer_message.get_transfer_id(),
+                    &transfer_message.fee,
+                )
+                .await
+            {
+                return Ok(event_action);
+            }
         }
     }
 
@@ -723,6 +731,7 @@ pub async fn process_sign_transfer_event(
 }
 
 pub async fn initiate_fast_transfer(
+    config: &config::Config,
     fast_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_fast_nonce: Arc<utils::nonce::NonceManager>,
@@ -737,6 +746,7 @@ pub async fn initiate_fast_transfer(
         token,
         amount,
         transfer_id,
+        sender,
         recipient,
         fee,
         msg,
@@ -756,6 +766,16 @@ pub async fn initiate_fast_transfer(
             "Fast transfer is supported only for transfers to NEAR for now, got: {:?}",
             recipient.get_chain()
         );
+    }
+
+    let context = format!(
+        "({:?}:{})",
+        transfer_id.origin_chain, transfer_id.origin_nonce
+    );
+    if let Some(action) =
+        utils::validation::enforce_sender_allowlist(config, &sender, ChainKind::Near, &context)
+    {
+        return Ok(action);
     }
 
     info!("Trying to initiate FastTransfer on NEAR");

@@ -3,11 +3,12 @@ members = [
     "bridge-indexer-types",
     "omni-relayer",
     "omni-proxy",
+    "wormhole-vaa-api",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-omni-types = { git = "https://github.com/near-one/omni-bridge", package = "omni-types", rev = "d3f97d6de01d8cb6a39af553031a439612cee42a" }
+omni-types = { git = "https://github.com/near-one/omni-bridge", package = "omni-types", rev = "f499d46c2d58869e4cbb5d19cff703ff7d2731d6" }
 
 # These patches mirror the ones in the bridge-sdk-rs workspace root (rev 2e88e4a). Cargo
 # `[patch]` sections only apply from the consuming workspace root, so they do not transit
@@ -27,7 +28,7 @@ rev = "872a2192238f4085ce4c8dd2f0222bd6ce26fba7"
 # patched bip32 0.6.0-pre.1; point at that vendored crate in the bridge-sdk-rs repo.
 [patch.crates-io.bip32]
 git = "https://github.com/Near-One/bridge-sdk-rs"
-rev = "707d2d0077cb09bf486033e9ee50291e9977163d"
+rev = "0970f86cee7385c9032820df552af090aa80fb0d"
 
 # Config for 'dist'
 [workspace.metadata.dist]

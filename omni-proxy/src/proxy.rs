@@ -1,11 +1,12 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use opentelemetry::KeyValue;
-use opentelemetry::metrics::Counter;
+use opentelemetry::metrics::{Counter, Histogram};
 use pingora::prelude::*;
 use pingora::upstreams::peer::HttpPeer;
 use serde_json::Value;
@@ -48,57 +49,90 @@ impl UpstreamHealth {
         }
         guard.len()
     }
+
+    fn is_degraded(&self, threshold: usize, window: Duration) -> bool {
+        self.recent_failures(window) >= threshold
+    }
 }
 
 struct RouteState {
     route: Route,
+    route_label: Arc<str>,
     health: Vec<UpstreamHealth>,
 }
 
 impl RouteState {
     fn new(route: Route) -> Self {
         let count = route.upstreams().len();
+        let route_label: Arc<str> = route.prefix().as_str().trim_start_matches('/').into();
         Self {
             route,
+            route_label,
             health: (0..count).map(|_| UpstreamHealth::new()).collect(),
         }
     }
 
-    fn select(&self) -> usize {
+    fn select(&self) -> Selection {
         let failover = self.route.failover();
         let threshold = failover.failure_threshold();
         let window = failover.window();
 
         for (i, health) in self.health.iter().enumerate() {
-            if health.recent_failures(window) < threshold {
-                return i;
+            if !health.is_degraded(threshold, window) {
+                return if i == 0 {
+                    Selection::Primary
+                } else {
+                    Selection::Fallback(i)
+                };
             }
         }
 
-        0
+        Selection::AllDegraded
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Selection {
+    Primary,
+    Fallback(usize),
+    AllDegraded,
+}
+
+impl Selection {
+    fn index(self) -> usize {
+        match self {
+            Selection::Fallback(i) => i,
+            Selection::Primary | Selection::AllDegraded => 0,
+        }
     }
 }
 
 pub struct RequestCtx {
     upstream_idx: usize,
+    all_degraded: bool,
     route_prefix: Option<Prefix>,
     body_buf: Option<Vec<u8>>,
     is_failure: bool,
     pub service: String,
-    upstream_host: String,
+    upstream_host: Arc<str>,
     status_code: u16,
+    start: Option<Instant>,
+    ws_upgraded: bool,
 }
 
 impl Default for RequestCtx {
     fn default() -> Self {
         Self {
             upstream_idx: 0,
+            all_degraded: false,
             route_prefix: None,
             body_buf: None,
             is_failure: false,
             service: "unknown".to_owned(),
-            upstream_host: String::new(),
+            upstream_host: Arc::from(""),
             status_code: 0,
+            start: None,
+            ws_upgraded: false,
         }
     }
 }
@@ -120,22 +154,68 @@ fn sanitize_service(raw: &str) -> String {
 pub struct RpcProxy {
     routes: Arc<HashMap<Prefix, RouteState>>,
     requests: Counter<u64>,
+    errors: Counter<u64>,
+    jsonrpc_errors: Counter<u64>,
+    selected: Counter<u64>,
+    route_not_matched: Counter<u64>,
+    duration: Histogram<f64>,
+    in_flight: Arc<AtomicI64>,
+    ws_active: Arc<AtomicI64>,
 }
 
 impl RpcProxy {
     #[must_use]
     pub fn new(routes: Vec<Route>) -> Self {
-        let map = routes
+        let map: HashMap<Prefix, RouteState> = routes
             .into_iter()
             .map(|r| (r.prefix().clone(), RouteState::new(r)))
             .collect();
-        let requests = opentelemetry::global::meter("omni-proxy")
+        let routes = Arc::new(map);
+
+        let meter = opentelemetry::global::meter("omni-proxy");
+        let requests = meter
             .u64_counter("rpc_requests_total")
             .with_description("Total RPC requests proxied")
             .build();
+        let errors = meter
+            .u64_counter("rpc_errors_total")
+            .with_description("Total failed RPC requests by failure reason")
+            .build();
+        let jsonrpc_errors = meter
+            .u64_counter("rpc_jsonrpc_errors_total")
+            .with_description("JSON-RPC error responses by error code (rpc_codes routes only)")
+            .build();
+        let selected = meter
+            .u64_counter("rpc_upstream_selected_total")
+            .with_description("Requests by the upstream that served them (counted once per request): 'upstream_index' is the position in the route's upstream list (0 = primary, 1+ = the backup used), and 'degraded' is true only when every upstream was degraded and the primary was used as a last resort")
+            .build();
+        let route_not_matched = meter
+            .u64_counter("rpc_route_not_matched_total")
+            .with_description("Requests that matched no route prefix")
+            .build();
+        let duration = meter
+            .f64_histogram("rpc_request_duration_seconds")
+            .with_description("RPC request duration in seconds")
+            .with_unit("s")
+            .with_boundaries(vec![
+                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0,
+            ])
+            .build();
+
+        let in_flight = Arc::new(AtomicI64::new(0));
+        let ws_active = Arc::new(AtomicI64::new(0));
+        register_observable_gauges(&meter, &routes, &in_flight, &ws_active);
+
         Self {
-            routes: Arc::new(map),
+            routes,
             requests,
+            errors,
+            jsonrpc_errors,
+            selected,
+            route_not_matched,
+            duration,
+            in_flight,
+            ws_active,
         }
     }
 
@@ -151,12 +231,107 @@ impl RpcProxy {
     }
 }
 
+fn register_observable_gauges(
+    meter: &opentelemetry::metrics::Meter,
+    routes: &Arc<HashMap<Prefix, RouteState>>,
+    in_flight: &Arc<AtomicI64>,
+    ws_active: &Arc<AtomicI64>,
+) {
+    let circuit_routes = Arc::clone(routes);
+    meter
+        .u64_observable_gauge("rpc_upstream_circuit_state")
+        .with_description("1 when an upstream is degraded (too many recent failures), else 0")
+        .with_callback(move |observer| {
+            for state in circuit_routes.values() {
+                let failover = state.route.failover();
+                let threshold = failover.failure_threshold();
+                let window = failover.window();
+                for (idx, health) in state.health.iter().enumerate() {
+                    let degraded = u64::from(health.is_degraded(threshold, window));
+                    observer.observe(
+                        degraded,
+                        &[
+                            KeyValue::new("route", state.route_label.clone()),
+                            KeyValue::new("upstream", state.route.upstreams()[idx].sni()),
+                            KeyValue::new("upstream_index", i64::try_from(idx).unwrap_or(i64::MAX)),
+                        ],
+                    );
+                }
+            }
+        })
+        .build();
+
+    let recent_failures_routes = Arc::clone(routes);
+    meter
+        .u64_observable_gauge("rpc_upstream_recent_failures")
+        .with_description("Failures recorded for an upstream within the failover window (leading indicator; climbs toward failure_threshold before the breaker trips)")
+        .with_callback(move |observer| {
+            for state in recent_failures_routes.values() {
+                let window = state.route.failover().window();
+                for (idx, health) in state.health.iter().enumerate() {
+                    let count = u64::try_from(health.recent_failures(window)).unwrap_or(u64::MAX);
+                    observer.observe(
+                        count,
+                        &[
+                            KeyValue::new("route", state.route_label.clone()),
+                            KeyValue::new("upstream", state.route.upstreams()[idx].sni()),
+                            KeyValue::new("upstream_index", i64::try_from(idx).unwrap_or(i64::MAX)),
+                        ],
+                    );
+                }
+            }
+        })
+        .build();
+
+    let threshold_routes = Arc::clone(routes);
+    meter
+        .u64_observable_gauge("rpc_upstream_failure_threshold")
+        .with_description("Configured failure_threshold per route (the breaker trips at this many failures within the window)")
+        .with_callback(move |observer| {
+            for state in threshold_routes.values() {
+                let threshold =
+                    u64::try_from(state.route.failover().failure_threshold()).unwrap_or(u64::MAX);
+                observer.observe(threshold, &[KeyValue::new("route", state.route_label.clone())]);
+            }
+        })
+        .build();
+
+    let in_flight = Arc::clone(in_flight);
+    meter
+        .i64_observable_gauge("rpc_requests_in_flight")
+        .with_description("Requests currently being proxied")
+        .with_callback(move |observer| {
+            observer.observe(in_flight.load(Ordering::Relaxed), &[]);
+        })
+        .build();
+
+    let ws_active = Arc::clone(ws_active);
+    meter
+        .i64_observable_gauge("rpc_ws_connections_active")
+        .with_description("Active WebSocket connections")
+        .with_callback(move |observer| {
+            observer.observe(ws_active.load(Ordering::Relaxed), &[]);
+        })
+        .build();
+}
+
 #[async_trait]
 impl ProxyHttp for RpcProxy {
     type CTX = RequestCtx;
 
     fn new_ctx(&self) -> Self::CTX {
-        RequestCtx::default()
+        RequestCtx {
+            start: Some(Instant::now()),
+            ..Default::default()
+        }
+    }
+
+    async fn early_request_filter(&self, _session: &mut Session, _ctx: &mut Self::CTX) -> Result<()>
+    where
+        Self::CTX: Send + Sync,
+    {
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool>
@@ -190,14 +365,28 @@ impl ProxyHttp for RpcProxy {
             })
             .map_or_else(|| "unknown".to_owned(), sanitize_service);
 
-        let state = self
-            .match_route(uri.path())
-            .ok_or_else(|| Error::explain(HTTPStatus(404), "no matching route"))?;
+        let Some(state) = self.match_route(uri.path()) else {
+            self.route_not_matched
+                .add(1, &[KeyValue::new("service", ctx.service.clone())]);
+            self.requests.add(
+                1,
+                &[
+                    KeyValue::new("route", "unmatched"),
+                    KeyValue::new("service", ctx.service.clone()),
+                    KeyValue::new("upstream", ""),
+                    KeyValue::new("status", "404"),
+                    KeyValue::new("outcome", "failed"),
+                ],
+            );
+            return Err(Error::explain(HTTPStatus(404), "no matching route"));
+        };
 
-        let idx = state.select();
+        let selection = state.select();
+        let idx = selection.index();
         let upstream = &state.route.upstreams()[idx];
 
         ctx.upstream_idx = idx;
+        ctx.all_degraded = matches!(selection, Selection::AllDegraded);
         ctx.route_prefix = Some(state.route.prefix().clone());
         if !state.route.failover().rpc_codes().is_empty() {
             ctx.body_buf = Some(Vec::new());
@@ -205,7 +394,11 @@ impl ProxyHttp for RpcProxy {
 
         ctx.upstream_host = upstream.sni();
 
-        let mut peer = HttpPeer::new(upstream.addr(), upstream.is_tls(), upstream.sni());
+        let mut peer = HttpPeer::new(
+            upstream.addr(),
+            upstream.is_tls(),
+            upstream.sni().to_string(),
+        );
         if upstream.is_tls() && !upstream.is_websocket() {
             peer.options.set_http_version(2, 1);
         }
@@ -301,6 +494,18 @@ impl ProxyHttp for RpcProxy {
         Self::CTX: Send + Sync,
     {
         ctx.status_code = upstream_response.status.as_u16();
+        if ctx.status_code == 101
+            && let Some(ref prefix) = ctx.route_prefix
+            && let Some(state) = self.routes.get(prefix)
+            && state
+                .route
+                .upstreams()
+                .get(ctx.upstream_idx)
+                .is_some_and(crate::config::Upstream::is_websocket)
+        {
+            ctx.ws_upgraded = true;
+            self.ws_active.fetch_add(1, Ordering::Relaxed);
+        }
         if let Some(ref prefix) = ctx.route_prefix
             && let Some(state) = self.routes.get(prefix)
             && state.route.failover().is_failure_status(ctx.status_code)
@@ -327,16 +532,23 @@ impl ProxyHttp for RpcProxy {
             }
 
             if end_of_stream
-                && !ctx.is_failure
                 && buf.len() < MAX_RPC_BODY_BYTES
                 && let Some(ref prefix) = ctx.route_prefix
                 && let Some(state) = self.routes.get(prefix)
                 && let Ok(json) = serde_json::from_slice::<Value>(buf)
                 && let Some(code) = json.pointer("/error/code").and_then(Value::as_i64)
                 && let Ok(code) = i32::try_from(code)
-                && state.route.failover().is_failure_rpc_code(code)
             {
-                ctx.is_failure = true;
+                self.jsonrpc_errors.add(
+                    1,
+                    &[
+                        KeyValue::new("route", state.route_label.clone()),
+                        KeyValue::new("rpc_code", i64::from(code)),
+                    ],
+                );
+                if state.route.failover().is_failure_rpc_code(code) {
+                    ctx.is_failure = true;
+                }
             }
         }
         Ok(None)
@@ -346,6 +558,11 @@ impl ProxyHttp for RpcProxy {
     where
         Self::CTX: Send + Sync,
     {
+        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+        if ctx.ws_upgraded {
+            self.ws_active.fetch_sub(1, Ordering::Relaxed);
+        }
+
         let failed = ctx.is_failure || e.is_some();
         if let Some(ref prefix) = ctx.route_prefix
             && let Some(state) = self.routes.get(prefix)
@@ -369,15 +586,63 @@ impl ProxyHttp for RpcProxy {
                 health.record_success();
             }
 
+            let route = state.route_label.clone();
+            let outcome = if failed { "failed" } else { "ok" };
+
             self.requests.add(
                 1,
                 &[
-                    KeyValue::new("route", prefix.as_str().trim_start_matches('/').to_owned()),
+                    KeyValue::new("route", route.clone()),
                     KeyValue::new("service", ctx.service.clone()),
                     KeyValue::new("upstream", ctx.upstream_host.clone()),
                     KeyValue::new("status", ctx.status_code.to_string()),
+                    KeyValue::new("outcome", outcome),
                 ],
             );
+
+            self.selected.add(
+                1,
+                &[
+                    KeyValue::new("route", route.clone()),
+                    KeyValue::new(
+                        "upstream_index",
+                        i64::try_from(ctx.upstream_idx).unwrap_or(i64::MAX),
+                    ),
+                    KeyValue::new("degraded", ctx.all_degraded),
+                ],
+            );
+
+            if let Some(start) = ctx.start
+                && !ctx.ws_upgraded
+            {
+                self.duration.record(
+                    start.elapsed().as_secs_f64(),
+                    &[
+                        KeyValue::new("route", route.clone()),
+                        KeyValue::new("upstream", ctx.upstream_host.clone()),
+                        KeyValue::new("outcome", outcome),
+                    ],
+                );
+            }
+
+            if failed {
+                let reason = if e.is_some() {
+                    "transport_error"
+                } else if state.route.failover().is_failure_status(ctx.status_code) {
+                    "failure_status"
+                } else {
+                    "rpc_error"
+                };
+                self.errors.add(
+                    1,
+                    &[
+                        KeyValue::new("route", route),
+                        KeyValue::new("service", ctx.service.clone()),
+                        KeyValue::new("upstream", ctx.upstream_host.clone()),
+                        KeyValue::new("reason", reason),
+                    ],
+                );
+            }
         }
     }
 }
@@ -435,7 +700,7 @@ failover = {{ status_codes = [500], failure_threshold = {threshold}, window_secs
     fn test_select_primary_when_healthy() {
         let proxy = make_proxy(3, 60);
         let state = proxy.routes.values().next().unwrap();
-        assert_eq!(state.select(), 0);
+        assert_eq!(state.select(), Selection::Primary);
     }
 
     #[test]
@@ -445,7 +710,7 @@ failover = {{ status_codes = [500], failure_threshold = {threshold}, window_secs
         for _ in 0..3 {
             state.health[0].record_failure();
         }
-        assert_eq!(state.select(), 1);
+        assert_eq!(state.select(), Selection::Fallback(1));
     }
 
     #[test]
@@ -457,7 +722,8 @@ failover = {{ status_codes = [500], failure_threshold = {threshold}, window_secs
                 h.record_failure();
             }
         }
-        assert_eq!(state.select(), 0);
+        assert_eq!(state.select(), Selection::AllDegraded);
+        assert_eq!(state.select().index(), 0); // still routes to the primary
     }
 
     #[test]

@@ -1,0 +1,61 @@
+# wormhole-vaa-api — testnet config. See example-mainnet-config.toml for field docs.
+# No Fogo on testnet.
+
+spy_addr = "wormhole-spy.wormhole-vaa-api-testnet.svc.cluster.local:7073"
+redis_url = "redis://wormhole-vaa-api-redis.wormhole-vaa-api-testnet.svc.cluster.local:6379"
+proxy_base_url = "http://omni-proxy.omni-proxy-testnet.svc.cluster.local"
+# Public wormholescan (testnet), queried per-request on a store miss (and cached).
+wormholescan_base_url = "https://api.testnet.wormholescan.io"
+
+vaa_ttl_secs = 1296000   # 15 days
+txres_ttl_secs = 86400   # 1 day
+
+[[chains]]
+name = "arb"
+family = "evm"
+wh_chain_id = 23
+emitter = "0x0C981337fFe39a555d3A40dbb32f21aD0eF33FFA"
+core = "0x6b9C8671cdDC8dEab9c719bB87cBd3e782bA6a35"
+proxy_prefix = "/arb"
+
+[[chains]]
+name = "base"
+family = "evm"
+wh_chain_id = 30
+emitter = "0xa56b860017152cD296ad723E8409Abd6e5D86d4d"
+core = "0x79A1027a6A159502049F10906D333EC57E95F083"
+proxy_prefix = "/base"
+
+[[chains]]
+name = "bnb"
+family = "evm"
+wh_chain_id = 4
+emitter = "0xEC81aFc3485a425347Ac03316675e58a680b283A"
+core = "0x68605AD7b15c732a30b1BbC62BE8F2A509D74b4D"
+proxy_prefix = "/bnb"
+
+[[chains]]
+name = "pol"
+family = "evm"
+wh_chain_id = 5
+emitter = "0xEC81aFc3485a425347Ac03316675e58a680b283A"
+core = "0x6b9C8671cdDC8dEab9c719bB87cBd3e782bA6a35"
+proxy_prefix = "/pol"
+
+[[chains]]
+name = "hyperevm"
+family = "evm"
+wh_chain_id = 47
+emitter = "0xf353b40fC144d1c6c5BCdda712fa6De833016aF9"
+core = "0xBB73cB66C26740F31d1FabDC6b7A46a038A300dd"
+proxy_prefix = "/hlevm"
+
+# Solana testnet emitter = find_program_address([b"config"], 862HdJV59Vp83PbcubUnvuXc4EAXP8CDDs6LTxFpunTe)
+# = 81Eece1nhvt1RhJFo7iPci8oJN7TMjihwevH5WA3tk31 (verified against live testnet wormholescan VAAs).
+[[chains]]
+name = "solana"
+family = "svm"
+wh_chain_id = 1
+emitter = "68113dacfe11fefbe08cb8e61cbde3f336aaff607a070a9052cc8da397995d78"
+program_id = "862HdJV59Vp83PbcubUnvuXc4EAXP8CDDs6LTxFpunTe"
+proxy_prefix = "/solana"

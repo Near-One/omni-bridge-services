@@ -58,6 +58,10 @@ sign_without_checking_fee = ["near:aurora"]
 # To enable fast relayer, uncomment the line below
 # fast_relayer_enabled = true
 
+# [[allowlisted_senders]]
+# sender = "near:frolik.near"
+# destination_chain = "HlEvm"
+
 # KYT (Know Your Transaction) checks are enabled by setting KYT_API_URL and
 # KYT_API_KEY environment variables.
 [kyt]
@@ -231,10 +235,10 @@ light_client = "btc-client-v4.testnet"
 signing_enabled = true
 # If this is set to true, then omni relayer will call `verify_withdraw`
 verifying_withdraw_enabled = true
-# How long (in seconds) to wait before calling `sign_btc_transaction`. Gives the
-# co-relayer (rhea/satoshi) a chance to sign first so we don't race on MPC.
-# Set to 0 to disable the delay.
-sign_delay_secs = 120
+# How long (in seconds) to wait before calling `sign_btc_transaction`. Legacy
+# guard from when a co-relayer signed first to avoid racing on MPC; the
+# omni-relayer now owns the full withdrawal lifecycle, so keep at 0 (sign ASAP).
+sign_delay_secs = 0
 
 [zcash]
 rpc_http_url = "https://x-api-key:TATUM_API_KEY@zcash-testnet.gateway.tatum.io"

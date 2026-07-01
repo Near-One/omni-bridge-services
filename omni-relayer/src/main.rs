@@ -73,8 +73,12 @@ fn init_logging(network: Network) -> Result<()> {
 
         let base = Url::parse(&url).context("Failed to parse `GRAFANA_LOKI_URL` as a valid URL")?;
 
+        let cluster_name = std::env::var("CLUSTER_NAME").unwrap_or_else(|_| network.to_string());
+        let service_name =
+            std::env::var("SERVICE_NAME").unwrap_or_else(|_| "omni-relayer".to_string());
         let (loki_layer, loki_task) = tracing_loki::builder()
-            .label("app", format!("omni-relayer-{network}"))?
+            .label("service_name", service_name)?
+            .label("cluster_name", cluster_name)?
             .http_header("Authorization", format!("Basic {encoded}"))?
             .build_url(base)?;
 
@@ -156,6 +160,18 @@ async fn main() -> Result<()> {
         }
         (true, false) => {
             warn!("KYT checks disabled: `KYT_API_KEY` env var is not set");
+        }
+    }
+
+    let restricted_destinations = config.restricted_destination_chains();
+    if restricted_destinations.is_empty() {
+        info!("Sender allowlist inactive (all senders allowed)");
+    } else {
+        info!("Sender allowlist active for destination chains: {restricted_destinations:?}");
+        if restricted_destinations.contains(&ChainKind::Near) {
+            warn!(
+                "Sender allowlist restricts destination NEAR, but the UTXO->NEAR path cannot enforce it (the sender is not available in that event); those senders are NOT filtered"
+            );
         }
     }
 

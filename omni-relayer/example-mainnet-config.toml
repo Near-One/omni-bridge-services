@@ -59,6 +59,10 @@ sign_without_checking_fee = ["near:aurora"]
 # To enable fast relayer, uncomment the line below
 # fast_relayer_enabled = true
 
+# [[allowlisted_senders]]
+# sender = "near:frolik.near"
+# destination_chain = "HlEvm"
+
 # KYT (Know Your Transaction) checks are enabled by setting KYT_API_URL and
 # KYT_API_KEY environment variables.
 [kyt]
@@ -233,14 +237,14 @@ finalize_transfer_sol_discriminator = [104, 27, 121, 69, 3, 70, 217, 66]
 rpc_http_url = "https://x-api-key:TATUM_API_KEY@bitcoin-mainnet.gateway.tatum.io"
 light_client = "btc-client.bridge.near"
 # If this is set to true, then omni relayer will call `sign_btc_transaction`
-signing_enabled = false
+signing_enabled = true
 # If this is set to true, then omni relayer will call `verify_withdraw`
-verifying_withdraw_enabled = false
+verifying_withdraw_enabled = true
 lc_polling_interval_secs = 10
-# How long (in seconds) to wait before calling `sign_btc_transaction`. Gives the
-# co-relayer (rhea/satoshi) a chance to sign first so we don't race on MPC.
-# Set to 0 to disable the delay.
-sign_delay_secs = 120
+# How long (in seconds) to wait before calling `sign_btc_transaction`. Legacy
+# guard from when a co-relayer signed first to avoid racing on MPC; the
+# omni-relayer now owns the full withdrawal lifecycle, so keep at 0 (sign ASAP).
+sign_delay_secs = 0
 
 # Uncomment to periodically consolidate UTXOs. The service polls
 # `get_metadata.current_utxos_num` on the connector and calls

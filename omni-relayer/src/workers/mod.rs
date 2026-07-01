@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;
-use tracing::{info, warn};
+use tracing::{Instrument, info, warn};
 
 use near_sdk::json_types::U128;
 use sha2::{Digest, Sha256};
@@ -37,6 +37,31 @@ const PAUSED_ERROR: u32 = 6008;
 
 fn default_sol_chain_kind() -> ChainKind {
     ChainKind::Sol
+}
+
+/// Fields attached to the per-message `transfer` span so that every log line for
+/// one event (worker + bridge-sdk + post-processing) can be searched and
+/// filtered in Loki. Populated best-effort; absent fields stay empty.
+/// - `transfer_id`: canonical `UnifiedTransferId` (`eth:123`), the domain key.
+/// - `kind`: the processed enum variant (e.g. `Transfer::Evm`, `FinTransfer::Solana`).
+/// - `tx`: origin transaction hash (explorer-facing), where the event carries it.
+struct LogContext {
+    transfer_id: Option<UnifiedTransferId>,
+    kind: &'static str,
+    tx: Option<String>,
+}
+
+impl LogContext {
+    fn record(self) {
+        let span = tracing::Span::current();
+        span.record("kind", self.kind);
+        if let Some(transfer_id) = self.transfer_id {
+            span.record("transfer_id", tracing::field::display(transfer_id));
+        }
+        if let Some(ref tx) = self.tx {
+            span.record("tx", tx.as_str());
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -154,12 +179,83 @@ pub enum Transfer {
         token: String,
         amount: U128,
         transfer_id: TransferId,
+        sender: OmniAddress,
         recipient: OmniAddress,
         fee: Fee,
         msg: String,
         storage_deposit_amount: Option<U128>,
         safe_confirmations: u64,
     },
+}
+
+impl Transfer {
+    /// The canonical transfer id for this event, if it has one. Some variants
+    /// (`NearToUtxo`, `UtxoToNear`) are not tied to a single transfer id.
+    fn transfer_id(&self) -> Option<UnifiedTransferId> {
+        Some(match self {
+            Transfer::Near {
+                transfer_message, ..
+            } => transfer_message.get_transfer_id().into(),
+            Transfer::Utxo {
+                new_transfer_id, ..
+            } => new_transfer_id.clone(),
+            Transfer::Evm {
+                chain_kind, log, ..
+            } => TransferId {
+                origin_chain: *chain_kind,
+                origin_nonce: log.origin_nonce,
+            }
+            .into(),
+            Transfer::Solana {
+                sender, sequence, ..
+            } => TransferId {
+                origin_chain: sender.get_chain(),
+                origin_nonce: *sequence,
+            }
+            .into(),
+            Transfer::Starknet { origin_nonce, .. } => TransferId {
+                origin_chain: ChainKind::Strk,
+                origin_nonce: *origin_nonce,
+            }
+            .into(),
+            Transfer::Aptos { origin_nonce, .. } => TransferId {
+                origin_chain: ChainKind::Aptos,
+                origin_nonce: *origin_nonce,
+            }
+            .into(),
+            Transfer::Fast { transfer_id, .. } => (*transfer_id).into(),
+            Transfer::NearToUtxo { .. } | Transfer::UtxoToNear { .. } => return None,
+        })
+    }
+
+    fn log_context(&self) -> LogContext {
+        let (kind, tx) = match self {
+            Transfer::Near { .. } => ("Transfer::Near", None),
+            Transfer::Evm { tx_hash, .. } => ("Transfer::Evm", Some(tx_hash.to_string())),
+            Transfer::Solana { .. } => ("Transfer::Solana", None),
+            Transfer::Starknet { tx_hash, .. } => ("Transfer::Starknet", Some(tx_hash.clone())),
+            Transfer::Aptos { tx_hash, .. } => ("Transfer::Aptos", Some(tx_hash.clone())),
+            Transfer::Fast { tx_hash, .. } => ("Transfer::Fast", Some(tx_hash.clone())),
+            Transfer::Utxo {
+                utxo_transfer_message,
+                ..
+            } => (
+                "Transfer::Utxo",
+                Some(utxo_transfer_message.utxo_id.tx_hash.clone()),
+            ),
+            Transfer::NearToUtxo { btc_pending_id, .. } => {
+                ("Transfer::NearToUtxo", Some(btc_pending_id.clone()))
+            }
+            Transfer::UtxoToNear { btc_tx_hash, .. } => {
+                ("Transfer::UtxoToNear", Some(btc_tx_hash.clone()))
+            }
+        };
+        LogContext {
+            transfer_id: self.transfer_id(),
+            kind,
+            tx,
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -191,6 +287,34 @@ pub enum FinTransfer {
     },
 }
 
+impl FinTransfer {
+    /// The canonical transfer id for this fin-transfer event, if known.
+    fn transfer_id(&self) -> Option<UnifiedTransferId> {
+        match self {
+            FinTransfer::Evm { transfer_id, .. }
+            | FinTransfer::Starknet { transfer_id, .. }
+            | FinTransfer::Aptos { transfer_id, .. } => Some((*transfer_id).into()),
+            FinTransfer::Solana { transfer_id, .. } => transfer_id.map(Into::into),
+        }
+    }
+
+    fn log_context(&self) -> LogContext {
+        let (kind, tx) = match self {
+            FinTransfer::Evm { tx_hash, .. } => ("FinTransfer::Evm", Some(tx_hash.to_string())),
+            FinTransfer::Solana { .. } => ("FinTransfer::Solana", None),
+            FinTransfer::Starknet { tx_hash, .. } => {
+                ("FinTransfer::Starknet", Some(tx_hash.clone()))
+            }
+            FinTransfer::Aptos { tx_hash, .. } => ("FinTransfer::Aptos", Some(tx_hash.clone())),
+        };
+        LogContext {
+            transfer_id: self.transfer_id(),
+            kind,
+            tx,
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(tag = "deploy_token")]
 pub enum DeployToken {
@@ -212,6 +336,22 @@ pub enum DeployToken {
     Aptos {
         tx_hash: String,
     },
+}
+
+impl DeployToken {
+    fn log_context(&self) -> LogContext {
+        let (kind, tx) = match self {
+            DeployToken::Evm { tx_hash, .. } => ("DeployToken::Evm", Some(tx_hash.to_string())),
+            DeployToken::Solana { .. } => ("DeployToken::Solana", None),
+            DeployToken::Starknet { tx_hash } => ("DeployToken::Starknet", Some(tx_hash.clone())),
+            DeployToken::Aptos { tx_hash } => ("DeployToken::Aptos", Some(tx_hash.clone())),
+        };
+        LogContext {
+            transfer_id: None,
+            kind,
+            tx,
+        }
+    }
 }
 
 async fn handle_nats_ack(
@@ -350,51 +490,67 @@ pub async fn process_events(
         let nats_client = nats_client.clone();
         let is_evm_nonce_resync_needed = is_evm_nonce_resync_needed.clone();
 
-        tokio::spawn(async move {
-            msg.ack_with(async_nats::jetstream::AckKind::Progress)
-                .await
-                .ok();
+        let span = tracing::info_span!(
+            "transfer",
+            topic = %msg.subject,
+            transfer_id = tracing::field::Empty,
+            kind = tracing::field::Empty,
+            tx = tracing::field::Empty,
+        );
 
-            let message_result = process_message(
-                event,
-                &config,
-                &mut redis,
-                &jsonrpc_client,
-                omni_connector,
-                fast_connector,
-                signer,
-                near_omni_nonce,
-                near_fast_nonce,
-                evm_nonces,
-            )
-            .await;
+        tokio::spawn(
+            async move {
+                msg.ack_with(async_nats::jetstream::AckKind::Progress)
+                    .await
+                    .ok();
 
-            if let Err(ref err) = message_result.action {
-                warn!("{err:?}");
-            }
-
-            if let Some(ref fee_key) = message_result.fee_key_to_remove {
-                utils::redis::remove_event(&config, &mut redis, utils::redis::FEE_MAPPING, fee_key)
-                    .await;
-            }
-
-            if message_result.needs_evm_nonce_resync
-                && matches!(
-                    message_result.action,
-                    Ok(EventAction::Retry | EventAction::RetryAfter(_)) | Err(_)
+                let message_result = process_message(
+                    event,
+                    &config,
+                    &mut redis,
+                    &jsonrpc_client,
+                    omni_connector,
+                    fast_connector,
+                    signer,
+                    near_omni_nonce,
+                    near_fast_nonce,
+                    evm_nonces,
                 )
-            {
-                is_evm_nonce_resync_needed.store(true, Ordering::Relaxed);
+                .await;
+
+                if let Err(ref err) = message_result.action {
+                    warn!("{err:?}");
+                }
+
+                if let Some(ref fee_key) = message_result.fee_key_to_remove {
+                    utils::redis::remove_event(
+                        &config,
+                        &mut redis,
+                        utils::redis::FEE_MAPPING,
+                        fee_key,
+                    )
+                    .await;
+                }
+
+                if message_result.needs_evm_nonce_resync
+                    && matches!(
+                        message_result.action,
+                        Ok(EventAction::Retry | EventAction::RetryAfter(_)) | Err(_)
+                    )
+                {
+                    is_evm_nonce_resync_needed.store(true, Ordering::Relaxed);
+                }
+
+                for event in &message_result.produced_events {
+                    publish_event(&config, &nats_client, event).await;
+                }
+
+                handle_nats_ack(&msg, &message_result.action, &consumer_config).await;
+
+                drop(permit);
             }
-
-            for event in &message_result.produced_events {
-                publish_event(&config, &nats_client, event).await;
-            }
-
-            handle_nats_ack(&msg, &message_result.action, &consumer_config).await;
-
-            drop(permit);
-        });
+            .instrument(span),
+        );
     }
 
     Ok(())
@@ -414,6 +570,8 @@ async fn process_message(
     evm_nonces: Arc<utils::nonce::EvmNonceManagers>,
 ) -> MessageResult {
     if let Ok(transfer) = serde_json::from_value::<Transfer>(event.clone()) {
+        transfer.log_context().record();
+
         match transfer {
             Transfer::Near { .. } | Transfer::Utxo { .. } => {
                 let (is_utxo, fee_key) = match &transfer {
@@ -629,9 +787,13 @@ async fn process_message(
                     };
                 };
 
-                let result =
-                    near::initiate_fast_transfer(fast_connector.clone(), transfer, near_fast_nonce)
-                        .await;
+                let result = near::initiate_fast_transfer(
+                    config,
+                    fast_connector.clone(),
+                    transfer,
+                    near_fast_nonce,
+                )
+                .await;
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
@@ -646,6 +808,13 @@ async fn process_message(
             ..
         } = omni_bridge_event
         {
+            LogContext {
+                transfer_id: Some(message_payload.transfer_id.into()),
+                kind: "OmniBridgeEvent::SignTransferEvent",
+                tx: None,
+            }
+            .record();
+
             let is_evm = message_payload.recipient.get_chain().is_evm_chain();
             let fee_key = serde_json::to_string(&message_payload.transfer_id).unwrap_or_default();
 
@@ -676,6 +845,8 @@ async fn process_message(
             }
         }
     } else if let Ok(fin_transfer_event) = serde_json::from_value::<FinTransfer>(event.clone()) {
+        fin_transfer_event.log_context().record();
+
         let result = match fin_transfer_event {
             FinTransfer::Evm { .. } => {
                 evm::process_evm_transfer_event(
@@ -726,6 +897,8 @@ async fn process_message(
             produced_events: Vec::new(),
         }
     } else if let Ok(deploy_token_event) = serde_json::from_value::<DeployToken>(event.clone()) {
+        deploy_token_event.log_context().record();
+
         let result = match deploy_token_event {
             DeployToken::Evm { .. } => {
                 evm::process_deploy_token_event(
@@ -770,6 +943,13 @@ async fn process_message(
     } else if let Ok(sign_utxo_transaction_event) =
         serde_json::from_value::<utxo::SignUtxoTransaction>(event.clone())
     {
+        LogContext {
+            transfer_id: None,
+            kind: "SignUtxoTransaction",
+            tx: sign_utxo_transaction_event.btc_pending_id.clone(),
+        }
+        .record();
+
         let result = utxo::process_sign_transaction_event(
             config,
             redis,
@@ -786,6 +966,13 @@ async fn process_message(
     } else if let Ok(confirmed_tx_hash) =
         serde_json::from_value::<utxo::ConfirmedTxHash>(event.clone())
     {
+        LogContext {
+            transfer_id: None,
+            kind: "ConfirmedTxHash",
+            tx: Some(confirmed_tx_hash.btc_tx_hash.clone()),
+        }
+        .record();
+
         let result = utxo::process_confirmed_tx_hash(
             jsonrpc_client,
             omni_connector.clone(),
