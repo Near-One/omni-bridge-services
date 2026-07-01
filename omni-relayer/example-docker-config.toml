@@ -55,11 +55,12 @@ zcash = "nzcash.n-bridge.testnet"
 # fast_credentials_path = "/Users/username/.near-credentials/testnet/fast-relayer.testnet.json"
 # We won't check fee before signing transfer if account id matches on in array
 sign_without_checking_fee = ["near:aurora"]
-# Restrict which NEAR senders may relay NEAR -> HyperEVM transfers.
-# Omit this key to allow all senders (default). An empty list blocks all NEAR -> HyperEVM transfers.
-# hyperevm_allowed_senders = ["near:alice.near", "near:vault.near"]
 # To enable fast relayer, uncomment the line below
 # fast_relayer_enabled = true
+
+# [[allowlisted_senders]]
+# sender = "near:frolik.near"
+# destination_chain = "HlEvm"
 
 # KYT (Know Your Transaction) checks are enabled by setting KYT_API_URL and
 # KYT_API_KEY environment variables.

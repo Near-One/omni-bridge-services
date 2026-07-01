@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use alloy::{
@@ -126,6 +127,55 @@ pub struct Config {
     pub wormhole: Wormhole,
     #[serde(default)]
     pub kyt: Kyt,
+    /// Per-destination sender allowlist. Empty means no restriction. If any
+    /// entry targets a destination chain, only the listed senders may bridge
+    /// to that chain; destination chains with no entry stay unrestricted.
+    #[serde(default)]
+    pub allowlisted_senders: Vec<AllowlistedSender>,
+}
+
+/// A single allowlist entry: `sender` is permitted to bridge to
+/// `destination_chain`.
+///
+/// `sender` is an `OmniAddress` whose own chain is the transfer's origin, so an
+/// entry expresses one direction, e.g. `near:frolik.near` -> `HlEvm`
+/// (a NEAR sender to `HyperEVM`) or `eth:0x...` -> `Near` (an Ethereum sender
+/// to NEAR).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AllowlistedSender {
+    pub sender: OmniAddress,
+    pub destination_chain: ChainKind,
+}
+
+/// Core allowlist predicate shared by [`Config::is_sender_allowed`]. If no entry
+/// targets `destination_chain`, the destination is unrestricted (returns
+/// `true`); otherwise only listed senders are allowed. An empty `allowlist`
+/// therefore allows everything.
+fn sender_allowed(
+    allowlist: &[AllowlistedSender],
+    sender: &OmniAddress,
+    destination_chain: ChainKind,
+) -> bool {
+    let mut destination_restricted = false;
+    for entry in allowlist {
+        if entry.destination_chain == destination_chain {
+            destination_restricted = true;
+            if entry.sender == *sender {
+                return true;
+            }
+        }
+    }
+    !destination_restricted
+}
+
+/// Returns `true` if at least one entry targets `destination_chain`.
+fn destination_is_restricted(
+    allowlist: &[AllowlistedSender],
+    destination_chain: ChainKind,
+) -> bool {
+    allowlist
+        .iter()
+        .any(|entry| entry.destination_chain == destination_chain)
 }
 
 impl Config {
@@ -246,6 +296,21 @@ impl Config {
                 .is_some(),
             _ => false,
         }
+    }
+
+    pub fn is_sender_allowed(&self, sender: &OmniAddress, destination_chain: ChainKind) -> bool {
+        sender_allowed(&self.allowlisted_senders, sender, destination_chain)
+    }
+
+    pub fn is_destination_restricted(&self, destination_chain: ChainKind) -> bool {
+        destination_is_restricted(&self.allowlisted_senders, destination_chain)
+    }
+
+    pub fn restricted_destination_chains(&self) -> BTreeSet<ChainKind> {
+        self.allowlisted_senders
+            .iter()
+            .map(|entry| entry.destination_chain)
+            .collect()
     }
 }
 
@@ -371,18 +436,6 @@ pub struct Near {
     pub sign_without_checking_fee: Option<Vec<OmniAddress>>,
     #[serde(default)]
     pub fast_relayer_enabled: bool,
-    pub hyperevm_allowed_senders: Option<Vec<OmniAddress>>,
-}
-
-impl Near {
-    /// Returns `true` if `sender` is permitted to relay NEAR -> `HyperEVM`
-    /// transfers. When `hyperevm_allowed_senders` is unset the restriction is
-    /// disabled and every sender is allowed.
-    pub fn is_hyperevm_sender_allowed(&self, sender: &OmniAddress) -> bool {
-        self.hyperevm_allowed_senders
-            .as_ref()
-            .is_none_or(|allowed| allowed.contains(sender))
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -544,50 +597,134 @@ mod tests {
 
     use super::*;
 
-    fn near_with_allowlist(hyperevm_allowed_senders: Option<Vec<OmniAddress>>) -> Near {
-        Near {
-            network: Network::Mainnet,
-            rpc_url: "http://localhost".to_string(),
-            omni_bridge_id: AccountId::from_str("omni.bridge.near").unwrap(),
-            mpc_omni_prover_id: None,
-            btc_connector: None,
-            btc: None,
-            zcash_connector: None,
-            zcash: None,
-            omni_credentials_path: None,
-            fast_credentials_path: None,
-            sign_without_checking_fee: None,
-            fast_relayer_enabled: false,
-            hyperevm_allowed_senders,
-        }
-    }
-
     fn near_sender(account_id: &str) -> OmniAddress {
         OmniAddress::Near(AccountId::from_str(account_id).unwrap())
     }
 
-    #[test]
-    fn allowlist_unset_allows_any_sender() {
-        let near = near_with_allowlist(None);
-        assert!(near.is_hyperevm_sender_allowed(&near_sender("alice.near")));
-        assert!(near.is_hyperevm_sender_allowed(&near_sender("bob.near")));
+    fn eth_sender(hex_suffix: u8) -> OmniAddress {
+        OmniAddress::from_str(&format!(
+            "eth:0x00000000000000000000000000000000000000{hex_suffix:02x}"
+        ))
+        .unwrap()
+    }
+
+    fn entry(sender: OmniAddress, destination_chain: ChainKind) -> AllowlistedSender {
+        AllowlistedSender {
+            sender,
+            destination_chain,
+        }
     }
 
     #[test]
-    fn allowlist_with_entries_allows_listed_sender() {
-        let near = near_with_allowlist(Some(vec![near_sender("alice.near")]));
-        assert!(near.is_hyperevm_sender_allowed(&near_sender("alice.near")));
+    fn empty_allowlist_allows_every_sender_and_destination() {
+        let allowlist: Vec<AllowlistedSender> = Vec::new();
+        assert!(sender_allowed(
+            &allowlist,
+            &near_sender("alice.near"),
+            ChainKind::HyperEvm
+        ));
+        assert!(sender_allowed(
+            &allowlist,
+            &near_sender("bob.near"),
+            ChainKind::Near
+        ));
     }
 
     #[test]
-    fn allowlist_with_entries_blocks_unlisted_sender() {
-        let near = near_with_allowlist(Some(vec![near_sender("alice.near")]));
-        assert!(!near.is_hyperevm_sender_allowed(&near_sender("bob.near")));
+    fn restricted_destination_allows_only_listed_sender() {
+        let allowlist = vec![entry(near_sender("alice.near"), ChainKind::HyperEvm)];
+        assert!(sender_allowed(
+            &allowlist,
+            &near_sender("alice.near"),
+            ChainKind::HyperEvm
+        ));
+        assert!(!sender_allowed(
+            &allowlist,
+            &near_sender("bob.near"),
+            ChainKind::HyperEvm
+        ));
     }
 
     #[test]
-    fn allowlist_empty_blocks_every_sender() {
-        let near = near_with_allowlist(Some(Vec::new()));
-        assert!(!near.is_hyperevm_sender_allowed(&near_sender("alice.near")));
+    fn unlisted_destinations_stay_unrestricted() {
+        // Only HyperEVM is restricted; sending to other chains is unaffected.
+        let allowlist = vec![entry(near_sender("alice.near"), ChainKind::HyperEvm)];
+        assert!(sender_allowed(
+            &allowlist,
+            &near_sender("bob.near"),
+            ChainKind::Base
+        ));
+        assert!(sender_allowed(
+            &allowlist,
+            &near_sender("bob.near"),
+            ChainKind::Near
+        ));
+    }
+
+    #[test]
+    fn restrictions_are_per_destination_and_direction() {
+        let allowlist = vec![
+            entry(near_sender("alice.near"), ChainKind::HyperEvm),
+            entry(eth_sender(1), ChainKind::Near),
+        ];
+        // NEAR -> HyperEVM: only alice.
+        assert!(sender_allowed(
+            &allowlist,
+            &near_sender("alice.near"),
+            ChainKind::HyperEvm
+        ));
+        assert!(!sender_allowed(
+            &allowlist,
+            &near_sender("carol.near"),
+            ChainKind::HyperEvm
+        ));
+        // Eth -> NEAR: only the listed eth sender; NEAR is now restricted, so an
+        // unlisted near sender to NEAR is also blocked.
+        assert!(sender_allowed(&allowlist, &eth_sender(1), ChainKind::Near));
+        assert!(!sender_allowed(&allowlist, &eth_sender(2), ChainKind::Near));
+        assert!(!sender_allowed(
+            &allowlist,
+            &near_sender("alice.near"),
+            ChainKind::Near
+        ));
+    }
+
+    #[test]
+    fn destination_restriction_detection() {
+        let allowlist = vec![entry(near_sender("alice.near"), ChainKind::HyperEvm)];
+        assert!(destination_is_restricted(&allowlist, ChainKind::HyperEvm));
+        assert!(!destination_is_restricted(&allowlist, ChainKind::Near));
+        assert!(!destination_is_restricted(&[], ChainKind::HyperEvm));
+    }
+
+    #[test]
+    fn allowlisted_sender_deserializes_from_toml() {
+        // `HyperEvm` serializes as "HlEvm" (rename); "hlevm" alias also accepted.
+        let entry: AllowlistedSender =
+            toml::from_str("sender = \"near:frolik.near\"\ndestination_chain = \"HlEvm\"").unwrap();
+        assert_eq!(entry.sender, near_sender("frolik.near"));
+        assert_eq!(entry.destination_chain, ChainKind::HyperEvm);
+    }
+
+    #[test]
+    fn allowlist_section_deserializes_from_toml() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default)]
+            allowlisted_senders: Vec<AllowlistedSender>,
+        }
+        let parsed: Wrapper = toml::from_str(
+            "[[allowlisted_senders]]\nsender = \"near:frolik.near\"\ndestination_chain = \"hlevm\"\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.allowlisted_senders.len(), 1);
+        assert_eq!(
+            parsed.allowlisted_senders[0].destination_chain,
+            ChainKind::HyperEvm
+        );
+
+        // Omitted section => empty (allow-all).
+        let empty: Wrapper = toml::from_str("").unwrap();
+        assert!(empty.allowlisted_senders.is_empty());
     }
 }

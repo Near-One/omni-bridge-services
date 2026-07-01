@@ -372,6 +372,7 @@ pub(super) async fn handle_transaction_event(
                             origin_chain: chain_kind,
                             origin_nonce: log.origin_nonce,
                         },
+                        sender: init_transfer.sender.clone(),
                         recipient: log.recipient,
                         fee: Fee {
                             fee: log.fee,

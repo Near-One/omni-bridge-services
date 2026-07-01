@@ -54,6 +54,41 @@ pub(super) async fn check_kyt_senders(
     }
 }
 
+/// Enforces the configured sender allowlist for `destination_chain`. Returns
+/// `Some(EventAction::Remove)` (and logs) if `sender` is not allowed to bridge
+/// to `destination_chain`, otherwise `None`.
+pub(super) fn enforce_sender_allowlist(
+    config: &config::Config,
+    sender: &OmniAddress,
+    destination_chain: ChainKind,
+    context: &str,
+) -> Option<EventAction> {
+    if config.is_sender_allowed(sender, destination_chain) {
+        return None;
+    }
+
+    warn!(
+        "Sender {sender} is not allowed to bridge to {destination_chain:?}, dropping transfer {context}"
+    );
+    Some(EventAction::Remove)
+}
+
+/// Validates a transfer's sender before relaying: first the configured sender
+/// allowlist (local), then KYT screening (network). Returns the `EventAction`
+/// to take if the transfer must not be relayed, or `None` if it may proceed.
+pub(super) async fn validate_sender(
+    config: &config::Config,
+    sender: &OmniAddress,
+    destination_chain: ChainKind,
+    context: &str,
+) -> Option<EventAction> {
+    if let Some(action) = enforce_sender_allowlist(config, sender, destination_chain, context) {
+        return Some(action);
+    }
+
+    check_kyt(sender, context).await
+}
+
 pub async fn process_transfer_event(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
@@ -109,19 +144,15 @@ pub async fn process_transfer_event(
 
     let context = format!("({origin_chain:?}:{origin_nonce})");
 
-    if transfer_message.get_destination_chain() == ChainKind::HyperEvm
-        && !config
-            .near
-            .is_hyperevm_sender_allowed(&transfer_message.sender)
+    let destination_chain = transfer_message.get_destination_chain();
+    if let Some(action) = validate_sender(
+        config,
+        &transfer_message.sender,
+        destination_chain,
+        &context,
+    )
+    .await
     {
-        warn!(
-            "Sender {} is not in the HyperEVM allowlist, dropping NEAR->HyperEVM transfer {context}",
-            transfer_message.sender
-        );
-        return Ok((EventAction::Remove, Vec::new()));
-    }
-
-    if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
         return Ok((action, Vec::new()));
     }
 
@@ -273,7 +304,15 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.get_origin_chain(),
         transfer_message.origin_nonce
     );
-    if let Some(action) = check_kyt(&transfer_message.sender, &context).await {
+    let destination_chain = transfer_message.recipient.get_chain();
+    if let Some(action) = validate_sender(
+        config,
+        &transfer_message.sender,
+        destination_chain,
+        &context,
+    )
+    .await
+    {
         return Ok((action, Vec::new()));
     }
 
@@ -290,8 +329,6 @@ pub async fn process_transfer_to_utxo_event(
             transfer_message.recipient
         );
     };
-
-    let destination_chain = transfer_message.recipient.get_chain();
 
     let fee_rate = if destination_chain == ChainKind::Btc && config.is_bridge_api_enabled() {
         match utils::bridge_api::get_btc_fee_rate(config).await {
@@ -535,10 +572,13 @@ pub async fn process_sign_transfer_event(
         }
     }
 
-    let hyperevm_allowlist_active = message_payload.recipient.get_chain() == ChainKind::HyperEvm
-        && config.near.hyperevm_allowed_senders.is_some();
+    // The sender allowlist is enforced on the finalization path too, not just at
+    // signing. The allowlist needs the transfer's sender, which is resolved from
+    // the transfer message (the sign payload does not carry it).
+    let destination_chain = message_payload.recipient.get_chain();
+    let allowlist_active = config.is_destination_restricted(destination_chain);
 
-    if config.is_bridge_api_enabled() || hyperevm_allowlist_active {
+    if config.is_bridge_api_enabled() || allowlist_active {
         let transfer_message = match omni_connector
             .near_get_transfer_message(message_payload.transfer_id)
             .await
@@ -561,18 +601,16 @@ pub async fn process_sign_transfer_event(
             }
         };
 
-        if hyperevm_allowlist_active
-            && !config
-                .near
-                .is_hyperevm_sender_allowed(&transfer_message.sender)
-        {
-            warn!(
-                "Sender {} is not in the HyperEVM allowlist, dropping NEAR->HyperEVM finalization ({:?}:{})",
-                transfer_message.sender,
-                message_payload.transfer_id.origin_chain,
-                message_payload.transfer_id.origin_nonce
-            );
-            return Ok(EventAction::Remove);
+        if let Some(action) = enforce_sender_allowlist(
+            config,
+            &transfer_message.sender,
+            destination_chain,
+            &format!(
+                "({:?}:{})",
+                message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
+            ),
+        ) {
+            return Ok(action);
         }
 
         if config.is_bridge_api_enabled() {
@@ -748,6 +786,7 @@ pub async fn process_sign_transfer_event(
 }
 
 pub async fn initiate_fast_transfer(
+    config: &config::Config,
     fast_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_fast_nonce: Arc<utils::nonce::NonceManager>,
@@ -762,6 +801,7 @@ pub async fn initiate_fast_transfer(
         token,
         amount,
         transfer_id,
+        sender,
         recipient,
         fee,
         msg,
@@ -781,6 +821,14 @@ pub async fn initiate_fast_transfer(
             "Fast transfer is supported only for transfers to NEAR for now, got: {:?}",
             recipient.get_chain()
         );
+    }
+
+    let context = format!(
+        "({:?}:{})",
+        transfer_id.origin_chain, transfer_id.origin_nonce
+    );
+    if let Some(action) = enforce_sender_allowlist(config, &sender, ChainKind::Near, &context) {
+        return Ok(action);
     }
 
     info!("Trying to initiate FastTransfer on NEAR");
