@@ -304,7 +304,7 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.get_origin_chain(),
         transfer_message.origin_nonce
     );
-    let destination_chain = transfer_message.recipient.get_chain();
+    let destination_chain = transfer_message.get_destination_chain();
     if let Some(action) = validate_sender(
         config,
         &transfer_message.sender,
