@@ -163,6 +163,18 @@ async fn main() -> Result<()> {
         }
     }
 
+    let restricted_destinations = config.restricted_destination_chains();
+    if restricted_destinations.is_empty() {
+        info!("Sender allowlist inactive (all senders allowed)");
+    } else {
+        info!("Sender allowlist active for destination chains: {restricted_destinations:?}");
+        if restricted_destinations.contains(&ChainKind::Near) {
+            warn!(
+                "Sender allowlist restricts destination NEAR, but the UTXO->NEAR path cannot enforce it (the sender is not available in that event); those senders are NOT filtered"
+            );
+        }
+    }
+
     let redis_connection_manager = build_redis_connection_manager(&config)
         .await
         .context("Failed to create Redis connection manager")?;

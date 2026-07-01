@@ -166,6 +166,7 @@ pub enum Transfer {
         token: String,
         amount: U128,
         transfer_id: TransferId,
+        sender: OmniAddress,
         recipient: OmniAddress,
         fee: Fee,
         msg: String,
@@ -731,9 +732,13 @@ async fn process_message(
                     };
                 };
 
-                let result =
-                    near::initiate_fast_transfer(fast_connector.clone(), transfer, near_fast_nonce)
-                        .await;
+                let result = near::initiate_fast_transfer(
+                    config,
+                    fast_connector.clone(),
+                    transfer,
+                    near_fast_nonce,
+                )
+                .await;
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,

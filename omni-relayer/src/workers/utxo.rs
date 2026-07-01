@@ -68,7 +68,9 @@ pub async fn process_near_to_utxo_init_transfer_event(
     }
 
     let context = format!("({btc_pending_id}:{sign_index})");
-    if let Some(action) = super::near::check_kyt(&OmniAddress::Near(sender), &context).await {
+    let sender = OmniAddress::Near(sender);
+    if let Some(action) = utils::validation::validate_sender(config, &sender, chain, &context).await
+    {
         return Ok(action);
     }
 
@@ -198,7 +200,8 @@ pub async fn process_utxo_to_near_init_transfer_event(
         };
 
         let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
-        if let Some(action) = super::near::check_kyt_senders(&input_addresses, &context).await {
+        if let Some(action) = utils::validation::check_kyt_senders(&input_addresses, &context).await
+        {
             return Ok(action);
         }
     }
