@@ -273,6 +273,8 @@ where
 
 const UTXO_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 
+const MAX_BATCH_SIZE: usize = 50;
+
 fn utxo_rpc_client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
@@ -454,20 +456,28 @@ async fn get_raw_transaction(rpc_url: &str, chain: ChainKind, tx_hash: &str) -> 
         .with_context(|| format!("getrawtransaction returned null result for {chain:?}:{tx_hash}"))
 }
 
-/// Fetch many raw transactions in a single JSON-RPC 2.0 batched POST. Returns a
-/// `txid -> tx` map, decoding only each tx's outputs. Each request is keyed by
-/// its array index as the JSON-RPC `id`, so order doesn't matter on the response
-/// side.
+/// Fetch many raw transactions, decoding only each tx's outputs. The prev txids
+/// are split into batches of at most `MAX_BATCH_SIZE` and fetched sequentially
 async fn get_raw_transactions_batch(
     rpc_url: &str,
     chain: ChainKind,
     tx_hashes: &[String],
 ) -> Result<HashMap<String, RawTxVout>> {
-    if tx_hashes.is_empty() {
-        return Ok(HashMap::new());
+    let mut by_txid = HashMap::with_capacity(tx_hashes.len());
+    for chunk in tx_hashes.chunks(MAX_BATCH_SIZE) {
+        let entries = fetch_batch_entries(rpc_url, chain, chunk).await?;
+        by_txid.extend(index_batch_responses(chain, chunk, entries)?);
     }
+    Ok(by_txid)
+}
+
+async fn fetch_batch_entries(
+    rpc_url: &str,
+    chain: ChainKind,
+    chunk: &[String],
+) -> Result<Vec<BatchEntry>> {
     let verbosity = verbosity_for(chain);
-    let body: Vec<Value> = tx_hashes
+    let body: Vec<Value> = chunk
         .iter()
         .enumerate()
         .map(|(idx, tx)| {
@@ -480,7 +490,7 @@ async fn get_raw_transactions_batch(
         })
         .collect();
 
-    let entries: Vec<BatchEntry> = utxo_rpc_client()
+    utxo_rpc_client()
         .post(rpc_url)
         .json(&body)
         .send()
@@ -488,7 +498,7 @@ async fn get_raw_transactions_batch(
         .with_context(|| {
             format!(
                 "batched getrawtransaction request failed for {chain:?} ({} tx)",
-                tx_hashes.len()
+                chunk.len()
             )
         })?
         .json()
@@ -496,11 +506,9 @@ async fn get_raw_transactions_batch(
         .with_context(|| {
             format!(
                 "batched getrawtransaction body parse failed for {chain:?} ({} tx) — server may not support JSON-RPC 2.0 batching",
-                tx_hashes.len()
+                chunk.len()
             )
-        })?;
-
-    index_batch_responses(chain, tx_hashes, entries)
+        })
 }
 
 /// Fetch the spending address for each input of `tx_hash`. Skips inputs whose
@@ -666,6 +674,37 @@ mod tests {
         let entries: Vec<BatchEntry> =
             serde_json::from_str(r#"[ { "id": 0, "result": null } ]"#).unwrap();
         assert!(index_batch_responses(ChainKind::Btc, &tx_hashes, entries).is_err());
+    }
+
+    #[test]
+    fn split_txids_for_batch_caps_at_max_batch_size() {
+        assert_eq!(MAX_BATCH_SIZE, 50);
+        let ids: Vec<String> = (0..120).map(|i| i.to_string()).collect();
+        let chunks: Vec<&[String]> = ids.chunks(MAX_BATCH_SIZE).collect();
+
+        // 120 -> 50 + 50 + 20, every chunk within the cap, none empty.
+        assert_eq!(chunks.len(), 3);
+        assert!(
+            chunks
+                .iter()
+                .all(|c| !c.is_empty() && c.len() <= MAX_BATCH_SIZE)
+        );
+        assert_eq!(chunks.iter().map(|c| c.len()).sum::<usize>(), ids.len());
+        assert_eq!(chunks[0].len(), MAX_BATCH_SIZE);
+        assert_eq!(chunks.last().unwrap().len(), 20);
+        // Exactly one batch when under the cap; none when empty.
+        assert_eq!(ids[..10].chunks(MAX_BATCH_SIZE).count(), 1);
+        assert_eq!(ids[..].chunks(MAX_BATCH_SIZE).count(), 0);
+    }
+
+    #[tokio::test]
+    async fn get_raw_transactions_batch_empty_input_makes_no_request() {
+        // Empty input must yield an empty map without issuing any HTTP request,
+        // even to an unroutable URL.
+        let map = get_raw_transactions_batch("http://255.255.255.255:1", ChainKind::Btc, &[])
+            .await
+            .expect("empty batch should be Ok");
+        assert!(map.is_empty());
     }
 
     /// Pulls just `btc.rpc_http_url` out of a TOML config without going through
