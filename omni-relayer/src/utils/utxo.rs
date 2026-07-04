@@ -291,14 +291,152 @@ fn verbosity_for(chain: ChainKind) -> Value {
     }
 }
 
-async fn get_raw_transaction(rpc_url: &str, chain: ChainKind, tx_hash: &str) -> Result<Value> {
+#[derive(Debug, Deserialize)]
+struct RawTxVin {
+    #[serde(default)]
+    vin: Option<Vec<Vin>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawTxVout {
+    #[serde(default)]
+    vout: Vec<Vout>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Vin {
+    #[serde(default)]
+    coinbase: Option<String>,
+    #[serde(default)]
+    txid: Option<String>,
+    #[serde(default)]
+    vout: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Vout {
+    #[serde(default, rename = "scriptPubKey")]
+    script_pub_key: ScriptPubKey,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ScriptPubKey {
+    #[serde(default)]
+    address: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SingleTxResponse {
+    #[serde(default)]
+    result: Option<RawTxVin>,
+    #[serde(default)]
+    error: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BatchEntry {
+    id: u64,
+    #[serde(default)]
+    result: Option<RawTxVout>,
+    #[serde(default)]
+    error: Option<Value>,
+}
+
+type PrevOutRef = (String, usize);
+
+fn collect_input_refs(
+    tx: &RawTxVin,
+    chain: ChainKind,
+    tx_hash: &str,
+) -> Result<(Vec<PrevOutRef>, Vec<String>)> {
+    let vin = tx
+        .vin
+        .as_ref()
+        .with_context(|| format!("vin missing in {chain:?} tx {tx_hash}"))?;
+
+    let mut input_refs: Vec<PrevOutRef> = Vec::with_capacity(vin.len());
+    let mut unique_txids: Vec<String> = Vec::new();
+    for input in vin {
+        if input.coinbase.is_some() {
+            continue;
+        }
+        let Some(prev_txid) = input.txid.as_deref() else {
+            continue;
+        };
+        let Some(prev_vout) = input.vout else {
+            continue;
+        };
+        let prev_vout = usize::try_from(prev_vout)
+            .with_context(|| format!("vout {prev_vout} out of usize range for {prev_txid}"))?;
+        if !unique_txids.iter().any(|t| t == prev_txid) {
+            unique_txids.push(prev_txid.to_string());
+        }
+        input_refs.push((prev_txid.to_string(), prev_vout));
+    }
+    Ok((input_refs, unique_txids))
+}
+
+fn resolve_addresses(
+    chain: ChainKind,
+    input_refs: &[PrevOutRef],
+    prev_txs: &HashMap<String, RawTxVout>,
+) -> Vec<OmniAddress> {
+    let mut addresses = Vec::with_capacity(input_refs.len());
+    for (prev_txid, prev_vout) in input_refs {
+        let Some(prev_tx) = prev_txs.get(prev_txid) else {
+            continue;
+        };
+        let Some(output) = prev_tx.vout.get(*prev_vout) else {
+            continue;
+        };
+        let Some(address) = output.script_pub_key.address.as_deref() else {
+            continue;
+        };
+        let omni_address = match chain {
+            ChainKind::Btc => OmniAddress::Btc(address.to_string()),
+            ChainKind::Zcash => OmniAddress::Zcash(address.to_string()),
+            _ => continue,
+        };
+        addresses.push(omni_address);
+    }
+    addresses
+}
+
+fn index_batch_responses(
+    chain: ChainKind,
+    tx_hashes: &[String],
+    entries: Vec<BatchEntry>,
+) -> Result<HashMap<String, RawTxVout>> {
+    let mut by_txid = HashMap::with_capacity(tx_hashes.len());
+    for entry in entries {
+        let idx = usize::try_from(entry.id)
+            .with_context(|| format!("batched response id {} out of usize range", entry.id))?;
+        let tx_hash = tx_hashes.get(idx).with_context(|| {
+            format!(
+                "batched response id {idx} out of range (sent {})",
+                tx_hashes.len()
+            )
+        })?;
+        let Some(result) = entry.result else {
+            if let Some(error) = entry.error.filter(|e| !e.is_null()) {
+                anyhow::bail!("getrawtransaction failed for {chain:?}:{tx_hash} in batch: {error}");
+            }
+            anyhow::bail!("getrawtransaction returned null for {chain:?}:{tx_hash} in batch");
+        };
+        by_txid.insert(tx_hash.clone(), result);
+    }
+    Ok(by_txid)
+}
+
+async fn get_raw_transaction(rpc_url: &str, chain: ChainKind, tx_hash: &str) -> Result<RawTxVin> {
     let body = json!({
         "id": 1,
         "jsonrpc": "2.0",
         "method": "getrawtransaction",
         "params": [tx_hash, verbosity_for(chain)],
     });
-    let response: Value = utxo_rpc_client()
+
+    let response: SingleTxResponse = utxo_rpc_client()
         .post(rpc_url)
         .json(&body)
         .send()
@@ -307,23 +445,24 @@ async fn get_raw_transaction(rpc_url: &str, chain: ChainKind, tx_hash: &str) -> 
         .json()
         .await
         .with_context(|| format!("getrawtransaction body parse failed for {chain:?}:{tx_hash}"))?;
-    let result = response.get("result").cloned().with_context(|| {
-        format!("getrawtransaction response missing `result` for {chain:?}:{tx_hash}: {response}")
-    })?;
-    if result.is_null() {
-        anyhow::bail!("getrawtransaction returned null for {chain:?}:{tx_hash}: {response}");
+
+    if let Some(error) = response.error.filter(|e| !e.is_null()) {
+        anyhow::bail!("getrawtransaction failed for {chain:?}:{tx_hash}: {error}");
     }
-    Ok(result)
+    response
+        .result
+        .with_context(|| format!("getrawtransaction returned null result for {chain:?}:{tx_hash}"))
 }
 
 /// Fetch many raw transactions in a single JSON-RPC 2.0 batched POST. Returns a
-/// `txid -> result` map. Each request is keyed by its array index as the
-/// JSON-RPC `id`, so order doesn't matter on the response side.
+/// `txid -> tx` map, decoding only each tx's outputs. Each request is keyed by
+/// its array index as the JSON-RPC `id`, so order doesn't matter on the response
+/// side.
 async fn get_raw_transactions_batch(
     rpc_url: &str,
     chain: ChainKind,
     tx_hashes: &[String],
-) -> Result<HashMap<String, Value>> {
+) -> Result<HashMap<String, RawTxVout>> {
     if tx_hashes.is_empty() {
         return Ok(HashMap::new());
     }
@@ -341,7 +480,7 @@ async fn get_raw_transactions_batch(
         })
         .collect();
 
-    let responses: Vec<Value> = utxo_rpc_client()
+    let entries: Vec<BatchEntry> = utxo_rpc_client()
         .post(rpc_url)
         .json(&body)
         .send()
@@ -361,32 +500,7 @@ async fn get_raw_transactions_batch(
             )
         })?;
 
-    let mut by_txid = HashMap::with_capacity(tx_hashes.len());
-    for response in responses {
-        let id = response
-            .get("id")
-            .and_then(Value::as_u64)
-            .with_context(|| format!("batched response missing `id`: {response}"))?;
-        let idx = usize::try_from(id)
-            .with_context(|| format!("batched response id {id} out of usize range"))?;
-        let tx_hash = tx_hashes.get(idx).with_context(|| {
-            format!(
-                "batched response id {idx} out of range (sent {})",
-                tx_hashes.len()
-            )
-        })?;
-        let result = response.get("result").cloned().with_context(|| {
-            format!("batched response for {chain:?}:{tx_hash} missing `result`: {response}")
-        })?;
-        if result.is_null() {
-            if let Some(error) = response.get("error").filter(|e| !e.is_null()) {
-                anyhow::bail!("getrawtransaction failed for {chain:?}:{tx_hash} in batch: {error}");
-            }
-            anyhow::bail!("getrawtransaction returned null for {chain:?}:{tx_hash} in batch");
-        }
-        by_txid.insert(tx_hash.clone(), result);
-    }
-    Ok(by_txid)
+    index_batch_responses(chain, tx_hashes, entries)
 }
 
 /// Fetch the spending address for each input of `tx_hash`. Skips inputs whose
@@ -403,64 +517,12 @@ pub async fn fetch_input_addresses(
     }
 
     let tx = get_raw_transaction(rpc_url, chain, tx_hash).await?;
-    let vin = tx
-        .get("vin")
-        .and_then(Value::as_array)
-        .with_context(|| format!("vin missing in {chain:?} tx {tx_hash}"))?;
-
-    // First pass: collect (prev_txid, prev_vout) for every transparent input,
-    // and the set of unique prev txids to batch-fetch.
-    let mut input_refs: Vec<(String, usize)> = Vec::with_capacity(vin.len());
-    let mut unique_txids: Vec<String> = Vec::new();
-    for input in vin {
-        if input.get("coinbase").is_some() {
-            continue;
-        }
-        let Some(prev_txid) = input.get("txid").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(prev_vout) = input.get("vout").and_then(Value::as_u64) else {
-            continue;
-        };
-        let prev_vout = usize::try_from(prev_vout)
-            .with_context(|| format!("vout {prev_vout} out of usize range for {prev_txid}"))?;
-        if !unique_txids.iter().any(|t| t == prev_txid) {
-            unique_txids.push(prev_txid.to_string());
-        }
-        input_refs.push((prev_txid.to_string(), prev_vout));
-    }
+    let (input_refs, unique_txids) = collect_input_refs(&tx, chain, tx_hash)?;
 
     // Single batched JSON-RPC POST for all prev txs.
     let prev_txs = get_raw_transactions_batch(rpc_url, chain, &unique_txids).await?;
 
-    // Second pass: resolve each input to its spend address.
-    let mut addresses = Vec::with_capacity(input_refs.len());
-    for (prev_txid, prev_vout) in input_refs {
-        let Some(prev_tx) = prev_txs.get(&prev_txid) else {
-            continue;
-        };
-        let Some(prev_outputs) = prev_tx.get("vout").and_then(Value::as_array) else {
-            continue;
-        };
-        let Some(output) = prev_outputs.get(prev_vout) else {
-            continue;
-        };
-        let Some(address) = output
-            .pointer("/scriptPubKey/address")
-            .and_then(Value::as_str)
-        else {
-            continue;
-        };
-
-        let omni_address = match chain {
-            ChainKind::Btc => OmniAddress::Btc(address.to_string()),
-            ChainKind::Zcash => OmniAddress::Zcash(address.to_string()),
-            _ => unreachable!("guarded above"),
-        };
-        addresses.push(omni_address);
-    }
-
-    Ok(addresses)
+    Ok(resolve_addresses(chain, &input_refs, &prev_txs))
 }
 
 #[cfg(test)]
@@ -470,6 +532,141 @@ mod tests {
 
     const DEFAULT_TAINTED_TX: &str =
         "0b13776c8a64eaf701c240885afc0c8560258c08201df207863033380b03b0c6";
+
+    // ---------------------------------------------------------------------
+    // Pure parse/extraction unit tests — no network. These pin the behavior
+    // the typed-struct rewrite must preserve.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn collect_input_refs_skips_coinbase_and_dedups_prev_txids() {
+        // Includes a coinbase input, a dup prevout, an input missing `vout`,
+        // and unknown fields — all of which the extraction must handle.
+        let main_json = r#"{
+            "txid": "main",
+            "hex": "deadbeef",
+            "size": 321,
+            "vin": [
+                { "coinbase": "0340", "sequence": 4294967295 },
+                { "txid": "prevA", "vout": 0, "scriptSig": { "hex": "48" } },
+                { "txid": "prevB", "vout": 1 },
+                { "txid": "prevA", "vout": 0 },
+                { "txid": "prevC" }
+            ],
+            "vout": []
+        }"#;
+        let tx: RawTxVin = serde_json::from_str(main_json).expect("parse main tx");
+        let (input_refs, unique_txids) =
+            collect_input_refs(&tx, ChainKind::Btc, "main").expect("collect");
+
+        assert_eq!(
+            input_refs,
+            vec![
+                ("prevA".to_string(), 0),
+                ("prevB".to_string(), 1),
+                ("prevA".to_string(), 0),
+            ]
+        );
+        assert_eq!(unique_txids, vec!["prevA".to_string(), "prevB".to_string()]);
+    }
+
+    #[test]
+    fn collect_input_refs_errors_when_vin_missing() {
+        let tx: RawTxVin = serde_json::from_str(r#"{ "txid": "x" }"#).expect("parse");
+        assert!(collect_input_refs(&tx, ChainKind::Btc, "x").is_err());
+    }
+
+    #[test]
+    fn resolve_addresses_extracts_transparent_and_skips_unresolvable() {
+        let prev_a: RawTxVout = serde_json::from_str(
+            r#"{ "vout": [
+                { "value": 1.0, "n": 0,
+                  "scriptPubKey": { "hex": "0014aa", "address": "bc1qA", "type": "witness_v0_keyhash" } }
+            ] }"#,
+        )
+        .unwrap();
+        let prev_b: RawTxVout = serde_json::from_str(
+            r#"{ "vout": [
+                { "value": 0.0, "n": 0, "scriptPubKey": { "hex": "6a0102", "type": "nulldata" } },
+                { "value": 2.0, "n": 1, "scriptPubKey": { "address": "bc1qB", "type": "witness_v0_keyhash" } }
+            ] }"#,
+        )
+        .unwrap();
+        let mut prev_txs = HashMap::new();
+        prev_txs.insert("prevA".to_string(), prev_a);
+        prev_txs.insert("prevB".to_string(), prev_b);
+
+        let input_refs = vec![
+            ("prevA".to_string(), 0usize), // -> bc1qA
+            ("prevB".to_string(), 0usize), // OP_RETURN, no address -> skip
+            ("prevB".to_string(), 1usize), // -> bc1qB
+            ("prevA".to_string(), 5usize), // vout out of range -> skip
+            ("prevD".to_string(), 0usize), // parent tx not fetched -> skip
+        ];
+        let addresses = resolve_addresses(ChainKind::Btc, &input_refs, &prev_txs);
+
+        assert_eq!(
+            addresses,
+            vec![
+                OmniAddress::Btc("bc1qA".to_string()),
+                OmniAddress::Btc("bc1qB".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_addresses_uses_zcash_variant_for_zcash() {
+        let prev: RawTxVout =
+            serde_json::from_str(r#"{ "vout": [ { "scriptPubKey": { "address": "t1abc" } } ] }"#)
+                .unwrap();
+        let mut prev_txs = HashMap::new();
+        prev_txs.insert("p".to_string(), prev);
+        let addresses = resolve_addresses(ChainKind::Zcash, &[("p".to_string(), 0)], &prev_txs);
+        assert_eq!(addresses, vec![OmniAddress::Zcash("t1abc".to_string())]);
+    }
+
+    #[test]
+    fn index_batch_responses_maps_results_by_original_txid() {
+        let tx_hashes = vec!["txA".to_string(), "txB".to_string()];
+        // ids echo the request index; returned out of order to prove the
+        // mapping is by `id`, not response position.
+        let entries: Vec<BatchEntry> = serde_json::from_str(
+            r#"[
+                { "id": 1, "jsonrpc": "2.0", "result": { "vout": [ { "scriptPubKey": { "address": "addrB" } } ] } },
+                { "id": 0, "jsonrpc": "2.0", "result": { "vout": [ { "scriptPubKey": { "address": "addrA" } } ] } }
+            ]"#,
+        )
+        .unwrap();
+        let map = index_batch_responses(ChainKind::Btc, &tx_hashes, entries).expect("index");
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(
+            map["txA"].vout[0].script_pub_key.address.as_deref(),
+            Some("addrA")
+        );
+        assert_eq!(
+            map["txB"].vout[0].script_pub_key.address.as_deref(),
+            Some("addrB")
+        );
+    }
+
+    #[test]
+    fn index_batch_responses_errors_on_rpc_error_entry() {
+        let tx_hashes = vec!["txA".to_string()];
+        let entries: Vec<BatchEntry> = serde_json::from_str(
+            r#"[ { "id": 0, "result": null, "error": { "code": -5, "message": "No such transaction" } } ]"#,
+        )
+        .unwrap();
+        assert!(index_batch_responses(ChainKind::Btc, &tx_hashes, entries).is_err());
+    }
+
+    #[test]
+    fn index_batch_responses_errors_on_null_result() {
+        let tx_hashes = vec!["txA".to_string()];
+        let entries: Vec<BatchEntry> =
+            serde_json::from_str(r#"[ { "id": 0, "result": null } ]"#).unwrap();
+        assert!(index_batch_responses(ChainKind::Btc, &tx_hashes, entries).is_err());
+    }
 
     /// Pulls just `btc.rpc_http_url` out of a TOML config without going through
     /// `Config` deserialization (which would trigger env-var substitution for
