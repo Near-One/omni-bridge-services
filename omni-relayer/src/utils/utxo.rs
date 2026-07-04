@@ -694,7 +694,7 @@ mod tests {
         assert_eq!(chunks.last().unwrap().len(), 20);
         // Exactly one batch when under the cap; none when empty.
         assert_eq!(ids[..10].chunks(MAX_BATCH_SIZE).count(), 1);
-        assert_eq!(ids[..].chunks(MAX_BATCH_SIZE).count(), 0);
+        assert_eq!(ids[..0].chunks(MAX_BATCH_SIZE).count(), 0);
     }
 
     #[tokio::test]
