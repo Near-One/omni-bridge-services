@@ -20,8 +20,8 @@ use solana_sdk::pubkey::Pubkey;
 
 use omni_connector::OmniConnector;
 use omni_types::{
-    ChainKind, Fee, OmniAddress, TransferId, TransferMessage, UnifiedTransferId,
-    UtxoFinTransferMsg, near_events::OmniBridgeEvent,
+    ChainKind, Fee, OmniAddress, TransferId, TransferIdKind, TransferMessage, UnifiedTransferId,
+    UtxoFinTransferMsg, UtxoId, near_events::OmniBridgeEvent,
 };
 
 use crate::{config, utils};
@@ -176,8 +176,9 @@ pub enum Transfer {
 }
 
 impl Transfer {
-    /// The canonical transfer id for this event, if it has one. Some variants
-    /// (`NearToUtxo`, `UtxoToNear`) are not tied to a single transfer id.
+    /// The canonical transfer id for this event, if it has one. `NearToUtxo`
+    /// is not tied to a single transfer id (it only carries the pending BTC
+    /// tx hash).
     fn transfer_id(&self) -> Option<UnifiedTransferId> {
         Some(match self {
             Transfer::Near {
@@ -206,7 +207,19 @@ impl Transfer {
             }
             .into(),
             Transfer::Fast { transfer_id, .. } => (*transfer_id).into(),
-            Transfer::NearToUtxo { .. } | Transfer::UtxoToNear { .. } => return None,
+            Transfer::UtxoToNear {
+                chain,
+                btc_tx_hash,
+                vout,
+                ..
+            } => UnifiedTransferId {
+                origin_chain: *chain,
+                kind: TransferIdKind::Utxo(UtxoId {
+                    tx_hash: btc_tx_hash.clone(),
+                    vout: *vout,
+                }),
+            },
+            Transfer::NearToUtxo { .. } => return None,
         })
     }
 
