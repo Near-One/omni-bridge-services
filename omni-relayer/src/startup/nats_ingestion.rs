@@ -23,6 +23,7 @@ async fn process_nats_message(
             let span = tracing::info_span!(
                 "transfer",
                 transfer_id = tracing::field::Empty,
+                new_transfer_id = tracing::field::Empty,
                 kind = tracing::field::Empty,
                 tx = tracing::field::Empty,
             );
