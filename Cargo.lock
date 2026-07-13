@@ -7603,6 +7603,7 @@ dependencies = [
  "evm-bridge-client 0.3.7",
  "futures",
  "hex",
+ "hypercore-bridge-client",
  "light-client",
  "mongodb",
  "near-bridge-client",
