@@ -151,6 +151,9 @@ error_selectors_to_remove = [
 	"696e76616c696420666565" # Wormhole's "invalid fee"
 ]
 
+[hypercore]
+api_url = "https://api.hyperliquid-testnet.xyz"
+
 # [abs]
 # rpc_http_url = "https://api.testnet.abs.xyz"
 # omni_bridge_address = ""
