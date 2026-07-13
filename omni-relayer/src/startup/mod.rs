@@ -146,9 +146,7 @@ fn build_evm_bridge_client(
         .transpose()
 }
 
-fn build_hypercore_bridge_client(
-    config: &config::Config,
-) -> Result<Option<HyperCoreBridgeClient>> {
+fn build_hypercore_bridge_client(config: &config::Config) -> Result<Option<HyperCoreBridgeClient>> {
     let Some(hypercore) = config.hypercore.as_ref() else {
         return Ok(None);
     };
