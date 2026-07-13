@@ -55,6 +55,7 @@ near-rpc-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package =
 
 near-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-bridge-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
 evm-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "evm-bridge-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
+hypercore-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "hypercore-bridge-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
 solana-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "solana-bridge-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
 starknet-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "starknet-bridge-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
 utxo-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-bridge-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }

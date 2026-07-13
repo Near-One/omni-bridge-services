@@ -2,6 +2,9 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 use evm_bridge_client::{EvmBridgeClient, EvmBridgeClientBuilder};
+use hypercore_bridge_client::{
+    HyperCoreBridgeClient, HyperCoreBridgeClientBuilder, HyperliquidNetwork,
+};
 use light_client::{LightClient, LightClientBuilder};
 use near_bridge_client::{NearBridgeClientBuilder, UTXOChainAccounts};
 use near_crypto::InMemorySigner;
@@ -139,6 +142,37 @@ fn build_evm_bridge_client(
                 .mpc_finality(evm_finality)
                 .build()
                 .context(format!("Failed to build EvmBridgeClient ({chain_kind:?})"))
+        })
+        .transpose()
+}
+
+fn build_hypercore_bridge_client(
+    config: &config::Config,
+) -> Result<Option<HyperCoreBridgeClient>> {
+    config
+        .hyperevm
+        .as_ref()
+        .map(|hyperevm| {
+            let (network, api_url) = match config.near.network {
+                config::Network::Mainnet => {
+                    (HyperliquidNetwork::Mainnet, "https://api.hyperliquid.xyz")
+                }
+                config::Network::Testnet => (
+                    HyperliquidNetwork::Testnet,
+                    "https://api.hyperliquid-testnet.xyz",
+                ),
+            };
+
+            HyperCoreBridgeClientBuilder::default()
+                .network(network)
+                .api_url(Some(api_url.to_string()))
+                .hyperevm_rpc_url(Some(hyperevm.rpc_http_url.clone()))
+                .private_key(Some(crate::config::get_private_key(
+                    ChainKind::HyperEvm,
+                    None,
+                )))
+                .build()
+                .context("Failed to build HyperCoreBridgeClient")
         })
         .transpose()
 }
@@ -296,6 +330,7 @@ pub async fn build_omni_connector(
         build_evm_bridge_client(config, ChainKind::HyperEvm, mpc_finalities.as_ref())?;
     let abs_bridge_client =
         build_evm_bridge_client(config, ChainKind::Abs, mpc_finalities.as_ref())?;
+    let hypercore_bridge_client = build_hypercore_bridge_client(config)?;
     let solana_bridge_client = build_svm_bridge_client(config.solana.as_ref(), ChainKind::Sol)?;
     let fogo_bridge_client = build_svm_bridge_client(config.fogo.as_ref(), ChainKind::Fogo)?;
     let starknet_bridge_client = build_starknet_bridge_client(config, mpc_finalities.as_ref())?;
@@ -316,6 +351,7 @@ pub async fn build_omni_connector(
         .pol_bridge_client(pol_bridge_client)
         .hyperevm_bridge_client(hyperevm_bridge_client)
         .abs_bridge_client(abs_bridge_client)
+        .hypercore_bridge_client(hypercore_bridge_client)
         .solana_bridge_client(solana_bridge_client)
         .fogo_bridge_client(fogo_bridge_client)
         .starknet_bridge_client(starknet_bridge_client)
