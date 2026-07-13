@@ -7535,8 +7535,6 @@ dependencies = [
  "tokio-stream",
  "toml 0.9.11+spec-1.1.0",
  "tracing",
- "tracing-log",
- "tracing-loki",
  "tracing-subscriber",
  "utxo-bridge-client",
  "utxo-utils",
