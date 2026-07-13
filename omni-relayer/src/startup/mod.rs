@@ -149,32 +149,29 @@ fn build_evm_bridge_client(
 fn build_hypercore_bridge_client(
     config: &config::Config,
 ) -> Result<Option<HyperCoreBridgeClient>> {
-    config
-        .hyperevm
-        .as_ref()
-        .map(|hyperevm| {
-            let (network, api_url) = match config.near.network {
-                config::Network::Mainnet => {
-                    (HyperliquidNetwork::Mainnet, "https://api.hyperliquid.xyz")
-                }
-                config::Network::Testnet => (
-                    HyperliquidNetwork::Testnet,
-                    "https://api.hyperliquid-testnet.xyz",
-                ),
-            };
+    let Some(hypercore) = config.hypercore.as_ref() else {
+        return Ok(None);
+    };
+    let hyperevm = config.hyperevm.as_ref().context(
+        "`hypercore` config section requires `hyperevm` to be configured (its RPC is used for `CoreReceived` polling)",
+    )?;
 
-            HyperCoreBridgeClientBuilder::default()
-                .network(network)
-                .api_url(Some(api_url.to_string()))
-                .hyperevm_rpc_url(Some(hyperevm.rpc_http_url.clone()))
-                .private_key(Some(crate::config::get_private_key(
-                    ChainKind::HyperEvm,
-                    None,
-                )))
-                .build()
-                .context("Failed to build HyperCoreBridgeClient")
-        })
-        .transpose()
+    let network = match config.near.network {
+        config::Network::Mainnet => HyperliquidNetwork::Mainnet,
+        config::Network::Testnet => HyperliquidNetwork::Testnet,
+    };
+
+    HyperCoreBridgeClientBuilder::default()
+        .network(network)
+        .api_url(Some(hypercore.api_url.clone()))
+        .hyperevm_rpc_url(Some(hyperevm.rpc_http_url.clone()))
+        .private_key(Some(crate::config::get_private_key(
+            ChainKind::HyperEvm,
+            None,
+        )))
+        .build()
+        .context("Failed to build HyperCoreBridgeClient")
+        .map(Some)
 }
 
 fn build_svm_bridge_client(

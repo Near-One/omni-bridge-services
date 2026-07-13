@@ -117,6 +117,7 @@ pub struct Config {
     pub bnb: Option<Evm>,
     pub pol: Option<Evm>,
     pub hyperevm: Option<Evm>,
+    pub hypercore: Option<Hypercore>,
     pub abs: Option<Evm>,
     pub solana: Option<Solana>,
     pub fogo: Option<Solana>,
@@ -569,6 +570,11 @@ const fn default_active_utxo_polling_interval_secs() -> u64 {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Orchard {
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Hypercore {
+    pub api_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
