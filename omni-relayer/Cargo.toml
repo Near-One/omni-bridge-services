@@ -1,6 +1,6 @@
 [package]
 name = "omni-relayer"
-version = "0.6.29"
+version = "0.6.30"
 edition = "2024"
 repository = "https://github.com/Near-One/omni-bridge"
 
@@ -60,6 +60,7 @@ starknet-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", pa
 utxo-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-bridge-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
 utxo-utils = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-utils", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
 wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
+hypercore-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "hypercore-bridge-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
 light-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "light-client", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
 
 omni-connector = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "omni-connector", rev = "accd1995f50f752d9754b69cccb27ab5de94ca3f" }
