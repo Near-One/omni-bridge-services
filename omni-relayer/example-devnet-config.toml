@@ -151,6 +151,11 @@ error_selectors_to_remove = [
 	"696e76616c696420666565" # Wormhole's "invalid fee"
 ]
 
+# Optional
+# [hypercore]
+# api_url = "https://api.hyperliquid-testnet.xyz"
+# signature_chain_id = "0x66eee" # optional; SDK defaults to 0x66eee
+
 # [abs]
 # rpc_http_url = "https://api.testnet.abs.xyz"
 # omni_bridge_address = ""

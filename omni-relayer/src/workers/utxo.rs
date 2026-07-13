@@ -36,6 +36,7 @@ pub struct ConfirmedTxHash {
 pub async fn process_near_to_utxo_init_transfer_event(
     config: &config::Config,
     redis: &mut redis::aio::ConnectionManager,
+    jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -117,7 +118,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
             sign_index,
             TransactionOptions {
                 nonce,
-                wait_until: near_primitives::views::TxExecutionStatus::Included,
+                wait_until: near_primitives::views::TxExecutionStatus::Final,
                 wait_final_outcome_timeout_sec: None,
             },
         )
@@ -127,7 +128,18 @@ pub async fn process_near_to_utxo_init_transfer_event(
             info!(
                 "Signed NEAR->{chain:?} input ({btc_pending_id_log}:{sign_index}): near_sign_tx_hash={tx_hash:?}"
             );
-            Ok(EventAction::Remove)
+
+            let signer = omni_connector
+                .near_bridge_client()
+                .and_then(near_bridge_client::NearBridgeClient::account_id)?;
+
+            Ok(utils::near::resolve_tx_action(
+                jsonrpc_client,
+                tx_hash,
+                signer,
+                &["Request has timed out."],
+            )
+            .await)
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
