@@ -206,13 +206,11 @@ pub async fn process_fin_transfer_event(
             RpcQueryError::ContractExecutionError { vm_error, .. },
         )),
     ))) = omni_connector.near_get_transfer_message(transfer_id).await
+        && (vm_error.contains("The transfer does not exist")
+            || vm_error.contains(&omni_types::errors::BridgeError::TransferNotExist.as_ref()))
     {
-        if vm_error.contains("The transfer does not exist")
-            || vm_error.contains(&omni_types::errors::BridgeError::TransferNotExist.as_ref())
-        {
-            info!("No fee to claim for Starknet FinTransfer ({transfer_id:?})");
-            return Ok(EventAction::Remove);
-        }
+        info!("No fee to claim for Starknet FinTransfer ({transfer_id:?})");
+        return Ok(EventAction::Remove);
     }
 
     let nonce = near_nonce
