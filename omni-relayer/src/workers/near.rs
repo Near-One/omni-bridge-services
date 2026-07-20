@@ -411,8 +411,8 @@ pub async fn process_transfer_to_utxo_event(
                     transfer_message.origin_nonce
                 );
                 return Ok((EventAction::Retry, Vec::new()));
-            } else if let BridgeSdkError::UtxoClientError(ref msg) = err
-                && msg == "Failed to estimate fee_rate"
+            } else if let BridgeSdkError::UtxoRpcError(ref msg) = err
+                && msg.starts_with("Failed to estimate fee_rate")
             {
                 warn!(
                     "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
@@ -420,6 +420,17 @@ pub async fn process_transfer_to_utxo_event(
                     transfer_message.origin_nonce
                 );
                 return Ok((EventAction::Retry, Vec::new()));
+            }
+
+            if let BridgeSdkError::InvalidArgument(ref msg) = err
+                && msg == "Amount is smaller than `fee`"
+            {
+                warn!(
+                    "Amount below withdraw_fee for {:?} transfer ({}), removing",
+                    transfer_message.recipient.get_chain(),
+                    transfer_message.origin_nonce
+                );
+                return Ok((EventAction::Remove, Vec::new()));
             }
 
             anyhow::bail!(
@@ -492,7 +503,10 @@ pub async fn process_sign_transfer_event(
         {
             Ok(transfer_message) => transfer_message,
             Err(err) => {
-                if err.to_string().contains("The transfer does not exist") {
+                let err_str = err.to_string();
+                if err_str.contains("The transfer does not exist")
+                    || err_str.contains(&omni_types::errors::BridgeError::TransferNotExist.as_ref())
+                {
                     warn!(
                         "Transfer does not exist (fee=0 or already finalized), removing: {:?}",
                         message_payload.transfer_id
@@ -689,6 +703,18 @@ pub async fn process_sign_transfer_event(
                 }
 
                 warn!("Solana instruction error (non-PAUSED custom code), removing: {err:?}");
+                return Ok(EventAction::Remove);
+            }
+
+            if let BridgeSdkError::StarknetOtherError(ref reason) = err
+                && reason.contains("Transaction reverted:")
+            {
+                warn!("Starknet fin_transfer reverted (non-retryable), removing: {reason}");
+                return Ok(EventAction::Remove);
+            }
+
+            if let BridgeSdkError::InvalidArgument(ref reason) = err {
+                warn!("Non-retryable invalid argument, removing: {reason}");
                 return Ok(EventAction::Remove);
             }
 

@@ -207,8 +207,9 @@ pub async fn process_fin_transfer_event(
         )),
     ))) = omni_connector.near_get_transfer_message(transfer_id).await
     {
-        // TODO: refactor when enum errors will become available on mainnet
-        if vm_error.contains("The transfer does not exist") {
+        if vm_error.contains("The transfer does not exist")
+            || vm_error.contains(&omni_types::errors::BridgeError::TransferNotExist.as_ref())
+        {
             info!("No fee to claim for Starknet FinTransfer ({transfer_id:?})");
             return Ok(EventAction::Remove);
         }
