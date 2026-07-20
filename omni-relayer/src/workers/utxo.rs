@@ -70,7 +70,9 @@ pub async fn process_near_to_utxo_init_transfer_event(
     }
 
     let context = format!("({btc_pending_id}:{sign_index})");
-    if let Some(action) = super::near::check_kyt(&OmniAddress::Near(sender), &context).await {
+    let sender = OmniAddress::Near(sender);
+    if let Some(action) = utils::validation::validate_sender(config, &sender, chain, &context).await
+    {
         return Ok(action);
     }
 
@@ -117,7 +119,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
             sign_index,
             TransactionOptions {
                 nonce,
-                wait_until: near_primitives::views::TxExecutionStatus::Included,
+                wait_until: near_primitives::views::TxExecutionStatus::Final,
                 wait_final_outcome_timeout_sec: None,
             },
         )
@@ -132,6 +134,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
                 tx_hash,
                 signer,
                 &[
+                    "Request has timed out.",
                     "not exist",
                     "Previous btc tx has not been signed",
                     "Too many pending sign transactions",
@@ -193,7 +196,8 @@ pub async fn process_utxo_to_near_init_transfer_event(
         };
 
         let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
-        if let Some(action) = super::near::check_kyt_senders(&input_addresses, &context).await {
+        if let Some(action) = utils::validation::check_kyt_senders(&input_addresses, &context).await
+        {
             return Ok(action);
         }
     }
@@ -401,6 +405,13 @@ pub async fn process_confirmed_tx_hash(
         .await
     {
         Ok(info) => info,
+        Err(BridgeSdkError::InvalidArgument(err)) if err == "BTC pending info not found" => {
+            anyhow::bail!(
+                "BTC pending info is not found for {} ({:?})",
+                confirmed_tx_hash.btc_tx_hash,
+                confirmed_tx_hash.chain,
+            );
+        }
         Err(err) => {
             warn!(
                 "Failed to fetch BTC pending info for {} ({:?}), retrying: {err:?}",

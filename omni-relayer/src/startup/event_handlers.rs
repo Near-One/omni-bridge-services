@@ -160,6 +160,11 @@ pub(super) async fn handle_transaction_event(
     origin: OmniTransactionOrigin,
     event: OmniTransactionEvent,
 ) -> Result<()> {
+    let span = tracing::Span::current();
+    span.record("transfer_id", tracing::field::display(&unified_transfer_id));
+    span.record("kind", <&str>::from(&event.transfer_message));
+    span.record("tx", origin_transaction_id.as_str());
+
     if config.bridge_indexer.is_whitelist_active()
         && !is_whitelisted_transaction_event(
             config,
@@ -222,6 +227,7 @@ pub(super) async fn handle_transaction_event(
             info!("Received NearUtxoTransferMessage: {:?}", event.transfer_id);
 
             if let Some(new_transfer_id) = new_transfer_id {
+                span.record("new_transfer_id", tracing::field::display(&new_transfer_id));
                 let utxo_key = utils::redis::composite_key(&[
                     &origin_transaction_id,
                     &utxo_transfer_message.utxo_id.to_string(),
@@ -367,6 +373,7 @@ pub(super) async fn handle_transaction_event(
                             origin_chain: chain_kind,
                             origin_nonce: log.origin_nonce,
                         },
+                        sender: init_transfer.sender.clone(),
                         recipient: log.recipient,
                         fee: Fee {
                             fee: log.fee,
@@ -632,6 +639,10 @@ pub(super) async fn handle_transaction_event(
             is_active_management,
             ..
         } => {
+            if let Some(new_transfer_id) = new_transfer_id {
+                span.record("new_transfer_id", tracing::field::display(new_transfer_id));
+            }
+
             let OmniTransactionOrigin::NearReceipt {
                 block_timestamp_nanosec,
                 ..
@@ -660,41 +671,34 @@ pub(super) async fn handle_transaction_event(
             if config.is_signing_utxo_transaction_enabled(destination_chain) {
                 let is_active_management = is_active_management.unwrap_or(false);
 
-                if is_active_management || sender == &config.near.omni_bridge_id {
+                info!(
+                    "Received TransferNearToUtxo to {destination_chain:?}: {origin_transaction_id} (is_active_management={is_active_management}, sender={sender}, utxo_id={})",
+                    utxo_id.tx_hash
+                );
+
+                for sign_index in 0..utxo_count {
                     info!(
-                        "Received TransferNearToUtxo to {destination_chain:?}: {origin_transaction_id} (is_active_management={is_active_management}, utxo_id={})",
+                        "Received sign index {sign_index} for BTC pending ID: {}",
                         utxo_id.tx_hash
                     );
 
-                    for sign_index in 0..utxo_count {
-                        info!(
-                            "Received sign index {sign_index} for BTC pending ID: {}",
-                            utxo_id.tx_hash
-                        );
+                    let key = format!("{}:{sign_index}", utxo_id.tx_hash);
 
-                        let key = format!("{}:{sign_index}", utxo_id.tx_hash);
-
-                        add_event(
-                            config,
-                            redis_connection_manager,
-                            nats,
-                            &key,
-                            ChainKind::Near,
-                            workers::Transfer::NearToUtxo {
-                                chain: destination_chain,
-                                btc_pending_id: utxo_id.tx_hash.clone(),
-                                sign_index,
-                                sender: sender.clone(),
-                                creation_timestamp,
-                            },
-                        )
-                        .await;
-                    }
-                } else {
-                    info!(
-                        "Skipping TransferNearToUtxo sign for {destination_chain:?} ({}): sender {sender} is not omni-bridge",
-                        utxo_id.tx_hash
-                    );
+                    add_event(
+                        config,
+                        redis_connection_manager,
+                        nats,
+                        &key,
+                        ChainKind::Near,
+                        workers::Transfer::NearToUtxo {
+                            chain: destination_chain,
+                            btc_pending_id: utxo_id.tx_hash.clone(),
+                            sign_index,
+                            sender: sender.clone(),
+                            creation_timestamp,
+                        },
+                    )
+                    .await;
                 }
             }
         }

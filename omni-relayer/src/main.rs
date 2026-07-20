@@ -2,15 +2,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use config::Network;
-use near_sdk::base64::{Engine, engine::general_purpose};
 use omni_types::ChainKind;
-use reqwest::Url;
 use tracing::{error, info, warn};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[allow(dead_code)]
 mod config;
+mod json_logging;
 mod startup;
 mod types;
 mod utils;
@@ -55,52 +53,14 @@ struct CliArgs {
     start_timestamp: Option<u32>,
 }
 
-fn init_logging(network: Network) -> Result<()> {
-    let fmt_layer = fmt::Layer::default()
-        .with_timer(fmt::time::ChronoLocal::rfc_3339())
-        .with_target(false);
+fn init_logging() -> Result<()> {
     let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let grafana_loki_url = std::env::var("GRAFANA_LOKI_URL").ok();
-    let grafana_loki_user = std::env::var("GRAFANA_LOKI_USER").ok();
-    let grafana_api_key = std::env::var("GRAFANA_CLOUD_API_KEY").ok();
-
-    if let (Some(url), Some(user), Some(key)) =
-        (grafana_loki_url, grafana_loki_user, grafana_api_key)
-    {
-        let basic = format!("{user}:{key}");
-        let encoded = general_purpose::STANDARD.encode(basic);
-
-        let base = Url::parse(&url).context("Failed to parse `GRAFANA_LOKI_URL` as a valid URL")?;
-
-        let (loki_layer, loki_task) = tracing_loki::builder()
-            .label("app", format!("omni-relayer-{network}"))?
-            .http_header("Authorization", format!("Basic {encoded}"))?
-            .build_url(base)?;
-
-        tracing_subscriber::registry()
-            .with(filter_layer)
-            .with(fmt_layer)
-            .with(loki_layer)
-            .try_init()
-            .context("failed to initialize tracing subscriber with Loki")?;
-
-        tokio::spawn(loki_task);
-
-        info!("Loki logging enabled");
-    } else {
-        tracing_subscriber::registry()
-            .with(filter_layer)
-            .with(fmt_layer)
-            .try_init()
-            .context("failed to initialize basic tracing subscriber")?;
-
-        warn!(
-            "Running without Loki due to missing one of `GRAFANA_LOKI_URL`, `GRAFANA_LOKI_USER` or `GRAFANA_CLOUD_API_KEY` environment variables"
-        );
-    }
-
-    Ok(())
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(json_logging::JsonLogger)
+        .try_init()
+        .context("failed to initialize tracing subscriber")
 }
 
 async fn build_redis_connection_manager(
@@ -135,7 +95,7 @@ async fn main() -> Result<()> {
         .context("Failed to parse config file")?,
     );
 
-    init_logging(config.near.network).context("Failed to initialize logging")?;
+    init_logging().context("Failed to initialize logging")?;
 
     info!(
         "Starting omni-relayer v{} on {}",
@@ -156,6 +116,18 @@ async fn main() -> Result<()> {
         }
         (true, false) => {
             warn!("KYT checks disabled: `KYT_API_KEY` env var is not set");
+        }
+    }
+
+    let restricted_destinations = config.restricted_destination_chains();
+    if restricted_destinations.is_empty() {
+        info!("Sender allowlist inactive (all senders allowed)");
+    } else {
+        info!("Sender allowlist active for destination chains: {restricted_destinations:?}");
+        if restricted_destinations.contains(&ChainKind::Near) {
+            warn!(
+                "Sender allowlist restricts destination NEAR, but the UTXO->NEAR path cannot enforce it (the sender is not available in that event); those senders are NOT filtered"
+            );
         }
     }
 

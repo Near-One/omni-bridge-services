@@ -1,0 +1,173 @@
+[[routes]]
+prefix = "/eth"
+upstreams = [
+  { url = "https://rpc.ankr.com/eth/${ANKR_API_KEY}" },
+  { url = "https://mainnet.infura.io/v3/${INFURA_API_KEY}" },
+]
+failover = { status_codes = [500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/eth-beacon"
+upstreams = [
+  { url = "https://rpc.ankr.com/premium-http/eth_beacon/${ANKR_API_KEY}" },
+  { url = "http://testing.mainnet.beacon-api.nimbus.team" },
+  { url = "http://unstable.mainnet.beacon-api.nimbus.team" },
+  { url = "https://lodestar-mainnet.chainsafe.io" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504], failure_threshold = 1, window_secs = 300 }
+
+[[routes]]
+prefix = "/arb"
+upstreams = [
+  { url = "https://arbitrum-mainnet.infura.io/v3/${INFURA_API_KEY}" },
+  { url = "https://rpc.ankr.com/arbitrum/${ANKR_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/base"
+upstreams = [
+  { url = "https://base-mainnet.infura.io/v3/${INFURA_API_KEY}" },
+  { url = "https://rpc.ankr.com/base/${ANKR_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/bnb"
+upstreams = [
+  { url = "https://x-api-key:${TATUM_API_KEY}@bsc-mainnet.gateway.tatum.io" },
+  { url = "https://rpc.ankr.com/bsc/${ANKR_API_KEY}" },
+  { url = "https://bsc-mainnet.infura.io/v3/${INFURA_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/pol"
+upstreams = [
+  { url = "https://polygon-mainnet.infura.io/v3/${INFURA_API_KEY}" },
+  { url = "https://rpc.ankr.com/polygon/${ANKR_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/hlevm"
+upstreams = [
+  { url = "https://hyperevm-mainnet.infura.io/v3/${INFURA_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/abs"
+upstreams = [
+  { url = "https://api.mainnet.abs.xyz", timeout_ms = 20000 },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/aurora"
+upstreams = [
+  { url = "https://mainnet.aurora.dev" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/near"
+upstreams = [
+  { url = "https://rpc.mainnet.fastnear.com?apiKey=${FASTNEAR_API_KEY}", timeout_ms = 20000 },
+  { url = "https://rpc.ankr.com/near/${ANKR_API_KEY}", timeout_ms = 20000 },
+  { url = "https://x-api-key:${TATUM_API_KEY}@near-mainnet.gateway.tatum.io/", timeout_ms = 20000 },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/solana"
+upstreams = [
+  { url = "https://nameless-prettiest-cloud.solana-mainnet.quiknode.pro/${QUICKNODE_API_KEY}", timeout_ms = 20000 },
+  { url = "https://rpc.ankr.com/solana/${ANKR_API_KEY}", timeout_ms = 20000 },
+  { url = "https://x-api-key:${TATUM_API_KEY}@solana-mainnet.gateway.tatum.io", timeout_ms = 20000 },
+  { url = "https://api.mainnet-beta.solana.com", timeout_ms = 20000 },
+]
+failover = { status_codes = [429, 500, 502, 503, 504], rpc_codes = [-32005] }
+
+[[routes]]
+prefix = "/starknet"
+upstreams = [
+  { url = "https://starknet-rpc.publicnode.com", timeout_ms = 20000 },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/btc"
+upstreams = [
+  { url = "https://x-api-key:${TATUM_API_KEY}@bitcoin-mainnet.gateway.tatum.io" },
+  { url = "https://rpc.ankr.com/btc/${ANKR_API_KEY}" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/zcash"
+upstreams = [
+  { url = "https://x-api-key:${TATUM_API_KEY}@zcash-mainnet-zebrad.gateway.tatum.io" },
+]
+failover = { status_codes = [429, 500, 502, 503, 504] }
+
+[[routes]]
+prefix = "/ws/eth"
+upstreams = [
+  { url = "wss://mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
+  { url = "wss://rpc.ankr.com/eth/ws/${ANKR_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/arb"
+upstreams = [
+  { url = "wss://arbitrum-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
+  { url = "wss://rpc.ankr.com/arbitrum/ws/${ANKR_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/base"
+upstreams = [
+  { url = "wss://base-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
+  { url = "wss://rpc.ankr.com/base/ws/${ANKR_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/bnb"
+upstreams = [
+  { url = "wss://bsc-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
+  { url = "wss://rpc.ankr.com/bsc/ws/${ANKR_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/pol"
+upstreams = [
+  { url = "wss://polygon-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
+  { url = "wss://rpc.ankr.com/polygon/ws/${ANKR_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/hlevm"
+upstreams = [
+  { url = "wss://hyperevm-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
+]
+
+[[routes]]
+prefix = "/ws/abs"
+upstreams = [
+  { url = "wss://api.mainnet.abs.xyz/ws" },
+]
+
+[[routes]]
+prefix = "/ws/aurora"
+upstreams = [
+  { url = "wss://mainnet.aurora.dev" },
+]
+
+[[routes]]
+prefix = "/ws/solana"
+upstreams = [
+  { url = "wss://nameless-prettiest-cloud.solana-mainnet.quiknode.pro/${QUICKNODE_API_KEY}" },
+  { url = "wss://rpc.ankr.com/solana/ws/${ANKR_API_KEY}" },
+  { url = "wss://api.mainnet-beta.solana.com" },
+]

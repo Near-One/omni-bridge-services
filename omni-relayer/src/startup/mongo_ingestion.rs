@@ -5,7 +5,7 @@ use bridge_indexer_types::documents_types::{OmniEvent, OmniEventData};
 use mongodb::{Client, Collection, change_stream::event::ResumeToken, options::ClientOptions};
 use omni_connector::OmniConnector;
 use tokio_stream::StreamExt;
-use tracing::{info, warn};
+use tracing::{Instrument, info, warn};
 
 use crate::{config, utils};
 
@@ -54,6 +54,13 @@ async fn watch_omni_events_collection(
                                 let omni_connector = omni_connector.clone();
 
                                 async move {
+                                    let span = tracing::info_span!(
+                                        "transfer",
+                                        transfer_id = tracing::field::Empty,
+                                        new_transfer_id = tracing::field::Empty,
+                                        kind = tracing::field::Empty,
+                                        tx = tracing::field::Empty,
+                                    );
                                     if let Err(err) = handle_transaction_event(
                                         &config,
                                         &mut redis_connection_manager,
@@ -64,6 +71,7 @@ async fn watch_omni_events_collection(
                                         event.origin,
                                         transaction_event,
                                     )
+                                    .instrument(span)
                                     .await
                                     {
                                         warn!("Failed to handle transaction event: {err:?}");

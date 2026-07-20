@@ -36,7 +36,8 @@ fn build_transfer_fee_url(
     url.query_pairs_mut()
         .append_pair("sender", &sender.to_string())
         .append_pair("recipient", &recipient.to_string())
-        .append_pair("token", &token.to_string());
+        .append_pair("token", &token.to_string())
+        .append_pair("skip_solana_cache", "true");
 
     Ok(url)
 }

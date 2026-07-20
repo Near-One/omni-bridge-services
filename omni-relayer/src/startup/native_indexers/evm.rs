@@ -315,6 +315,16 @@ async fn process_log(
         .await;
 
         if is_fast_relayer_enabled {
+            let Ok(sender) =
+                utils::evm::string_to_evm_omniaddress(chain_kind, &log.sender.to_string())
+            else {
+                warn!(
+                    "Failed to parse fast transfer sender as OmniAddress: {:?}",
+                    log.sender
+                );
+                return;
+            };
+
             let fast_key = utils::redis::composite_key(&["fast", &tx_hash_str, &log_index_str]);
 
             utils::redis::add_event(
@@ -331,6 +341,7 @@ async fn process_log(
                         origin_chain: chain_kind,
                         origin_nonce: log.origin_nonce,
                     },
+                    sender,
                     recipient,
                     fee: Fee {
                         fee: log.fee,

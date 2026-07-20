@@ -88,7 +88,7 @@ pub enum OmniTransactionOrigin {
     },
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, strum::IntoStaticStr)]
 pub enum OmniTransferMessage {
     NearFailedTransferMessage(omni_types::TransferMessage),
     NearTransferMessage(omni_types::TransferMessage),

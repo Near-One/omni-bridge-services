@@ -13,6 +13,11 @@ use crate::{
     },
 };
 
+#[tracing::instrument(
+    name = "utxo_lc_poller",
+    skip_all,
+    fields(chain = ?chain)
+)]
 pub async fn start_utxo_lc_poller(
     config: Arc<config::Config>,
     chain: ChainKind,
@@ -41,8 +46,8 @@ pub async fn start_utxo_lc_poller(
     );
 
     info!(
-        "Starting {chain:?} LC poller (interval={}s)",
-        utxo_config.lc_polling_interval_secs
+        interval_secs = utxo_config.lc_polling_interval_secs,
+        "Starting LC poller"
     );
 
     let utxo_set = utils::utxo::UtxoSet::global();
@@ -55,12 +60,12 @@ pub async fn start_utxo_lc_poller(
             Ok(lc) => match lc.get_last_block_number().await {
                 Ok(tip) => tip,
                 Err(err) => {
-                    warn!("Failed to query {chain:?} light client tip: {err:?}");
+                    warn!(?err, "Failed to query light client tip");
                     continue;
                 }
             },
             Err(err) => {
-                warn!("Failed to get {chain:?} light client: {err:?}");
+                warn!(?err, "Failed to get light client");
                 continue;
             }
         };
@@ -87,15 +92,16 @@ pub async fn start_utxo_lc_poller(
         }
 
         info!(
-            "{chain:?} LC tip {tip}; replaying {} pending event(s)",
-            ready.len()
+            block_height = tip,
+            pending = ready.len(),
+            "LC reached block height; replaying pending event(s)"
         );
 
         for pending in ready {
             let payload = match serde_json::to_vec(&pending.event) {
                 Ok(payload) => payload,
                 Err(err) => {
-                    warn!("Failed to serialize pending {chain:?} LC event: {err:?}");
+                    warn!(?err, "Failed to serialize pending LC event");
                     continue;
                 }
             };
@@ -104,7 +110,7 @@ pub async fn start_utxo_lc_poller(
                 .publish(subject.clone(), &pending.key, payload)
                 .await
             {
-                warn!("Failed to publish replayed {chain:?} LC event to NATS: {err:?}");
+                warn!(?err, "Failed to publish replayed LC event to NATS");
                 continue;
             }
 
