@@ -9,8 +9,10 @@ use near_bridge_client::TransactionOptions;
 use near_jsonrpc_client::{JsonRpcClient, errors::JsonRpcError};
 use near_primitives::types::AccountId;
 use near_rpc_client::NearRpcError;
-use solana_client::rpc_request::RpcResponseErrorData;
-use solana_rpc_client_api::{client_error::ErrorKind, request::RpcError};
+use solana_rpc_client_api::{
+    client_error::ErrorKind,
+    request::{RpcError, RpcResponseErrorData},
+};
 use solana_sdk::{instruction::InstructionError, pubkey::Pubkey, transaction::TransactionError};
 
 use omni_connector::OmniConnector;
@@ -709,13 +711,13 @@ pub async fn process_sign_transfer_event(
 
             if let BridgeSdkError::SolanaRpcError(ref client_error) = err
                 && let ErrorKind::RpcError(RpcError::RpcResponseError {
-                    data: RpcResponseErrorData::SendTransactionPreflightFailure(ref result),
+                    data: RpcResponseErrorData::SendTransactionPreflightFailure(result),
                     ..
-                }) = client_error.kind
+                }) = &*client_error.kind
                 && let Some(TransactionError::InstructionError(
                     _,
                     InstructionError::Custom(error_code),
-                )) = result.err
+                )) = result.err.clone().map(TransactionError::from)
             {
                 if error_code == PAUSED_ERROR {
                     warn!("Solana bridge is paused");

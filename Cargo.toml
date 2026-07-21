@@ -10,7 +10,7 @@ resolver = "2"
 [workspace.dependencies]
 omni-types = { git = "https://github.com/near-one/omni-bridge", package = "omni-types", rev = "f499d46c2d58869e4cbb5d19cff703ff7d2731d6" }
 
-# These patches mirror the ones in the bridge-sdk-rs workspace root (rev 1a73b50c). Cargo
+# These patches mirror the ones in the bridge-sdk-rs workspace root (rev 817059eb). Cargo
 # `[patch]` sections only apply from the consuming workspace root, so they do not transit
 # through git dependencies and must be replicated here for the dependency tree to resolve.
 # Keep them in sync with the bridge-sdk-rs rev used below.
@@ -28,7 +28,7 @@ rev = "475ef0ff77d45aebff93cb039d639250d82518a3"
 # patched bip32 0.6.0-pre.1; point at that vendored crate in the bridge-sdk-rs repo.
 [patch.crates-io.bip32]
 git = "https://github.com/Near-One/bridge-sdk-rs"
-rev = "1a73b50c8389a32592076955bf3793cb2261d71a"
+rev = "817059eb5a4bcd9b4a8a6c9cf7302ca064a106a5"
 
 # Config for 'dist'
 [workspace.metadata.dist]
