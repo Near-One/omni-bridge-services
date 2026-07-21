@@ -3,9 +3,14 @@ FROM rust:1.96.0-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y cmake && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
+# Per-image cache ids + sharing=locked: the release workflow builds several images
+# concurrently on a shared BuildKit builder. With the default (shared, target-derived)
+# cache id they contend on the same cargo git-db lock, which leaves a stale
+# `config.lock` and fails the next build ("failed to create locked file ...: File
+# exists"). Distinct ids isolate each image; `locked` serializes same-image builds.
+RUN --mount=type=cache,id=omni-proxy-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=omni-proxy-cargo-git,sharing=locked,target=/usr/local/cargo/git \
+    --mount=type=cache,id=omni-proxy-target,sharing=locked,target=/app/target \
     cargo build --release -p omni-proxy && \
     cp target/release/omni-proxy /tmp/
 
