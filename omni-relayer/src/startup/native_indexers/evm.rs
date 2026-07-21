@@ -85,7 +85,13 @@ pub async fn start_indexer(
         ChainKind::Abs => {
             extract_evm_config(config.abs.clone().context("Failed to get Abs config")?)?
         }
-        ChainKind::Near | ChainKind::Sol | ChainKind::Strk | ChainKind::Btc | ChainKind::Zcash => {
+        ChainKind::Near
+        | ChainKind::Sol
+        | ChainKind::Fogo
+        | ChainKind::Strk
+        | ChainKind::Aptos
+        | ChainKind::Btc
+        | ChainKind::Zcash => {
             anyhow::bail!("Unsupported chain kind: {chain_kind:?}")
         }
     };

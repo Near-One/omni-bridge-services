@@ -284,6 +284,7 @@ impl EvmNonceManagers {
             | ChainKind::Sol
             | ChainKind::Fogo
             | ChainKind::Strk
+            | ChainKind::Aptos
             | ChainKind::Btc
             | ChainKind::Zcash => {
                 anyhow::bail!("Unsupported chain kind: {chain_kind:?}")

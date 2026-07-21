@@ -487,6 +487,7 @@ async fn decode_instruction(
                         RetryableEvent::new(FinTransfer::Solana {
                             emitter: emitter.clone(),
                             sequence,
+                            chain_kind: omni_types::ChainKind::Sol,
                             transfer_id: None,
                             creation_timestamp: block_time,
                         }),
@@ -529,6 +530,7 @@ async fn decode_instruction(
                                 .context("Emitter account key is None")?
                                 .clone(),
                             sequence,
+                            chain_kind: omni_types::ChainKind::Sol,
                         }),
                     )
                     .await;
