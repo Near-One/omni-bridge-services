@@ -8,6 +8,8 @@ use tracing::warn;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const WAIT_TIME_MS: u32 = 2000;
 
+const MAX_KYT_BATCH_SIZE: usize = 500;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestedAction {
     None,
@@ -22,9 +24,9 @@ struct KytAddress {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct KytRequest {
+struct KytRequest<'a> {
     correlation_id: String,
-    addresses: Vec<KytAddress>,
+    addresses: &'a [KytAddress],
     wait_time_ms: u32,
 }
 
@@ -106,14 +108,23 @@ pub async fn check_senders(senders: &[OmniAddress]) -> Result<SuggestedAction> {
 
     let url = std::env::var("KYT_API_URL").context("KYT_API_URL env var is not set")?;
 
+    for batch in kyt_addresses.chunks(MAX_KYT_BATCH_SIZE) {
+        if screen_batch(&url, batch).await? == SuggestedAction::StopRelaying {
+            return Ok(SuggestedAction::StopRelaying);
+        }
+    }
+    Ok(SuggestedAction::None)
+}
+
+async fn screen_batch(url: &str, addresses: &[KytAddress]) -> Result<SuggestedAction> {
     let body = KytRequest {
         correlation_id: uuid::Uuid::new_v4().to_string(),
-        addresses: kyt_addresses,
+        addresses,
         wait_time_ms: WAIT_TIME_MS,
     };
 
     let raw = client()
-        .post(&url)
+        .post(url)
         .json(&body)
         .send()
         .await
@@ -121,12 +132,81 @@ pub async fn check_senders(senders: &[OmniAddress]) -> Result<SuggestedAction> {
         .text()
         .await
         .context("KYT response body read failed")?;
-    let resp: KytResponse = serde_json::from_str(&raw)
-        .with_context(|| format!("KYT response did not match expected schema. Raw body: {raw}"))?;
 
+    suggested_action_from_response(&raw)
+}
+
+fn suggested_action_from_response(raw: &str) -> Result<SuggestedAction> {
+    let resp: KytResponse = serde_json::from_str(raw)
+        .with_context(|| format!("KYT response did not match expected schema. Raw body: {raw}"))?;
     match resp.suggested_action.as_str() {
         "NONE" => Ok(SuggestedAction::None),
         "STOP_RELAYING" => Ok(SuggestedAction::StopRelaying),
         other => Err(anyhow!("Unexpected KYT suggestedAction: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggested_action_from_response_parses_none() {
+        assert_eq!(
+            suggested_action_from_response(r#"{"suggestedAction":"NONE"}"#).unwrap(),
+            SuggestedAction::None
+        );
+    }
+
+    #[test]
+    fn suggested_action_from_response_parses_stop_relaying() {
+        assert_eq!(
+            suggested_action_from_response(r#"{"suggestedAction":"STOP_RELAYING"}"#).unwrap(),
+            SuggestedAction::StopRelaying
+        );
+    }
+
+    #[test]
+    fn suggested_action_from_response_ignores_unknown_fields() {
+        assert_eq!(
+            suggested_action_from_response(
+                r#"{"suggestedAction":"NONE","correlationId":"x","extra":[1,2]}"#
+            )
+            .unwrap(),
+            SuggestedAction::None
+        );
+    }
+
+    #[test]
+    fn suggested_action_from_response_errors_on_unknown_action() {
+        assert!(suggested_action_from_response(r#"{"suggestedAction":"WAT"}"#).is_err());
+    }
+
+    #[test]
+    fn suggested_action_from_response_errors_on_malformed_body() {
+        assert!(suggested_action_from_response("not json").is_err());
+        assert!(suggested_action_from_response(r#"{"noAction":true}"#).is_err());
+    }
+
+    #[test]
+    fn kyt_batches_are_capped_at_max_kyt_batch_size() {
+        assert_eq!(MAX_KYT_BATCH_SIZE, 500);
+        let addrs: Vec<u32> = (0..1399).collect();
+        let chunks: Vec<&[u32]> = addrs.chunks(MAX_KYT_BATCH_SIZE).collect();
+        // 1399 -> 500 + 500 + 399
+        assert_eq!(chunks.len(), 3);
+        assert!(
+            chunks
+                .iter()
+                .all(|c| !c.is_empty() && c.len() <= MAX_KYT_BATCH_SIZE)
+        );
+        assert_eq!(chunks.iter().map(|c| c.len()).sum::<usize>(), addrs.len());
+        assert_eq!(chunks.last().unwrap().len(), 399);
+    }
+
+    #[tokio::test]
+    async fn check_senders_returns_none_for_empty_input() {
+        // Empty input must short-circuit before any env read or network call.
+        assert_eq!(check_senders(&[]).await.unwrap(), SuggestedAction::None);
     }
 }

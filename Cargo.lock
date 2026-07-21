@@ -1007,7 +1007,7 @@ checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 [[package]]
 name = "aptos-bridge-client"
 version = "0.1.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "bcs",
  "ed25519-dalek 2.2.0",
@@ -2286,23 +2286,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "bip0039"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "568b6890865156d9043af490d4c4081c385dd68ea10acd6ca15733d511e6b51c"
-dependencies = [
- "hmac 0.12.1",
- "pbkdf2 0.12.2",
- "rand 0.8.5",
- "sha2 0.10.9",
- "unicode-normalization",
- "zeroize",
-]
-
-[[package]]
 name = "bip32"
 version = "0.6.0-pre.1"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "bs58 0.5.1",
  "hmac 0.13.0",
@@ -2641,7 +2627,7 @@ dependencies = [
 [[package]]
 name = "bridge-connector-common"
 version = "0.3.5"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "alloy",
  "aptos-bridge-client",
@@ -3296,15 +3282,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
-name = "core2"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "239fa3ae9b63c2dc74bd3fa852d4792b8b305ae64eeede946265b6af62f1fff3"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "corez"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3662,7 +3639,7 @@ dependencies = [
 [[package]]
 name = "crypto-utils"
 version = "0.2.2"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "crypto-shared 0.1.0 (git+https://github.com/near-one/mpc?rev=463172481597ee09b12020b72c61d6b01da7b167)",
  "k256",
@@ -4429,11 +4406,11 @@ dependencies = [
 
 [[package]]
 name = "equihash"
-version = "0.2.2"
-source = "git+https://github.com/Near-One/librustzcash?rev=40adcfba40361c4c5ca140475d6a4201748215db#40adcfba40361c4c5ca140475d6a4201748215db"
+version = "0.3.0"
+source = "git+https://github.com/Near-One/librustzcash?rev=3dbb28e2254b309e3097a7995aa6dcf5a6d459c1#3dbb28e2254b309e3097a7995aa6dcf5a6d459c1"
 dependencies = [
  "blake2b_simd",
- "core2",
+ "corez",
 ]
 
 [[package]]
@@ -4477,7 +4454,7 @@ dependencies = [
 [[package]]
 name = "eth-proof"
 version = "0.2.2"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "borsh 1.6.1",
  "cita_trie",
@@ -4577,7 +4554,7 @@ dependencies = [
 [[package]]
 name = "evm-bridge-client"
 version = "0.3.7"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "alloy",
  "borsh 1.6.1",
@@ -4601,7 +4578,7 @@ dependencies = [
 [[package]]
 name = "f4jumble"
 version = "0.1.1"
-source = "git+https://github.com/Near-One/librustzcash?rev=40adcfba40361c4c5ca140475d6a4201748215db#40adcfba40361c4c5ca140475d6a4201748215db"
+source = "git+https://github.com/Near-One/librustzcash?rev=3dbb28e2254b309e3097a7995aa6dcf5a6d459c1#3dbb28e2254b309e3097a7995aa6dcf5a6d459c1"
 dependencies = [
  "blake2b_simd",
 ]
@@ -5157,9 +5134,9 @@ dependencies = [
 
 [[package]]
 name = "halo2_gadgets"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45824ce0dd12e91ec0c68ebae2a7ed8ae19b70946624c849add59f1d1a62a143"
+checksum = "fb2a697cad929f706b7987fe804ad57d43622cd37463ba7e4d662a926fdcfea3"
 dependencies = [
  "arrayvec",
  "bitvec",
@@ -5682,7 +5659,7 @@ dependencies = [
 [[package]]
 name = "hypercore-bridge-client"
 version = "0.1.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "alloy",
  "hex",
@@ -6370,7 +6347,7 @@ dependencies = [
 [[package]]
 name = "light-client"
 version = "0.2.2"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "borsh 1.6.1",
  "bridge-connector-common",
@@ -6852,7 +6829,7 @@ dependencies = [
 [[package]]
 name = "near-bridge-client"
 version = "0.2.27"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "base64 0.21.7",
  "bitcoin",
@@ -7380,7 +7357,7 @@ dependencies = [
 [[package]]
 name = "near-rpc-client"
 version = "0.2.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "base64 0.22.1",
  "borsh 1.6.1",
@@ -7964,11 +7941,10 @@ dependencies = [
 [[package]]
 name = "omni-connector"
 version = "0.4.3"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "alloy",
  "aptos-bridge-client",
- "bip0039",
  "bitcoin",
  "borsh 1.6.1",
  "bridge-connector-common",
@@ -8005,7 +7981,6 @@ dependencies = [
  "utxo-utils",
  "wormhole-bridge-client",
  "zcash_address",
- "zcash_keys",
  "zcash_primitives",
  "zcash_protocol",
  "zcash_transparent",
@@ -8041,7 +8016,7 @@ dependencies = [
 
 [[package]]
 name = "omni-relayer"
-version = "0.6.28"
+version = "0.6.31"
 dependencies = [
  "alloy",
  "anyhow",
@@ -8056,6 +8031,7 @@ dependencies = [
  "evm-bridge-client",
  "futures",
  "hex",
+ "hypercore-bridge-client",
  "light-client",
  "mongodb",
  "near-bridge-client",
@@ -8085,8 +8061,6 @@ dependencies = [
  "tokio-stream",
  "toml 0.9.11+spec-1.1.0",
  "tracing",
- "tracing-log",
- "tracing-loki",
  "tracing-subscriber",
  "utxo-bridge-client",
  "utxo-utils",
@@ -8370,8 +8344,9 @@ dependencies = [
 
 [[package]]
 name = "orchard"
-version = "0.12.0"
-source = "git+https://github.com/Near-One/orchard?rev=872a2192238f4085ce4c8dd2f0222bd6ce26fba7#872a2192238f4085ce4c8dd2f0222bd6ce26fba7"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04153a90834b939edd03c3e1b3ff15c9d305b9224c5e196faf3a490d21dfa299"
 dependencies = [
  "aes",
  "bitvec",
@@ -8512,17 +8487,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "password-hash"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
-dependencies = [
- "base64ct",
- "rand_core 0.6.4",
- "subtle",
-]
-
-[[package]]
 name = "pasta_curves"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8559,13 +8523,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
 dependencies = [
  "digest 0.10.7",
- "password-hash",
 ]
 
 [[package]]
 name = "pczt"
-version = "0.5.0"
-source = "git+https://github.com/Near-One/librustzcash?rev=40adcfba40361c4c5ca140475d6a4201748215db#40adcfba40361c4c5ca140475d6a4201748215db"
+version = "0.7.0"
+source = "git+https://github.com/Near-One/librustzcash?rev=3dbb28e2254b309e3097a7995aa6dcf5a6d459c1#3dbb28e2254b309e3097a7995aa6dcf5a6d459c1"
 dependencies = [
  "blake2b_simd",
  "bls12_381",
@@ -9262,7 +9225,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be769465445e8c1474e9c5dac2018218498557af32d9ed057325ec9a41ae81bf"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.14.0",
+ "itertools 0.11.0",
  "log",
  "multimap",
  "once_cell",
@@ -9282,7 +9245,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.11.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -10313,9 +10276,9 @@ dependencies = [
 
 [[package]]
 name = "sapling-crypto"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5433ab8c1cd52dfad3b903143e371d5bdd514ab7952f71414e6d66a5da8223cd"
+checksum = "2d70756ede56b5e4dd417979777bd87ddb83dfcbd0815dbf8175a9920537f8a0"
 dependencies = [
  "aes",
  "bellman",
@@ -10323,7 +10286,7 @@ dependencies = [
  "blake2b_simd",
  "blake2s_simd",
  "bls12_381",
- "core2",
+ "corez",
  "document-features",
  "ff 0.13.1",
  "fpe",
@@ -10515,15 +10478,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4387882333d3aa8cb20530a17c69a3752e97837832f34f6dccc760e715001d9"
 dependencies = [
  "cc",
-]
-
-[[package]]
-name = "secrecy"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
-dependencies = [
- "zeroize",
 ]
 
 [[package]]
@@ -11235,7 +11189,7 @@ dependencies = [
 [[package]]
 name = "solana-bridge-client"
 version = "0.2.10"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "base64 0.22.1",
  "bitvec",
@@ -13915,7 +13869,7 @@ dependencies = [
 [[package]]
 name = "starknet-bridge-client"
 version = "0.1.3"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "async-trait",
  "hex",
@@ -15256,8 +15210,8 @@ dependencies = [
 
 [[package]]
 name = "utxo-bridge-client"
-version = "0.2.7"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+version = "0.2.8"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "bitcoin",
  "bitcoincore-rpc",
@@ -15280,7 +15234,7 @@ dependencies = [
 [[package]]
 name = "utxo-utils"
 version = "0.4.1"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "bitcoin",
  "k256",
@@ -15885,7 +15839,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -16314,7 +16268,7 @@ checksum = "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5"
 [[package]]
 name = "wormhole-bridge-client"
 version = "0.2.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=0970f86cee7385c9032820df552af090aa80fb0d#0970f86cee7385c9032820df552af090aa80fb0d"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=1a73b50c8389a32592076955bf3793cb2261d71a#1a73b50c8389a32592076955bf3793cb2261d71a"
 dependencies = [
  "bridge-connector-common",
  "derive_builder",
@@ -16444,12 +16398,12 @@ dependencies = [
 
 [[package]]
 name = "zcash_address"
-version = "0.10.1"
-source = "git+https://github.com/Near-One/librustzcash?rev=40adcfba40361c4c5ca140475d6a4201748215db#40adcfba40361c4c5ca140475d6a4201748215db"
+version = "0.13.0-pre.0"
+source = "git+https://github.com/Near-One/librustzcash?rev=3dbb28e2254b309e3097a7995aa6dcf5a6d459c1#3dbb28e2254b309e3097a7995aa6dcf5a6d459c1"
 dependencies = [
  "bech32",
  "bs58 0.5.1",
- "core2",
+ "corez",
  "f4jumble",
  "zcash_encoding",
  "zcash_protocol",
@@ -16457,37 +16411,12 @@ dependencies = [
 
 [[package]]
 name = "zcash_encoding"
-version = "0.3.0"
-source = "git+https://github.com/Near-One/librustzcash?rev=40adcfba40361c4c5ca140475d6a4201748215db#40adcfba40361c4c5ca140475d6a4201748215db"
+version = "0.4.0"
+source = "git+https://github.com/Near-One/librustzcash?rev=3dbb28e2254b309e3097a7995aa6dcf5a6d459c1#3dbb28e2254b309e3097a7995aa6dcf5a6d459c1"
 dependencies = [
- "core2",
+ "corez",
  "hex",
  "nonempty",
-]
-
-[[package]]
-name = "zcash_keys"
-version = "0.12.0"
-source = "git+https://github.com/Near-One/librustzcash?rev=40adcfba40361c4c5ca140475d6a4201748215db#40adcfba40361c4c5ca140475d6a4201748215db"
-dependencies = [
- "bech32",
- "blake2b_simd",
- "bls12_381",
- "bs58 0.5.1",
- "core2",
- "document-features",
- "group 0.13.0",
- "memuse",
- "nonempty",
- "rand_core 0.6.4",
- "secrecy",
- "subtle",
- "tracing",
- "zcash_address",
- "zcash_encoding",
- "zcash_protocol",
- "zcash_transparent",
- "zip32",
 ]
 
 [[package]]
@@ -16505,18 +16434,13 @@ dependencies = [
 
 [[package]]
 name = "zcash_primitives"
-version = "0.26.1"
-source = "git+https://github.com/Near-One/librustzcash?rev=40adcfba40361c4c5ca140475d6a4201748215db#40adcfba40361c4c5ca140475d6a4201748215db"
+version = "0.29.0-pre.0"
+source = "git+https://github.com/Near-One/librustzcash?rev=3dbb28e2254b309e3097a7995aa6dcf5a6d459c1#3dbb28e2254b309e3097a7995aa6dcf5a6d459c1"
 dependencies = [
- "bip32",
  "blake2b_simd",
- "bs58 0.5.1",
- "core2",
+ "corez",
  "equihash",
  "ff 0.13.1",
- "fpe",
- "getset",
- "group 0.13.0",
  "hex",
  "incrementalmerkletree",
  "jubjub",
@@ -16524,31 +16448,24 @@ dependencies = [
  "nonempty",
  "orchard",
  "proptest",
- "rand 0.8.5",
  "rand_core 0.6.4",
  "redjubjub",
- "ripemd 0.1.3",
  "sapling-crypto",
  "secp256k1 0.29.1",
  "sha2 0.10.9",
- "subtle",
- "tracing",
- "zcash_address",
  "zcash_encoding",
  "zcash_note_encryption",
  "zcash_protocol",
  "zcash_script",
- "zcash_spec",
  "zcash_transparent",
- "zip32",
 ]
 
 [[package]]
 name = "zcash_protocol"
-version = "0.7.1"
-source = "git+https://github.com/Near-One/librustzcash?rev=40adcfba40361c4c5ca140475d6a4201748215db#40adcfba40361c4c5ca140475d6a4201748215db"
+version = "0.10.0-pre.0"
+source = "git+https://github.com/Near-One/librustzcash?rev=3dbb28e2254b309e3097a7995aa6dcf5a6d459c1#3dbb28e2254b309e3097a7995aa6dcf5a6d459c1"
 dependencies = [
- "core2",
+ "corez",
  "document-features",
  "hex",
  "incrementalmerkletree",
@@ -16560,9 +16477,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_script"
-version = "0.4.2"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bed6cf5b2b4361105d4ea06b2752f0c8af4641756c7fbc9858a80af186c234f"
+checksum = "2f872800287d118be71bdf6fe8c869c6a6ff6fb0a5762f68fb2af54c97edf0f2"
 dependencies = [
  "bip32",
  "bitflags 2.10.0",
@@ -16586,16 +16503,16 @@ dependencies = [
 
 [[package]]
 name = "zcash_transparent"
-version = "0.6.1"
-source = "git+https://github.com/Near-One/librustzcash?rev=40adcfba40361c4c5ca140475d6a4201748215db#40adcfba40361c4c5ca140475d6a4201748215db"
+version = "0.9.0-pre.0"
+source = "git+https://github.com/Near-One/librustzcash?rev=3dbb28e2254b309e3097a7995aa6dcf5a6d459c1#3dbb28e2254b309e3097a7995aa6dcf5a6d459c1"
 dependencies = [
  "bip32",
- "blake2b_simd",
  "bs58 0.5.1",
- "core2",
+ "corez",
  "document-features",
  "getset",
  "hex",
+ "nonempty",
  "proptest",
  "ripemd 0.1.3",
  "secp256k1 0.29.1",
@@ -16762,3 +16679,8 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "orchard"
+version = "0.15.0-pre.2"
+source = "git+https://github.com/zcash/orchard?rev=475ef0ff77d45aebff93cb039d639250d82518a3#475ef0ff77d45aebff93cb039d639250d82518a3"

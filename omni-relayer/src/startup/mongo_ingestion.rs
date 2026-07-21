@@ -57,6 +57,7 @@ async fn watch_omni_events_collection(
                                     let span = tracing::info_span!(
                                         "transfer",
                                         transfer_id = tracing::field::Empty,
+                                        new_transfer_id = tracing::field::Empty,
                                         kind = tracing::field::Empty,
                                         tx = tracing::field::Empty,
                                     );

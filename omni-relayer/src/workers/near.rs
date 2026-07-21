@@ -383,6 +383,7 @@ pub async fn process_transfer_to_utxo_event(
                         "not exist",
                         "Previous btc tx has not been signed",
                         "Too many pending sign transactions",
+                        "Invalid expiry height",
                     ],
                 )
                 .await

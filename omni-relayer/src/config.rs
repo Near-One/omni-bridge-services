@@ -123,6 +123,7 @@ pub struct Config {
     pub bnb: Option<Evm>,
     pub pol: Option<Evm>,
     pub hyperevm: Option<Evm>,
+    pub hypercore: Option<HyperCore>,
     pub abs: Option<Evm>,
     pub solana: Option<Solana>,
     pub fogo: Option<Solana>,
@@ -473,6 +474,12 @@ pub struct Evm {
     #[serde(default)]
     pub error_selectors_to_remove: Vec<String>,
     pub fee_bumping: Option<FeeBumping>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HyperCore {
+    pub api_url: String,
+    pub signature_chain_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -232,6 +232,7 @@ pub(super) async fn handle_transaction_event(
             info!("Received NearUtxoTransferMessage: {:?}", event.transfer_id);
 
             if let Some(new_transfer_id) = new_transfer_id {
+                span.record("new_transfer_id", tracing::field::display(&new_transfer_id));
                 let utxo_key = utils::redis::composite_key(&[
                     &origin_transaction_id,
                     &utxo_transfer_message.utxo_id.to_string(),
@@ -710,6 +711,10 @@ pub(super) async fn handle_transaction_event(
             is_active_management,
             ..
         } => {
+            if let Some(new_transfer_id) = new_transfer_id {
+                span.record("new_transfer_id", tracing::field::display(new_transfer_id));
+            }
+
             let OmniTransactionOrigin::NearReceipt {
                 block_timestamp_nanosec,
                 ..
