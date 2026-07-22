@@ -4,9 +4,14 @@ WORKDIR /app
 # No system protoc needed: the build script uses the vendored protoc
 # (protoc-bin-vendored). No cmake needed either (no pingora/boringssl here).
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
+# Per-image cache ids + sharing=locked: the release workflow builds several images
+# concurrently on a shared BuildKit builder. With the default (shared, target-derived)
+# cache id they contend on the same cargo git-db lock, which leaves a stale
+# `config.lock` and fails the next build ("failed to create locked file ...: File
+# exists"). Distinct ids isolate each image; `locked` serializes same-image builds.
+RUN --mount=type=cache,id=wormhole-vaa-api-cargo-registry,sharing=locked,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=wormhole-vaa-api-cargo-git,sharing=locked,target=/usr/local/cargo/git \
+    --mount=type=cache,id=wormhole-vaa-api-target,sharing=locked,target=/app/target \
     cargo build --release --locked -p wormhole-vaa-api && \
     cp target/release/wormhole-vaa-api /tmp/
 
