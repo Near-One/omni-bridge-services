@@ -26,6 +26,7 @@ use omni_types::{
 
 use crate::{config, utils};
 
+mod aptos;
 mod evm;
 mod near;
 mod solana;
@@ -172,6 +173,18 @@ pub enum Transfer {
         #[serde(default)]
         creation_timestamp: i64,
     },
+    Aptos {
+        tx_hash: String,
+        sender: OmniAddress,
+        token: OmniAddress,
+        origin_nonce: u64,
+        amount: U128,
+        fee: Fee,
+        recipient: OmniAddress,
+        message: String,
+        #[serde(default)]
+        creation_timestamp: i64,
+    },
     Utxo {
         utxo_transfer_message: UtxoFinTransferMsg,
         new_transfer_id: UnifiedTransferId,
@@ -236,6 +249,11 @@ impl Transfer {
                 origin_nonce: *origin_nonce,
             }
             .into(),
+            Transfer::Aptos { origin_nonce, .. } => TransferId {
+                origin_chain: ChainKind::Aptos,
+                origin_nonce: *origin_nonce,
+            }
+            .into(),
             Transfer::Fast { transfer_id, .. } => (*transfer_id).into(),
             Transfer::UtxoToNear {
                 chain,
@@ -259,6 +277,7 @@ impl Transfer {
             Transfer::Evm { tx_hash, .. } => ("Transfer::Evm", Some(tx_hash.to_string())),
             Transfer::Solana { .. } => ("Transfer::Solana", None),
             Transfer::Starknet { tx_hash, .. } => ("Transfer::Starknet", Some(tx_hash.clone())),
+            Transfer::Aptos { tx_hash, .. } => ("Transfer::Aptos", Some(tx_hash.clone())),
             Transfer::Fast { tx_hash, .. } => ("Transfer::Fast", Some(tx_hash.clone())),
             Transfer::Utxo {
                 utxo_transfer_message,
@@ -305,15 +324,19 @@ pub enum FinTransfer {
         tx_hash: String,
         transfer_id: TransferId,
     },
+    Aptos {
+        tx_hash: String,
+        transfer_id: TransferId,
+    },
 }
 
 impl FinTransfer {
     /// The canonical transfer id for this fin-transfer event, if known.
     fn transfer_id(&self) -> Option<UnifiedTransferId> {
         match self {
-            FinTransfer::Evm { transfer_id, .. } | FinTransfer::Starknet { transfer_id, .. } => {
-                Some((*transfer_id).into())
-            }
+            FinTransfer::Evm { transfer_id, .. }
+            | FinTransfer::Starknet { transfer_id, .. }
+            | FinTransfer::Aptos { transfer_id, .. } => Some((*transfer_id).into()),
             FinTransfer::Solana { transfer_id, .. } => transfer_id.map(Into::into),
         }
     }
@@ -325,6 +348,7 @@ impl FinTransfer {
             FinTransfer::Starknet { tx_hash, .. } => {
                 ("FinTransfer::Starknet", Some(tx_hash.clone()))
             }
+            FinTransfer::Aptos { tx_hash, .. } => ("FinTransfer::Aptos", Some(tx_hash.clone())),
         };
         LogContext {
             transfer_id: self.transfer_id(),
@@ -352,6 +376,9 @@ pub enum DeployToken {
     Starknet {
         tx_hash: String,
     },
+    Aptos {
+        tx_hash: String,
+    },
 }
 
 impl DeployToken {
@@ -360,6 +387,7 @@ impl DeployToken {
             DeployToken::Evm { tx_hash, .. } => ("DeployToken::Evm", Some(tx_hash.to_string())),
             DeployToken::Solana { .. } => ("DeployToken::Solana", None),
             DeployToken::Starknet { tx_hash } => ("DeployToken::Starknet", Some(tx_hash.clone())),
+            DeployToken::Aptos { tx_hash } => ("DeployToken::Aptos", Some(tx_hash.clone())),
         };
         LogContext {
             transfer_id: None,
@@ -771,6 +799,31 @@ async fn process_message(
                     produced_events: Vec::new(),
                 }
             }
+            Transfer::Aptos { origin_nonce, .. } => {
+                let result = aptos::process_init_transfer_event(
+                    config,
+                    redis,
+                    jsonrpc_client,
+                    omni_connector,
+                    signer,
+                    transfer,
+                    near_omni_nonce.clone(),
+                )
+                .await;
+
+                let fee_key = serde_json::to_string(&TransferId {
+                    origin_nonce,
+                    origin_chain: ChainKind::Aptos,
+                })
+                .unwrap_or_default();
+
+                MessageResult {
+                    action: result,
+                    needs_evm_nonce_resync: false,
+                    fee_key: Some(fee_key),
+                    produced_events: Vec::new(),
+                }
+            }
             Transfer::Fast { .. } => {
                 let Some(near_fast_nonce) = near_fast_nonce.clone() else {
                     warn!("Fast transfer event but fast nonce manager not configured, removing");
@@ -874,6 +927,16 @@ async fn process_message(
                 )
                 .await
             }
+            FinTransfer::Aptos { .. } => {
+                aptos::process_fin_transfer_event(
+                    jsonrpc_client,
+                    omni_connector.clone(),
+                    signer,
+                    fin_transfer_event,
+                    near_omni_nonce,
+                )
+                .await
+            }
         };
         MessageResult {
             action: result,
@@ -911,6 +974,14 @@ async fn process_message(
                     jsonrpc_client,
                     omni_connector.clone(),
                     signer.clone(),
+                    deploy_token_event,
+                    near_omni_nonce.clone(),
+                )
+                .await
+            }
+            DeployToken::Aptos { .. } => {
+                aptos::process_deploy_token_event(
+                    omni_connector.clone(),
                     deploy_token_event,
                     near_omni_nonce.clone(),
                 )

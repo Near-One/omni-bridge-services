@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+use aptos_bridge_client::{AptosBridgeClient, AptosBridgeClientBuilder};
 use evm_bridge_client::{EvmBridgeClient, EvmBridgeClientBuilder};
 use hypercore_bridge_client::{
     HyperCoreBridgeClient, HyperCoreBridgeClientBuilder, HyperliquidNetwork,
@@ -10,8 +11,8 @@ use near_bridge_client::{NearBridgeClientBuilder, UTXOChainAccounts};
 use near_crypto::InMemorySigner;
 use omni_connector::{OmniConnector, OmniConnectorBuilder};
 use omni_types::{ChainKind, mpc_types::MpcFinality};
-use solana_bridge_client::{SolanaBridgeClient, SolanaBridgeClientBuilder};
-use solana_client::nonblocking::rpc_client::RpcClient;
+use solana_bridge_client::{SolanaBridgeClient, SolanaBridgeClientBuilder, SvmSigner};
+use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use starknet_bridge_client::{StarknetBridgeClient, StarknetBridgeClientBuilder};
 use tracing::{info, warn};
 use utxo_bridge_client::{AuthOptions, UTXOBridgeClient};
@@ -115,6 +116,7 @@ fn build_evm_bridge_client(
         | ChainKind::Sol
         | ChainKind::Fogo
         | ChainKind::Strk
+        | ChainKind::Aptos
         | ChainKind::Btc
         | ChainKind::Zcash => {
             unreachable!("Function `build_evm_bridge_client` supports only EVM chains")
@@ -152,18 +154,14 @@ fn build_svm_bridge_client(
 ) -> Result<Option<SolanaBridgeClient>> {
     svm.map(|svm| {
         SolanaBridgeClientBuilder::default()
-            .chain(Some(chain_kind))
             .client(Some(RpcClient::new(svm.rpc_http_url.clone())))
             .program_id(Some(svm.program_id.parse()?))
             .wormhole_core(Some(svm.wormhole_id.parse()?))
             .wormhole_post_message_shim_program_id(Some(svm.wormhole_post_message_shim_id.parse()?))
-            .wormhole_post_message_shim_event_authority(Some(
-                svm.wormhole_post_message_shim_event_authority.parse()?,
-            ))
-            .keypair(Some(crate::utils::solana::get_keypair(
+            .signer(Some(SvmSigner::Keypair(crate::utils::solana::get_keypair(
                 svm.credentials_path.as_ref(),
                 chain_kind,
-            )))
+            ))))
             .build()
             .with_context(|| format!("Failed to build {chain_kind:?} bridge client"))
     })
@@ -202,6 +200,37 @@ fn build_starknet_bridge_client(
         .transpose()
 }
 
+fn build_aptos_bridge_client(
+    config: &config::Config,
+    mpc_finalities: Option<&HashMap<ChainKind, MpcFinality>>,
+) -> Result<Option<AptosBridgeClient>> {
+    let aptos_finality = mpc_finalities
+        .as_ref()
+        .and_then(|mpc_finalities| mpc_finalities.get(&ChainKind::Aptos).cloned())
+        .and_then(|mpc_finality| {
+            if let MpcFinality::Aptos(aptos_finality) = mpc_finality {
+                Some(aptos_finality)
+            } else {
+                None
+            }
+        });
+
+    config
+        .aptos
+        .as_ref()
+        .map(|aptos| {
+            AptosBridgeClientBuilder::default()
+                .endpoint(Some(aptos.rpc_http_url.clone()))
+                .private_key(Some(crate::config::get_private_key(ChainKind::Aptos, None)))
+                .account_address(Some(crate::config::get_relayer_aptos_account_address()))
+                .omni_bridge_address(Some(aptos.omni_bridge_address.clone()))
+                .mpc_finality(aptos_finality)
+                .build()
+                .context("Failed to build AptosBridgeClient")
+        })
+        .transpose()
+}
+
 fn build_utxo_bridge_client<C: utxo_bridge_client::types::UTXOChain>(
     config: &config::Config,
     chain: ChainKind,
@@ -219,7 +248,8 @@ fn build_utxo_bridge_client<C: utxo_bridge_client::types::UTXOChain>(
         | ChainKind::Abs
         | ChainKind::Sol
         | ChainKind::Fogo
-        | ChainKind::Strk => {
+        | ChainKind::Strk
+        | ChainKind::Aptos => {
             anyhow::bail!("Chain {chain:?} is not supported for building UTXO bridge client")
         }
     };
@@ -283,7 +313,8 @@ fn build_light_client(config: &config::Config, chain: ChainKind) -> Result<Optio
         | ChainKind::Abs
         | ChainKind::Sol
         | ChainKind::Fogo
-        | ChainKind::Strk => {
+        | ChainKind::Strk
+        | ChainKind::Aptos => {
             anyhow::bail!("Chain {chain:?} is not supported for building light client")
         }
     };
@@ -333,6 +364,7 @@ pub async fn build_omni_connector(
     let solana_bridge_client = build_svm_bridge_client(config.solana.as_ref(), ChainKind::Sol)?;
     let fogo_bridge_client = build_svm_bridge_client(config.fogo.as_ref(), ChainKind::Fogo)?;
     let starknet_bridge_client = build_starknet_bridge_client(config, mpc_finalities.as_ref())?;
+    let aptos_bridge_client = build_aptos_bridge_client(config, mpc_finalities.as_ref())?;
     let btc_bridge_client = build_utxo_bridge_client(config, ChainKind::Btc)?;
     let zcash_bridge_client = build_utxo_bridge_client(config, ChainKind::Zcash)?;
     let wormhole_bridge_client = build_wormhole_bridge_client(config)?;
@@ -354,6 +386,7 @@ pub async fn build_omni_connector(
         .solana_bridge_client(solana_bridge_client)
         .fogo_bridge_client(fogo_bridge_client)
         .starknet_bridge_client(starknet_bridge_client)
+        .aptos_bridge_client(aptos_bridge_client)
         .wormhole_bridge_client(Some(wormhole_bridge_client))
         .btc_bridge_client(btc_bridge_client)
         .zcash_bridge_client(zcash_bridge_client)

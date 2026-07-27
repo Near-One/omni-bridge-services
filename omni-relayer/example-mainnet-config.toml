@@ -234,6 +234,10 @@ finalize_transfer_sol_discriminator = [104, 27, 121, 69, 3, 70, 217, 66]
 # chain_id = "SN_MAIN"
 # omni_bridge_address = ""
 
+# [aptos]
+# rpc_http_url = "https://fullnode.mainnet.aptoslabs.com/v1"
+# omni_bridge_address = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
 [btc]
 rpc_http_url = "https://x-api-key:TATUM_API_KEY@bitcoin-mainnet.gateway.tatum.io"
 light_client = "btc-client.bridge.near"

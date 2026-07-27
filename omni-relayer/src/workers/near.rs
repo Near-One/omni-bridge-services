@@ -9,8 +9,10 @@ use tracing::{info, warn};
 use near_bridge_client::TransactionOptions;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
-use solana_client::rpc_request::RpcResponseErrorData;
-use solana_rpc_client_api::{client_error::ErrorKind, request::RpcError};
+use solana_rpc_client_api::{
+    client_error::ErrorKind,
+    request::{RpcError, RpcResponseErrorData},
+};
 use solana_sdk::{instruction::InstructionError, pubkey::Pubkey, transaction::TransactionError};
 
 use omni_connector::OmniConnector;
@@ -618,6 +620,12 @@ pub async fn process_sign_transfer_event(
             },
             None,
         ),
+        ChainKind::Aptos => (
+            omni_connector::FinTransferArgs::AptosFinTransfer {
+                event: omni_bridge_event.clone(),
+            },
+            None,
+        ),
         ChainKind::Btc | ChainKind::Zcash => {
             warn!("BTC/ZEC not supported for fast transfer, removing: {omni_bridge_event:?}");
             return Ok(EventAction::Remove);
@@ -662,6 +670,7 @@ pub async fn process_sign_transfer_event(
                     | ChainKind::Sol
                     | ChainKind::Fogo
                     | ChainKind::Strk
+                    | ChainKind::Aptos
                     | ChainKind::Btc
                     | ChainKind::Zcash => {
                         anyhow::bail!(
@@ -715,11 +724,11 @@ pub async fn process_sign_transfer_event(
 
             if let BridgeSdkError::SolanaRpcError(ref client_error) = err
                 && let ErrorKind::RpcError(RpcError::RpcResponseError {
-                    data: RpcResponseErrorData::SendTransactionPreflightFailure(ref result),
+                    data: RpcResponseErrorData::SendTransactionPreflightFailure(result),
                     ..
-                }) = client_error.kind
+                }) = &*client_error.kind
             {
-                match &result.err {
+                match result.err.clone().map(TransactionError::from) {
                     // Program-level (Anchor / SPL / System-CPI) custom errors show
                     // up at preflight but reflect MUTABLE on-chain state — fee-payer
                     // or vault funding (System 0x1 = insufficient lamports), account
@@ -730,7 +739,7 @@ pub async fn process_sign_transfer_event(
                         _,
                         InstructionError::Custom(error_code),
                     )) => {
-                        if *error_code == PAUSED_ERROR {
+                        if error_code == PAUSED_ERROR {
                             warn!("Solana bridge is paused, retrying");
                         } else {
                             warn!(

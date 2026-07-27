@@ -1,0 +1,359 @@
+use std::{sync::Arc, time::Duration};
+
+use anyhow::{Context, Result};
+use bridge_connector_common::result::BridgeSdkError;
+use near_sdk::AccountId;
+use tracing::{info, warn};
+
+use near_bridge_client::{NearBridgeClient, TransactionOptions};
+use near_jsonrpc_client::{
+    JsonRpcClient,
+    errors::{JsonRpcError, JsonRpcServerError},
+    methods::query::RpcQueryError,
+};
+use near_primitives::views::TxExecutionStatus;
+use near_rpc_client::NearRpcError;
+
+use omni_connector::OmniConnector;
+use omni_types::{ChainKind, Fee, TransferId};
+
+use crate::{config, utils};
+
+use super::{DeployToken, EventAction, FinTransfer, Transfer};
+
+pub async fn process_init_transfer_event(
+    config: &config::Config,
+    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    jsonrpc_client: &JsonRpcClient,
+    omni_connector: Arc<OmniConnector>,
+    signer: AccountId,
+    transfer: Transfer,
+    near_nonce: Arc<utils::nonce::NonceManager>,
+) -> Result<EventAction> {
+    let Transfer::Aptos {
+        ref tx_hash,
+        ref sender,
+        ref recipient,
+        origin_nonce,
+        ref token,
+        amount: _,
+        ref fee,
+        creation_timestamp,
+        ..
+    } = transfer
+    else {
+        anyhow::bail!("Expected AptosInitTransfer, got: {transfer:?}");
+    };
+
+    let transfer_id = TransferId {
+        origin_chain: ChainKind::Aptos,
+        origin_nonce,
+    };
+
+    let current_timestamp = chrono::Utc::now().timestamp();
+    let effective_wait = config.kyt.delay_secs;
+    if current_timestamp < creation_timestamp + effective_wait {
+        let remaining = (creation_timestamp + effective_wait - current_timestamp).unsigned_abs();
+        return Ok(EventAction::RetryAfter(Duration::from_secs(remaining)));
+    }
+
+    info!(
+        "Processing Aptos InitTransfer ({:?}:{}): {tx_hash}",
+        transfer_id.origin_chain, transfer_id.origin_nonce
+    );
+
+    let context = format!(
+        "({:?}:{})",
+        transfer_id.origin_chain, transfer_id.origin_nonce
+    );
+    if let Some(action) =
+        utils::validation::validate_sender(config, sender, ChainKind::Near, &context).await
+    {
+        return Ok(action);
+    }
+
+    match omni_connector
+        .is_transfer_finalised(Some(ChainKind::Aptos), ChainKind::Near, origin_nonce)
+        .await
+    {
+        Ok(true) => anyhow::bail!("Transfer is already finalised: {transfer_id:?}"),
+        Ok(false) => {}
+        Err(err) => {
+            warn!("Failed to check if transfer is finalised: {err:?}");
+            return Ok(EventAction::Retry);
+        }
+    }
+
+    if config.is_bridge_api_enabled() {
+        let Ok(needed_fee) =
+            utils::bridge_api::TransferFee::get_transfer_fee(config, sender, recipient, token)
+                .await
+        else {
+            warn!("Failed to get transfer fee for transfer: {transfer:?}");
+            return Ok(EventAction::Retry);
+        };
+
+        let provided_fee = Fee {
+            fee: fee.fee,
+            native_fee: fee.native_fee,
+        };
+
+        if let Some(event_action) = needed_fee
+            .check_fee(
+                config,
+                redis_connection_manager,
+                &transfer,
+                transfer_id,
+                &provided_fee,
+            )
+            .await
+        {
+            return Ok(event_action);
+        }
+    }
+
+    let fee_recipient = omni_connector
+        .near_bridge_client()
+        .and_then(NearBridgeClient::account_id)
+        .context("Failed to get relayer account id")?;
+
+    let storage_deposit_actions = match utils::storage::get_storage_deposit_actions(
+        &omni_connector,
+        ChainKind::Aptos,
+        recipient,
+        &fee_recipient,
+        &token.to_string(),
+        fee.fee.0,
+        fee.native_fee.0,
+    )
+    .await
+    {
+        Ok(actions) => actions,
+        Err(err) => {
+            warn!("Failed to get storage deposit actions: {err}");
+            return Ok(EventAction::Retry);
+        }
+    };
+
+    let nonce = near_nonce
+        .reserve_nonce()
+        .context("Failed to reserve nonce for near transaction")?;
+
+    let fin_transfer_args = omni_connector::FinTransferArgs::NearFinTransferWithMpcProof {
+        chain_kind: ChainKind::Aptos,
+        destination_chain: recipient.get_chain(),
+        storage_deposit_actions,
+        tx_hash: tx_hash.clone(),
+        transaction_options: TransactionOptions {
+            nonce: Some(nonce),
+            wait_until: TxExecutionStatus::Included,
+            wait_final_outcome_timeout_sec: None,
+        },
+    };
+
+    match omni_connector.fin_transfer(fin_transfer_args).await {
+        Ok(tx_hash) => {
+            let Ok(crypto_hash) = tx_hash.parse() else {
+                warn!("Failed to parse {tx_hash} as CryptoHash");
+                return Ok(EventAction::Remove);
+            };
+
+            Ok(utils::near::resolve_tx_action(
+                jsonrpc_client,
+                crypto_hash,
+                signer,
+                &["Request has timed out."],
+            )
+            .await)
+        }
+        Err(err) => {
+            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
+                match near_rpc_error {
+                    NearRpcError::NonceError
+                    | NearRpcError::FinalizationError
+                    | NearRpcError::RpcBroadcastTxAsyncError(_)
+                    | NearRpcError::RpcQueryError(
+                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
+                    )
+                    | NearRpcError::RpcTransactionError(_) => {
+                        warn!(
+                            "Failed to finalize Aptos transfer ({:?}:{}), retrying: {near_rpc_error:?}",
+                            transfer_id.origin_chain, transfer_id.origin_nonce
+                        );
+                        return Ok(EventAction::Retry);
+                    }
+                    _ => {
+                        anyhow::bail!(
+                            "Failed to finalize Aptos transfer ({:?}:{}): {near_rpc_error:?}",
+                            transfer_id.origin_chain,
+                            transfer_id.origin_nonce
+                        );
+                    }
+                };
+            } else if let BridgeSdkError::MpcFinalityNotReached = err {
+                warn!(
+                    "MPC finality not reached yet for Aptos transfer ({:?}:{}), retrying",
+                    transfer_id.origin_chain, transfer_id.origin_nonce
+                );
+                return Ok(EventAction::Retry);
+            }
+
+            anyhow::bail!(
+                "Failed to finalize Aptos transfer ({:?}:{}): {err:?}",
+                transfer_id.origin_chain,
+                transfer_id.origin_nonce
+            );
+        }
+    }
+}
+
+pub async fn process_fin_transfer_event(
+    jsonrpc_client: &JsonRpcClient,
+    omni_connector: Arc<OmniConnector>,
+    signer: AccountId,
+    fin_transfer: FinTransfer,
+    near_nonce: Arc<utils::nonce::NonceManager>,
+) -> Result<EventAction> {
+    let FinTransfer::Aptos {
+        tx_hash,
+        transfer_id,
+    } = fin_transfer
+    else {
+        anyhow::bail!("Expected Aptos FinTransfer, got: {fin_transfer:?}");
+    };
+
+    info!(
+        "Processing Aptos FinTransfer ({:?}): {tx_hash}",
+        ChainKind::Aptos
+    );
+
+    if let Err(BridgeSdkError::NearRpcError(NearRpcError::RpcQueryError(
+        JsonRpcError::ServerError(JsonRpcServerError::HandlerError(
+            RpcQueryError::ContractExecutionError { vm_error, .. },
+        )),
+    ))) = omni_connector.near_get_transfer_message(transfer_id).await
+        && vm_error.contains("The transfer does not exist")
+    {
+        info!("No fee to claim for Aptos FinTransfer ({transfer_id:?})");
+        return Ok(EventAction::Remove);
+    }
+
+    let nonce = near_nonce
+        .reserve_nonce()
+        .context("Failed to reserve nonce for near transaction")?;
+
+    let claim_fee_args = omni_connector::ClaimFeeArgs::ClaimFeeWithMpcProofTx {
+        chain_kind: ChainKind::Aptos,
+        tx_hash: tx_hash.clone(),
+        transaction_options: TransactionOptions {
+            nonce: Some(nonce),
+            wait_until: TxExecutionStatus::Included,
+            wait_final_outcome_timeout_sec: None,
+        },
+    };
+
+    match omni_connector.claim_fee(claim_fee_args).await {
+        Ok(tx_hash) => {
+            let Ok(crypto_hash) = tx_hash.parse() else {
+                warn!("Failed to parse {tx_hash} as CryptoHash");
+                return Ok(EventAction::Remove);
+            };
+
+            Ok(utils::near::resolve_tx_action(
+                jsonrpc_client,
+                crypto_hash,
+                signer,
+                &["Request has timed out."],
+            )
+            .await)
+        }
+        Err(err) => {
+            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
+                match near_rpc_error {
+                    NearRpcError::NonceError
+                    | NearRpcError::FinalizationError
+                    | NearRpcError::RpcBroadcastTxAsyncError(_)
+                    | NearRpcError::RpcQueryError(
+                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
+                    )
+                    | NearRpcError::RpcTransactionError(_) => {
+                        warn!("Failed to claim Aptos fee, retrying: {near_rpc_error:?}");
+                        return Ok(EventAction::Retry);
+                    }
+                    _ => {
+                        anyhow::bail!("Failed to claim Aptos fee: {near_rpc_error:?}");
+                    }
+                };
+            } else if let BridgeSdkError::MpcFinalityNotReached = err {
+                warn!("MPC finality not reached yet, retrying Aptos claim fee");
+                return Ok(EventAction::Retry);
+            }
+
+            anyhow::bail!("Failed to claim Aptos fee: {err:?}");
+        }
+    }
+}
+
+pub async fn process_deploy_token_event(
+    omni_connector: Arc<OmniConnector>,
+    deploy_token_event: DeployToken,
+    near_nonce: Arc<utils::nonce::NonceManager>,
+) -> Result<EventAction> {
+    let DeployToken::Aptos { tx_hash } = deploy_token_event else {
+        anyhow::bail!("Expected Aptos DeployToken, got: {deploy_token_event:?}");
+    };
+
+    info!(
+        "Processing Aptos DeployToken ({:?}): {tx_hash}",
+        ChainKind::Aptos
+    );
+
+    let nonce = match near_nonce.reserve_nonce() {
+        Ok(nonce) => Some(nonce),
+        Err(err) => {
+            warn!("Failed to reserve nonce: {err:?}");
+            return Ok(EventAction::Retry);
+        }
+    };
+
+    let bind_token_args = omni_connector::BindTokenArgs::BindTokenWithMpcProofTx {
+        chain_kind: ChainKind::Aptos,
+        tx_hash,
+        transaction_options: TransactionOptions {
+            nonce,
+            wait_until: near_primitives::views::TxExecutionStatus::Included,
+            wait_final_outcome_timeout_sec: None,
+        },
+    };
+
+    match omni_connector.bind_token(bind_token_args).await {
+        Ok(near_tx_hash) => {
+            info!("Bound Aptos token: {near_tx_hash:?}");
+            Ok(EventAction::Remove)
+        }
+        Err(err) => {
+            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
+                match near_rpc_error {
+                    NearRpcError::NonceError
+                    | NearRpcError::FinalizationError
+                    | NearRpcError::RpcBroadcastTxAsyncError(_)
+                    | NearRpcError::RpcQueryError(
+                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
+                    )
+                    | NearRpcError::RpcTransactionError(_) => {
+                        warn!("Failed to bind Aptos token, retrying: {near_rpc_error:?}");
+                        return Ok(EventAction::Retry);
+                    }
+                    _ => {
+                        anyhow::bail!("Failed to bind Aptos token: {near_rpc_error:?}");
+                    }
+                };
+            } else if let BridgeSdkError::MpcFinalityNotReached = err {
+                warn!("MPC finality not reached yet, retrying Aptos bind token");
+                return Ok(EventAction::Retry);
+            }
+
+            anyhow::bail!("Failed to bind Aptos token: {err:?}");
+        }
+    }
+}
