@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use alloy::transports::RpcError as AlloyRpcError;
 use anyhow::{Context, Result};
-use bridge_connector_common::result::BridgeSdkError;
+use bridge_connector_common::result::{BridgeSdkError, EthRpcError};
 use near_sdk::json_types::U64;
 use tracing::{info, warn};
 
@@ -442,6 +443,7 @@ pub async fn process_transfer_to_utxo_event(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn process_sign_transfer_event(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
@@ -687,23 +689,94 @@ pub async fn process_sign_transfer_event(
                 return Ok(EventAction::Retry);
             }
 
+            if let BridgeSdkError::EthRpcError(ref eth_err) = err {
+                match eth_err {
+                    EthRpcError::ContractError(reason) => {
+                        warn!("EVM contract/ABI error (non-retryable), removing: {reason}");
+                        return Ok(EventAction::Remove);
+                    }
+                    EthRpcError::RpcError(AlloyRpcError::ErrorResp(payload))
+                        if !payload.is_retry_err()
+                            && (payload.code == 3
+                                || payload.message.contains("execution reverted")) =>
+                    {
+                        warn!(
+                            "EVM execution reverted at submission (non-retryable), removing: code={} msg={}",
+                            payload.code, payload.message
+                        );
+                        return Ok(EventAction::Remove);
+                    }
+                    _ => {
+                        warn!("EVM fin_transfer transient error, retrying: {err}");
+                        return Ok(EventAction::Retry);
+                    }
+                }
+            }
+
             if let BridgeSdkError::SolanaRpcError(ref client_error) = err
                 && let ErrorKind::RpcError(RpcError::RpcResponseError {
                     data: RpcResponseErrorData::SendTransactionPreflightFailure(ref result),
                     ..
                 }) = client_error.kind
-                && let Some(TransactionError::InstructionError(
-                    _,
-                    InstructionError::Custom(error_code),
-                )) = result.err
             {
-                if error_code == PAUSED_ERROR {
-                    warn!("Solana bridge is paused");
-                    return Ok(EventAction::Retry);
+                match &result.err {
+                    // Program-level (Anchor / SPL / System-CPI) custom errors show
+                    // up at preflight but reflect MUTABLE on-chain state — fee-payer
+                    // or vault funding (System 0x1 = insufficient lamports), account
+                    // / sysvar state (Anchor 3015 = AccountSysvarMismatch), the
+                    // paused flag, or CPI races — which can clear on a later attempt.
+                    // Retry rather than drop a recoverable transfer.
+                    Some(TransactionError::InstructionError(
+                        _,
+                        InstructionError::Custom(error_code),
+                    )) => {
+                        if *error_code == PAUSED_ERROR {
+                            warn!("Solana bridge is paused, retrying");
+                        } else {
+                            warn!(
+                                "Solana program custom error at preflight (retryable): {result:?}"
+                            );
+                        }
+                        return Ok(EventAction::Retry);
+                    }
+                    Some(
+                        TransactionError::BlockhashNotFound
+                        | TransactionError::AccountInUse
+                        | TransactionError::WouldExceedMaxBlockCostLimit
+                        | TransactionError::WouldExceedMaxAccountCostLimit
+                        | TransactionError::WouldExceedAccountDataBlockLimit
+                        | TransactionError::WouldExceedMaxVoteCostLimit
+                        | TransactionError::WouldExceedAccountDataTotalLimit
+                        | TransactionError::MaxLoadedAccountsDataSizeExceeded
+                        | TransactionError::ClusterMaintenance
+                        | TransactionError::ProgramCacheHitMaxLimit
+                        | TransactionError::ProgramExecutionTemporarilyRestricted { .. }
+                        | TransactionError::AccountBorrowOutstanding
+                        | TransactionError::CommitCancelled
+                        | TransactionError::ResanitizationNeeded,
+                    ) => {
+                        warn!("Solana preflight transient failure, retrying: {result:?}");
+                        return Ok(EventAction::Retry);
+                    }
+                    Some(
+                        TransactionError::InsufficientFundsForFee
+                        | TransactionError::InsufficientFundsForRent { .. }
+                        | TransactionError::AccountNotFound,
+                    ) => {
+                        warn!("Solana fee-payer funding issue, retrying: {result:?}");
+                        return Ok(EventAction::Retry);
+                    }
+                    None => {
+                        warn!(
+                            "Solana preflight failure without structured error, retrying: {result:?}"
+                        );
+                        return Ok(EventAction::Retry);
+                    }
+                    Some(_) => {
+                        warn!("Solana preflight deterministic failure, removing: {result:?}");
+                        return Ok(EventAction::Remove);
+                    }
                 }
-
-                warn!("Solana instruction error (non-PAUSED custom code), removing: {err:?}");
-                return Ok(EventAction::Remove);
             }
 
             if let BridgeSdkError::StarknetOtherError(ref reason) = err
