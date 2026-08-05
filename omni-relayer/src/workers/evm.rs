@@ -168,6 +168,18 @@ pub async fn process_init_transfer_event(
         return Ok(EventAction::Retry);
     };
 
+    if let Some(action) = utils::validation::check_shield_deposit(
+        chain_kind,
+        &OmniAddress::Near(token_id.clone()),
+        log.amount.0,
+        &utils::shield::bare_address(&sender),
+        &context,
+    )
+    .await
+    {
+        return Ok(action);
+    }
+
     let fast_transfer_args = FastTransfer {
         transfer_id: transfer_id.into(),
         token_id,

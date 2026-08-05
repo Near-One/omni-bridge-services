@@ -119,6 +119,24 @@ async fn main() -> Result<()> {
         }
     }
 
+    match (
+        std::env::var("SHIELD_API_URL").is_ok(),
+        std::env::var("SHIELD_API_TOKEN").is_ok(),
+    ) {
+        (true, true) => info!("SHIELD checks enabled"),
+        (false, false) => {
+            warn!(
+                "SHIELD checks disabled: `SHIELD_API_URL` and `SHIELD_API_TOKEN` env vars are not set"
+            );
+        }
+        (false, true) => {
+            warn!("SHIELD checks disabled: `SHIELD_API_URL` env var is not set");
+        }
+        (true, false) => {
+            warn!("SHIELD checks disabled: `SHIELD_API_TOKEN` env var is not set");
+        }
+    }
+
     let restricted_destinations = config.restricted_destination_chains();
     if restricted_destinations.is_empty() {
         info!("Sender allowlist inactive (all senders allowed)");

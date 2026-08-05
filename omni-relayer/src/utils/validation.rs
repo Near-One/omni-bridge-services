@@ -1,16 +1,18 @@
-//! Sender validation: the configurable per-destination sender allowlist and
-//! KYT screening applied before a transfer is relayed.
+//! Sender validation: the configurable per-destination sender allowlist,
+//! KYT screening, and SHIELD scope evaluation applied before a transfer is
+//! relayed.
 //!
 //! These checks are chain-agnostic (every relaying worker uses them), so they
 //! live in `utils` rather than inside any single chain worker.
 
-use omni_types::{ChainKind, OmniAddress};
-use tracing::warn;
+use omni_connector::OmniConnector;
+use omni_types::{ChainKind, OmniAddress, TransferMessage};
+use tracing::{info, warn};
 
 use crate::config;
 use crate::workers::EventAction;
 
-use super::kyt;
+use super::{kyt, shield};
 
 async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
     check_kyt_senders(std::slice::from_ref(sender), context).await
@@ -34,6 +36,123 @@ pub(crate) async fn check_kyt_senders(
         Ok(kyt::SuggestedAction::None) => None,
         Err(err) => {
             warn!("KYT check failed for {senders:?}: {err:?}, retrying");
+            Some(EventAction::Retry)
+        }
+    }
+}
+
+pub(crate) async fn check_shield_deposit(
+    origin_chain: ChainKind,
+    token: &OmniAddress,
+    amount: u128,
+    sender_address: &str,
+    context: &str,
+) -> Option<EventAction> {
+    if !config::Config::is_shield_enabled() {
+        return None;
+    }
+
+    if shield::blockchain_tag(origin_chain).is_none() {
+        warn!("SHIELD cannot evaluate deposit {context}: unsupported chain {origin_chain:?}");
+        return None;
+    }
+
+    map_shield_decision(
+        shield::evaluate_deposit(origin_chain, token, amount, sender_address).await,
+        "deposit",
+        context,
+    )
+}
+
+pub(crate) async fn check_shield_withdrawal(
+    destination_chain: ChainKind,
+    token: &OmniAddress,
+    amount: u128,
+    recipient: &str,
+    context: &str,
+) -> Option<EventAction> {
+    if !config::Config::is_shield_enabled() {
+        return None;
+    }
+
+    if shield::blockchain_tag(destination_chain).is_none() {
+        warn!(
+            "SHIELD cannot evaluate withdrawal {context}: unsupported chain {destination_chain:?}"
+        );
+        return None;
+    }
+
+    map_shield_decision(
+        shield::evaluate_withdrawal(destination_chain, token, amount, recipient).await,
+        "withdrawal",
+        context,
+    )
+}
+
+pub(crate) async fn check_shield_transfer_withdrawal(
+    omni_connector: &OmniConnector,
+    transfer_message: &TransferMessage,
+    context: &str,
+) -> Option<EventAction> {
+    if !config::Config::is_shield_enabled() {
+        return None;
+    }
+
+    let token_id = if let OmniAddress::Near(token_id) = transfer_message.token.clone() {
+        token_id
+    } else {
+        match omni_connector
+            .near_get_token_id(transfer_message.token.clone())
+            .await
+        {
+            Ok(token_id) => token_id,
+            Err(err) => {
+                warn!(
+                    "Failed to get token id for transfer {context}: {:?}: {err:?}",
+                    transfer_message.token
+                );
+                return Some(EventAction::Retry);
+            }
+        }
+    };
+
+    check_shield_withdrawal(
+        transfer_message.get_destination_chain(),
+        &OmniAddress::Near(token_id),
+        transfer_message.amount.0,
+        &shield::bare_address(&transfer_message.recipient),
+        context,
+    )
+    .await
+}
+
+fn map_shield_decision(
+    decision: anyhow::Result<shield::Decision>,
+    direction: &str,
+    context: &str,
+) -> Option<EventAction> {
+    match decision {
+        Ok(shield::Decision::Allow) => None,
+        Ok(shield::Decision::Block { reason }) => {
+            warn!("SHIELD blocked {direction} {context} (active incident: {reason}), retrying");
+            Some(EventAction::Retry)
+        }
+        Ok(shield::Decision::Delay { delay, reason }) => {
+            info!("SHIELD delayed {direction} {context} ({reason}), retrying");
+            Some(delay.map_or(EventAction::Retry, EventAction::RetryAfter))
+        }
+        Ok(shield::Decision::Approval { reason }) => {
+            warn!(
+                "SHIELD requires approval for {direction} {context} ({reason}); the relayer has no approval flow, retrying"
+            );
+            Some(EventAction::Retry)
+        }
+        Ok(shield::Decision::NotEnoughPermissions { reason }) => {
+            warn!("SHIELD grants are misconfigured for {direction} {context}: {reason}, retrying");
+            Some(EventAction::Retry)
+        }
+        Err(err) => {
+            warn!("SHIELD {direction} evaluation failed for {context}: {err:?}, retrying");
             Some(EventAction::Retry)
         }
     }

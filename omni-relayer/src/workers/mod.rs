@@ -172,6 +172,8 @@ pub enum Transfer {
         btc_tx_hash: String,
         vout: u32,
         deposit_msg: DepositMsg,
+        #[serde(default)]
+        amount: Option<U128>,
     },
     Fast {
         block_number: u64,

@@ -96,6 +96,16 @@ pub async fn process_transfer_event(
         return Ok((action, Vec::new()));
     }
 
+    if let Some(action) = utils::validation::check_shield_transfer_withdrawal(
+        &omni_connector,
+        &transfer_message,
+        &context,
+    )
+    .await
+    {
+        return Ok((action, Vec::new()));
+    }
+
     match omni_connector
         .is_transfer_finalised(
             Some(transfer_message.get_origin_chain()),
@@ -269,6 +279,16 @@ pub async fn process_transfer_to_utxo_event(
             transfer_message.recipient
         );
     };
+
+    if let Some(action) = utils::validation::check_shield_transfer_withdrawal(
+        &omni_connector,
+        transfer_message,
+        &context,
+    )
+    .await
+    {
+        return Ok((action, Vec::new()));
+    }
 
     let fee_rate = if destination_chain == ChainKind::Btc && config.is_bridge_api_enabled() {
         match utils::bridge_api::get_btc_fee_rate(config).await {
@@ -513,13 +533,13 @@ pub async fn process_sign_transfer_event(
         }
     }
 
-    // The sender allowlist is enforced on the finalization path too, not just at
-    // signing. The allowlist needs the transfer's sender, which is resolved from
-    // the transfer message (the sign payload does not carry it).
+    // The sender allowlist and SHIELD checks are enforced on the finalization
+    // path too, not just at signing. Both need data from the transfer message
+    // (the sign payload carries neither the sender nor the NEAR token id).
     let destination_chain = message_payload.recipient.get_chain();
     let allowlist_active = config.is_destination_restricted(destination_chain);
 
-    if config.is_bridge_api_enabled() || allowlist_active {
+    if config.is_bridge_api_enabled() || allowlist_active || config::Config::is_shield_enabled() {
         let transfer_message = match omni_connector
             .near_get_transfer_message(message_payload.transfer_id)
             .await
@@ -542,15 +562,27 @@ pub async fn process_sign_transfer_event(
             }
         };
 
+        let context = format!(
+            "({:?}:{})",
+            message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
+        );
+
         if let Some(action) = utils::validation::enforce_sender_allowlist(
             config,
             &transfer_message.sender,
             destination_chain,
-            &format!(
-                "({:?}:{})",
-                message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
-            ),
+            &context,
         ) {
+            return Ok(action);
+        }
+
+        if let Some(action) = utils::validation::check_shield_transfer_withdrawal(
+            &omni_connector,
+            &transfer_message,
+            &context,
+        )
+        .await
+        {
             return Ok(action);
         }
 
@@ -789,6 +821,18 @@ pub async fn initiate_fast_transfer(
         warn!("Failed to get token id for transfer: {transfer_id:?}");
         return Ok(EventAction::Retry);
     };
+
+    if let Some(action) = utils::validation::check_shield_deposit(
+        transfer_id.origin_chain,
+        &OmniAddress::Near(token_id.clone()),
+        amount.0,
+        &utils::shield::bare_address(&sender),
+        &context,
+    )
+    .await
+    {
+        return Ok(action);
+    }
 
     let fast_transfer = FastTransfer {
         transfer_id: transfer_id.into(),
