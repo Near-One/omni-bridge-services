@@ -81,26 +81,32 @@ struct ResponseMetadata {
     delay_ms: Option<u64>,
 }
 
-fn client() -> &'static Client {
-    static CLIENT: OnceLock<Client> = OnceLock::new();
+fn client() -> Result<&'static Client> {
+    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 
-    CLIENT.get_or_init(|| {
-        let token = std::env::var("SHIELD_API_TOKEN").expect("SHIELD_API_TOKEN env var is not set");
+    CLIENT
+        .get_or_init(build_client)
+        .as_ref()
+        .map_err(|err| anyhow!("{err}"))
+}
 
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "Authorization",
-            format!("Bearer {token}")
-                .parse()
-                .expect("SHIELD_API_TOKEN is not a valid HTTP header value"),
-        );
+fn build_client() -> Result<Client, String> {
+    let token =
+        std::env::var("SHIELD_API_TOKEN").map_err(|_| "SHIELD_API_TOKEN env var is not set")?;
 
-        Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .default_headers(headers)
-            .build()
-            .expect("Failed to build SHIELD reqwest client")
-    })
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "Authorization",
+        format!("Bearer {}", token.trim())
+            .parse()
+            .map_err(|_| "SHIELD_API_TOKEN is not a valid HTTP header value")?,
+    );
+
+    Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .default_headers(headers)
+        .build()
+        .map_err(|err| format!("Failed to build SHIELD reqwest client: {err}"))
 }
 
 pub fn blockchain_tag(chain: ChainKind) -> Option<&'static str> {
@@ -186,9 +192,12 @@ pub async fn evaluate_withdrawal(
 
 async fn evaluate<T: serde::Serialize>(endpoint: &str, request: &T) -> Result<Decision> {
     let base_url = std::env::var("SHIELD_API_URL").context("SHIELD_API_URL env var is not set")?;
-    let url = format!("{}/evaluate/{endpoint}", base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/evaluate/{endpoint}",
+        base_url.trim().trim_end_matches('/')
+    );
 
-    let response = client()
+    let response = client()?
         .post(url)
         .json(request)
         .send()

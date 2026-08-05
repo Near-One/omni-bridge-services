@@ -75,33 +75,6 @@ pub async fn process_near_to_utxo_init_transfer_event(
         return Ok(action);
     }
 
-    if config::Config::is_shield_enabled() {
-        let token = match chain {
-            ChainKind::Btc => config.near.btc.clone(),
-            ChainKind::Zcash => config.near.zcash.clone(),
-            _ => None,
-        };
-
-        let Some(token) = token else {
-            warn!(
-                "Cannot evaluate NEAR->{chain:?} withdrawal {context} against SHIELD: no token account configured, retrying"
-            );
-            return Ok(EventAction::Retry);
-        };
-
-        if let Some(action) = utils::validation::check_shield_withdrawal(
-            chain,
-            &OmniAddress::Near(token),
-            0,
-            &utils::shield::bare_address(&sender),
-            &context,
-        )
-        .await
-        {
-            return Ok(action);
-        }
-    }
-
     let sign_delay_secs = i64::try_from(config.utxo_sign_delay_secs(chain)).unwrap_or(0);
     if sign_delay_secs > 0 && current_timestamp < creation_timestamp + sign_delay_secs {
         let remaining = (creation_timestamp + sign_delay_secs - current_timestamp).unsigned_abs();
@@ -247,21 +220,25 @@ pub async fn process_utxo_to_near_init_transfer_event(
         }
 
         if shield_enabled {
-            let Some(sender) = input_addresses.first() else {
-                warn!("No input addresses found for {chain:?} tx {btc_tx_hash}, retrying");
-                return Ok(EventAction::Retry);
-            };
-
-            if let Some(action) = utils::validation::check_shield_deposit(
-                chain,
-                &OmniAddress::Near(near_bridge_client.utxo_chain_token(chain)?),
-                amount.map_or(0, |amount| amount.0),
-                &utils::shield::bare_address(sender),
-                &context,
-            )
-            .await
-            {
-                return Ok(action);
+            // A deposit can legitimately have no screenable inputs (e.g. fully
+            // shielded Zcash spends yield no transparent addresses); skip the
+            // SHIELD check then, exactly as KYT does.
+            if let Some(sender) = input_addresses.first() {
+                if let Some(action) = utils::validation::check_shield_deposit(
+                    chain,
+                    &OmniAddress::Near(near_bridge_client.utxo_chain_token(chain)?),
+                    amount.map_or(0, |amount| amount.0),
+                    &utils::shield::bare_address(sender),
+                    &context,
+                )
+                .await
+                {
+                    return Ok(action);
+                }
+            } else {
+                warn!(
+                    "No input addresses found for {chain:?} tx {btc_tx_hash}, skipping SHIELD deposit check"
+                );
             }
         }
     }

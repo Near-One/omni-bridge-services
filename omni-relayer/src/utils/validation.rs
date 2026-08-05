@@ -5,6 +5,8 @@
 //! These checks are chain-agnostic (every relaying worker uses them), so they
 //! live in `utils` rather than inside any single chain worker.
 
+use std::time::Duration;
+
 use omni_connector::OmniConnector;
 use omni_types::{ChainKind, OmniAddress, TransferMessage};
 use tracing::{info, warn};
@@ -13,6 +15,8 @@ use crate::config;
 use crate::workers::EventAction;
 
 use super::{kyt, shield};
+
+const MIN_SHIELD_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
     check_kyt_senders(std::slice::from_ref(sender), context).await
@@ -64,7 +68,7 @@ pub(crate) async fn check_shield_deposit(
     )
 }
 
-pub(crate) async fn check_shield_withdrawal(
+async fn check_shield_withdrawal(
     destination_chain: ChainKind,
     token: &OmniAddress,
     amount: u128,
@@ -139,7 +143,9 @@ fn map_shield_decision(
         }
         Ok(shield::Decision::Delay { delay, reason }) => {
             info!("SHIELD delayed {direction} {context} ({reason}), retrying");
-            Some(delay.map_or(EventAction::Retry, EventAction::RetryAfter))
+            Some(delay.map_or(EventAction::Retry, |delay| {
+                EventAction::RetryAfter(delay.max(MIN_SHIELD_RETRY_DELAY))
+            }))
         }
         Ok(shield::Decision::Approval { reason }) => {
             warn!(
