@@ -172,6 +172,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
 
 pub async fn process_utxo_to_near_init_transfer_event(
     config: &config::Config,
+    jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -308,7 +309,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
         prefetched: None,
         transaction_options: TransactionOptions {
             nonce,
-            wait_until: near_primitives::views::TxExecutionStatus::Included,
+            wait_until: near_primitives::views::TxExecutionStatus::Final,
             wait_final_outcome_timeout_sec: None,
         },
     };
@@ -318,7 +319,26 @@ pub async fn process_utxo_to_near_init_transfer_event(
             info!(
                 "Finalized {chain:?}->NEAR transfer on NEAR ({btc_tx_hash}:{vout}): near_fin_tx_hash={tx_hash:?}"
             );
-            Ok(EventAction::Remove)
+
+            let Ok(tx_hash) = CryptoHash::from_str(&tx_hash) else {
+                anyhow::bail!(
+                    "Invalid NEAR tx hash for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}): {tx_hash}"
+                );
+            };
+            let signer = omni_connector
+                .near_bridge_client()
+                .and_then(near_bridge_client::NearBridgeClient::account_id)?;
+
+            Ok(utils::near::resolve_tx_action(
+                jsonrpc_client,
+                tx_hash,
+                signer,
+                &[
+                    "Not enough blocks confirmed",
+                    "Not enough confirmations for the block-cumulative bridge amount",
+                ],
+            )
+            .await)
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {

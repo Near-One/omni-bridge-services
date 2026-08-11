@@ -723,6 +723,7 @@ async fn process_message(
             Transfer::UtxoToNear { .. } => {
                 let result = utxo::process_utxo_to_near_init_transfer_event(
                     config,
+                    jsonrpc_client,
                     omni_connector.clone(),
                     transfer,
                     near_omni_nonce.clone(),

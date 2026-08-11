@@ -829,7 +829,9 @@ pub(super) async fn handle_transaction_event(
                     chain,
                     &utxo_id.tx_hash,
                     amount.0,
-                    uses_extra_msg_path,
+                    utils::utxo::LcTargetKind::Deposit {
+                        uses_extra_msg_path,
+                    },
                 )
                 .await
             }
@@ -901,7 +903,7 @@ pub(super) async fn handle_transaction_event(
                         destination_chain,
                         &utxo_id.tx_hash,
                         pending_info.actual_received_amount,
-                        false,
+                        utils::utxo::LcTargetKind::Withdraw,
                     )
                     .await
                 }
