@@ -794,6 +794,32 @@ pub(super) async fn handle_transaction_event(
             );
             let key = format!("utxo-deposit:{utxo_id}");
             let chain = event.transfer_id.origin_chain;
+
+            let target = match async {
+                let uses_extra_msg_path =
+                    deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
+                utils::utxo::lc_defer_target(
+                    omni_connector,
+                    chain,
+                    &utxo_id.tx_hash,
+                    amount.0,
+                    utils::utxo::LcTargetKind::Deposit {
+                        uses_extra_msg_path,
+                    },
+                )
+                .await
+            }
+            .await
+            {
+                Ok(target) => target,
+                Err(err) => {
+                    warn!(
+                        "Failed to compute defer target for TransferUtxoToNear ({chain:?}:{key}): {err:?}; publishing instead"
+                    );
+                    None
+                }
+            };
+
             let payload = workers::Transfer::UtxoToNear {
                 chain,
                 btc_tx_hash: utxo_id.tx_hash.clone(),
@@ -822,31 +848,6 @@ pub(super) async fn handle_transaction_event(
                 },
             };
 
-            let target = match async {
-                let uses_extra_msg_path =
-                    deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
-                utils::utxo::lc_defer_target(
-                    omni_connector,
-                    chain,
-                    &utxo_id.tx_hash,
-                    amount.0,
-                    utils::utxo::LcTargetKind::Deposit {
-                        uses_extra_msg_path,
-                    },
-                )
-                .await
-            }
-            .await
-            {
-                Ok(target) => target,
-                Err(err) => {
-                    warn!(
-                        "Failed to compute defer target for TransferUtxoToNear ({chain:?}:{key}): {err:?}; publishing instead"
-                    );
-                    None
-                }
-            };
-
             if let Some(target_block) = target {
                 info!(
                     "Deferring TransferUtxoToNear ({chain:?}:{key}) to LC poller (target_block={target_block})"
@@ -856,7 +857,7 @@ pub(super) async fn handle_transaction_event(
                     redis_connection_manager,
                     chain,
                     target_block,
-                    key,
+                    &key,
                     &payload,
                 )
                 .await?;
@@ -883,10 +884,6 @@ pub(super) async fn handle_transaction_event(
                     destination_chain
                 );
                 let key = format!("utxo-withdraw:{utxo_id}");
-                let payload = workers::utxo::ConfirmedTxHash {
-                    chain: destination_chain,
-                    btc_tx_hash: utxo_id.tx_hash.clone(),
-                };
 
                 let target = match async {
                     let pending_info = omni_connector
@@ -919,6 +916,11 @@ pub(super) async fn handle_transaction_event(
                     }
                 };
 
+                let payload = workers::utxo::ConfirmedTxHash {
+                    chain: destination_chain,
+                    btc_tx_hash: utxo_id.tx_hash.clone(),
+                };
+
                 if let Some(target_block) = target {
                     info!(
                         "Deferring UtxoConfirmedTxHash ({destination_chain:?}:{key}) to LC poller (target_block={target_block})"
@@ -928,7 +930,7 @@ pub(super) async fn handle_transaction_event(
                         redis_connection_manager,
                         destination_chain,
                         target_block,
-                        key,
+                        &key,
                         &payload,
                     )
                     .await?;

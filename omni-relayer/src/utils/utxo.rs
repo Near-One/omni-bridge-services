@@ -249,6 +249,25 @@ pub struct PendingLcEvent {
     pub event: serde_json::Value,
 }
 
+/// Separator embedding the defer target into the stored key (and thus the
+/// NATS msg id the poller republishes under). Targets strictly increase per
+/// event, so every republish gets a fresh msg id — `JetStream` dedup would
+/// silently drop a repeated one within the duplicate window and the event
+/// would be lost after ZREM.
+pub const LC_TARGET_SEPARATOR: &str = "@lc-";
+
+/// Split a NATS msg id into the base event key and the target block it was
+/// last deferred to, if any.
+pub fn split_lc_msg_id(msg_id: &str) -> (&str, Option<u64>) {
+    if let Some((base, target)) = msg_id.rsplit_once(LC_TARGET_SEPARATOR)
+        && let Ok(target) = target.parse()
+    {
+        (base, Some(target))
+    } else {
+        (msg_id, None)
+    }
+}
+
 pub fn pending_lc_key(chain: ChainKind) -> Option<String> {
     if chain.is_utxo_chain() {
         Some(format!(
@@ -265,7 +284,7 @@ pub async fn store_pending_lc_event<E>(
     redis_connection_manager: &mut redis::aio::ConnectionManager,
     chain: ChainKind,
     target_block: u64,
-    original_key: String,
+    base_key: &str,
     event: &E,
 ) -> Result<()>
 where
@@ -276,7 +295,7 @@ where
     let value =
         serde_json::to_value(event).context("Failed to serialize pending LC event payload")?;
     let pending = PendingLcEvent {
-        key: original_key,
+        key: format!("{base_key}{LC_TARGET_SEPARATOR}{target_block}"),
         event: value,
     };
     if !utils::redis::zadd(
@@ -293,50 +312,21 @@ where
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub async fn defer_or_retry<E>(
-    config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
+pub async fn defer_action(
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
     amount: u128,
     kind: LcTargetKind,
-    key: &str,
-    event: &E,
-) -> EventAction
-where
-    E: Serialize + std::fmt::Debug + Send,
-{
+) -> EventAction {
     match lc_defer_target(omni_connector, chain, tx_hash, amount, kind).await {
-        Ok(Some(target_block)) => {
-            // Must differ from the already-published NATS msg id: JetStream
-            // dedup would silently drop the poller's replay within the
-            // duplicate window, losing the event after ZREM.
-            let retry_key = format!("{key}@retry-{target_block}");
-            match store_pending_lc_event(
-                config,
-                redis_connection_manager,
-                chain,
-                target_block,
-                retry_key,
-                event,
-            )
-            .await
-            {
-                Ok(()) => {
-                    info!("Re-deferring {key} to LC poller (target_block={target_block})");
-                    EventAction::Remove
-                }
-                Err(err) => {
-                    warn!("Failed to re-defer {key} to LC poller, retrying: {err:?}");
-                    EventAction::Retry
-                }
-            }
-        }
+        Ok(Some(target_block)) => EventAction::DeferUntilBlock {
+            chain,
+            target_block,
+        },
         Ok(None) => EventAction::Retry,
         Err(err) => {
-            warn!("Failed to compute LC defer target for {key}, retrying: {err:?}");
+            warn!("Failed to compute LC defer target for {chain:?}:{tx_hash}, retrying: {err:?}");
             EventAction::Retry
         }
     }

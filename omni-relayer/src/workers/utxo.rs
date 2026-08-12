@@ -9,7 +9,7 @@ use near_bridge_client::{
 use near_jsonrpc_client::{JsonRpcClient, errors::JsonRpcError};
 use near_primitives::{hash::CryptoHash, types::AccountId};
 use near_rpc_client::NearRpcError;
-use omni_types::{ChainKind, OmniAddress, UtxoId};
+use omni_types::{ChainKind, OmniAddress};
 use tracing::{info, warn};
 
 use omni_connector::{BtcDepositArgs, FinTransferArgs, OmniConnector};
@@ -172,7 +172,6 @@ pub async fn process_near_to_utxo_init_transfer_event(
 
 pub async fn process_utxo_to_near_init_transfer_event(
     config: &config::Config,
-    redis: &mut redis::aio::ConnectionManager,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
@@ -182,7 +181,6 @@ pub async fn process_utxo_to_near_init_transfer_event(
         anyhow::bail!("Near bridge client is not configured");
     };
 
-    let transfer_payload = transfer.clone();
     let Transfer::UtxoToNear {
         chain,
         btc_tx_hash,
@@ -196,13 +194,6 @@ pub async fn process_utxo_to_near_init_transfer_event(
     };
 
     let uses_extra_msg_path = deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
-    let defer_key = format!(
-        "utxo-deposit:{}",
-        UtxoId {
-            tx_hash: btc_tx_hash.clone(),
-            vout,
-        }
-    );
 
     if config::Config::is_kyt_enabled() {
         let rpc_url = match chain {
@@ -353,9 +344,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
             .await;
 
             if matches!(event_action, EventAction::Retry) && amount.0 > 0 {
-                return Ok(utils::utxo::defer_or_retry(
-                    config,
-                    redis,
+                return Ok(utils::utxo::defer_action(
                     &omni_connector,
                     chain,
                     &btc_tx_hash,
@@ -363,8 +352,6 @@ pub async fn process_utxo_to_near_init_transfer_event(
                     utils::utxo::LcTargetKind::Deposit {
                         uses_extra_msg_path,
                     },
-                    &defer_key,
-                    &transfer_payload,
                 )
                 .await);
             }
@@ -399,9 +386,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                     "{chain:?} light client is not synced yet for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), block: {block}"
                 );
                 if amount.0 > 0 {
-                    return Ok(utils::utxo::defer_or_retry(
-                        config,
-                        redis,
+                    return Ok(utils::utxo::defer_action(
                         &omni_connector,
                         chain,
                         &btc_tx_hash,
@@ -409,8 +394,6 @@ pub async fn process_utxo_to_near_init_transfer_event(
                         utils::utxo::LcTargetKind::Deposit {
                             uses_extra_msg_path,
                         },
-                        &defer_key,
-                        &transfer_payload,
                     )
                     .await);
                 }
@@ -514,8 +497,6 @@ pub async fn process_sign_transaction_event(
 }
 
 pub async fn process_confirmed_tx_hash(
-    config: &config::Config,
-    redis: &mut redis::aio::ConnectionManager,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     confirmed_tx_hash: ConfirmedTxHash,
@@ -609,16 +590,12 @@ pub async fn process_confirmed_tx_hash(
             .await;
 
             if matches!(event_action, EventAction::Retry) {
-                return Ok(utils::utxo::defer_or_retry(
-                    config,
-                    redis,
+                return Ok(utils::utxo::defer_action(
                     &omni_connector,
                     chain,
                     btc_tx_hash,
                     pending_info.actual_received_amount,
                     utils::utxo::LcTargetKind::Withdraw,
-                    &format!("utxo-withdraw:{btc_tx_hash}"),
-                    &confirmed_tx_hash,
                 )
                 .await);
             }
@@ -652,16 +629,12 @@ pub async fn process_confirmed_tx_hash(
                 warn!(
                     "Light client is not synced yet for NEAR->{chain:?} {action} ({btc_tx_hash}), block: {block}"
                 );
-                return Ok(utils::utxo::defer_or_retry(
-                    config,
-                    redis,
+                return Ok(utils::utxo::defer_action(
                     &omni_connector,
                     chain,
                     btc_tx_hash,
                     pending_info.actual_received_amount,
                     utils::utxo::LcTargetKind::Withdraw,
-                    &format!("utxo-withdraw:{btc_tx_hash}"),
-                    &confirmed_tx_hash,
                 )
                 .await);
             }

@@ -88,6 +88,7 @@ impl<E> RetryableEvent<E> {
 pub enum EventAction {
     Retry,
     RetryAfter(Duration),
+    DeferUntilBlock { chain: ChainKind, target_block: u64 },
     Remove,
 }
 
@@ -370,38 +371,67 @@ impl DeployToken {
 }
 
 async fn handle_nats_ack(
+    config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
     msg: &async_nats::jetstream::message::Message,
     result: &Result<EventAction>,
-    config: &config::RelayerConsumer,
+    consumer_config: &config::RelayerConsumer,
 ) {
-    let max_backoff = Duration::from_secs(config.max_backoff_hours * 3600);
-    let max_message_age = Duration::from_secs(config.max_message_age_hours * 3600);
-
     match result {
-        Ok(EventAction::Retry | EventAction::RetryAfter(_)) => {
-            if let Ok(info) = msg.info() {
-                let now = chrono::Utc::now().timestamp();
-                let published_at = info.published.unix_timestamp();
-                let age = Duration::from_secs(now.saturating_sub(published_at).unsigned_abs());
+        Ok(EventAction::Retry) => {
+            nak_with_backoff(msg, None, consumer_config).await;
+        }
+        Ok(EventAction::RetryAfter(delay)) => {
+            nak_with_backoff(msg, Some(*delay), consumer_config).await;
+        }
+        Ok(EventAction::DeferUntilBlock {
+            chain,
+            target_block,
+        }) => {
+            let msg_id = msg
+                .headers
+                .as_ref()
+                .and_then(|headers| headers.get("Nats-Msg-Id"))
+                .map(async_nats::HeaderValue::as_str);
+            let Some(msg_id) = msg_id else {
+                warn!("Missing Nats-Msg-Id header, retrying instead of deferring");
+                return nak_with_backoff(msg, None, consumer_config).await;
+            };
 
-                if age > max_message_age {
-                    warn!("Message exceeded max age ({age:?}), terminating");
-                    msg.ack_with(async_nats::jetstream::AckKind::Term)
-                        .await
-                        .ok();
-                    return;
+            let (base_key, last_target) = utils::utxo::split_lc_msg_id(msg_id);
+            // A target this event already waited past means the failure is
+            // not about missing blocks (e.g. a lagging light client view);
+            // deferring again would replay immediately under an
+            // already-published msg id, so let the backoff pace it instead.
+            if last_target.is_some_and(|last| *target_block <= last) {
+                return nak_with_backoff(msg, None, consumer_config).await;
+            }
+
+            let event = match serde_json::from_slice::<serde_json::Value>(&msg.payload) {
+                Ok(event) => event,
+                Err(err) => {
+                    warn!("Failed to parse payload while deferring {base_key}: {err:?}");
+                    return nak_with_backoff(msg, None, consumer_config).await;
                 }
-
-                let backoff = if let Ok(EventAction::RetryAfter(delay)) = result {
-                    (*delay).min(max_backoff)
-                } else {
-                    let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
-                    Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
-                        .min(max_backoff)
-                };
-                msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
-                    .await
-                    .ok();
+            };
+            match utils::utxo::store_pending_lc_event(
+                config,
+                redis,
+                *chain,
+                *target_block,
+                base_key,
+                &event,
+            )
+            .await
+            {
+                Ok(()) => {
+                    info!("Deferred {base_key} to LC poller (target_block={target_block})");
+                    msg.ack().await.ok();
+                }
+                Err(err) => {
+                    warn!("Failed to defer {base_key} to LC poller, retrying: {err:?}");
+                    nak_with_backoff(msg, None, consumer_config).await;
+                }
             }
         }
         Ok(EventAction::Remove) => {
@@ -412,6 +442,39 @@ async fn handle_nats_ack(
                 .await
                 .ok();
         }
+    }
+}
+
+async fn nak_with_backoff(
+    msg: &async_nats::jetstream::message::Message,
+    explicit_delay: Option<Duration>,
+    consumer_config: &config::RelayerConsumer,
+) {
+    let max_backoff = Duration::from_secs(consumer_config.max_backoff_hours * 3600);
+    let max_message_age = Duration::from_secs(consumer_config.max_message_age_hours * 3600);
+
+    if let Ok(info) = msg.info() {
+        let now = chrono::Utc::now().timestamp();
+        let published_at = info.published.unix_timestamp();
+        let age = Duration::from_secs(now.saturating_sub(published_at).unsigned_abs());
+
+        if age > max_message_age {
+            warn!("Message exceeded max age ({age:?}), terminating");
+            msg.ack_with(async_nats::jetstream::AckKind::Term)
+                .await
+                .ok();
+            return;
+        }
+
+        let backoff = explicit_delay
+            .unwrap_or_else(|| {
+                let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
+                Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
+            })
+            .min(max_backoff);
+        msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
+            .await
+            .ok();
     }
 }
 
@@ -560,7 +623,14 @@ pub async fn process_events(
                     publish_event(&config, &nats_client, event).await;
                 }
 
-                handle_nats_ack(&msg, &message_result.action, &consumer_config).await;
+                handle_nats_ack(
+                    &config,
+                    &mut redis,
+                    &msg,
+                    &message_result.action,
+                    &consumer_config,
+                )
+                .await;
 
                 drop(permit);
             }
@@ -725,7 +795,6 @@ async fn process_message(
             Transfer::UtxoToNear { .. } => {
                 let result = utxo::process_utxo_to_near_init_transfer_event(
                     config,
-                    redis,
                     jsonrpc_client,
                     omni_connector.clone(),
                     transfer,
@@ -992,8 +1061,6 @@ async fn process_message(
         .record();
 
         let result = utxo::process_confirmed_tx_hash(
-            config,
-            redis,
             jsonrpc_client,
             omni_connector.clone(),
             confirmed_tx_hash,
