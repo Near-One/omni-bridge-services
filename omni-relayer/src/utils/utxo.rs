@@ -293,12 +293,6 @@ where
     Ok(())
 }
 
-/// Hand a failed verify back to the LC poller with a freshly computed target,
-/// or fall back to `Retry` when there is no block gap (transient failure) or
-/// the target cannot be computed/stored. The stored key must differ from the
-/// already-published NATS msg id: `JetStream` dedups by `Nats-Msg-Id`, so a
-/// poller replay landing within the duplicate window of the previous publish
-/// would be silently dropped and the event lost after ZREM.
 #[allow(clippy::too_many_arguments)]
 pub async fn defer_or_retry<E>(
     config: &config::Config,
@@ -316,6 +310,9 @@ where
 {
     match lc_defer_target(omni_connector, chain, tx_hash, amount, kind).await {
         Ok(Some(target_block)) => {
+            // Must differ from the already-published NATS msg id: JetStream
+            // dedup would silently drop the poller's replay within the
+            // duplicate window, losing the event after ZREM.
             let retry_key = format!("{key}@retry-{target_block}");
             match store_pending_lc_event(
                 config,
