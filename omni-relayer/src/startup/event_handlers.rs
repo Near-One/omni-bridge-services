@@ -6,7 +6,7 @@ use bridge_indexer_types::documents_types::{
     OmniMetaEvent, OmniMetaEventDetails, OmniTransactionEvent, OmniTransactionOrigin,
     OmniTransferMessage,
 };
-use omni_connector::{BtcTxType, OmniConnector};
+use omni_connector::OmniConnector;
 use omni_types::{
     ChainKind, Fee, OmniAddress, TransferId, TransferIdKind, UnifiedTransferId,
     near_events::OmniBridgeEvent,
@@ -828,10 +828,8 @@ pub(super) async fn handle_transaction_event(
                     omni_connector,
                     chain,
                     &utxo_id.tx_hash,
-                    BtcTxType::Deposit {
-                        amount: amount.0,
-                        uses_extra_msg_path,
-                    },
+                    amount.0,
+                    uses_extra_msg_path,
                 )
                 .await
             }
@@ -898,20 +896,12 @@ pub(super) async fn handle_transaction_event(
                                 utxo_id.tx_hash
                             )
                         })?;
-                    let tx_type = if pending_info.state.is_active_utxo_management() {
-                        BtcTxType::ActiveUtxoManagement {
-                            amount: pending_info.actual_received_amount,
-                        }
-                    } else {
-                        BtcTxType::Withdraw {
-                            amount: pending_info.actual_received_amount,
-                        }
-                    };
                     utils::utxo::lc_defer_target(
                         omni_connector,
                         destination_chain,
                         &utxo_id.tx_hash,
-                        tx_type,
+                        pending_info.actual_received_amount,
+                        false,
                     )
                     .await
                 }
