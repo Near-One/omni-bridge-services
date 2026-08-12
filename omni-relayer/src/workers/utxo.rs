@@ -12,7 +12,7 @@ use near_rpc_client::NearRpcError;
 use omni_types::{ChainKind, OmniAddress};
 use tracing::{info, warn};
 
-use omni_connector::{BtcDepositArgs, FinTransferArgs, OmniConnector};
+use omni_connector::{BtcDepositArgs, BtcTxType, FinTransferArgs, OmniConnector};
 
 use crate::{config, utils};
 
@@ -348,8 +348,8 @@ pub async fn process_utxo_to_near_init_transfer_event(
                     &omni_connector,
                     chain,
                     &btc_tx_hash,
-                    amount.0,
-                    utils::utxo::LcTargetKind::Deposit {
+                    BtcTxType::Deposit {
+                        amount: amount.0,
                         uses_extra_msg_path,
                     },
                 )
@@ -381,23 +381,18 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 };
             }
 
-            if let BridgeSdkError::LightClientNotSynced(block) = err {
+            if let BridgeSdkError::LightClientNotSynced {
+                current_height,
+                target_height,
+            } = err
+            {
                 warn!(
-                    "{chain:?} light client is not synced yet for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), block: {block}"
+                    "{chain:?} light client is not synced yet for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), current: {current_height}, waiting for: {target_height}"
                 );
-                if amount.0 > 0 {
-                    return Ok(utils::utxo::defer_action(
-                        &omni_connector,
-                        chain,
-                        &btc_tx_hash,
-                        amount.0,
-                        utils::utxo::LcTargetKind::Deposit {
-                            uses_extra_msg_path,
-                        },
-                    )
-                    .await);
-                }
-                return Ok(EventAction::Retry);
+                return Ok(EventAction::DeferUntilBlock {
+                    chain,
+                    target_block: target_height,
+                });
             }
 
             anyhow::bail!(
@@ -533,10 +528,20 @@ pub async fn process_confirmed_tx_hash(
     let chain = confirmed_tx_hash.chain;
     let btc_tx_hash = &confirmed_tx_hash.btc_tx_hash;
 
-    let action = if pending_info.state.is_active_utxo_management() {
-        "active utxo management"
+    let (action, tx_type) = if pending_info.state.is_active_utxo_management() {
+        (
+            "active utxo management",
+            BtcTxType::ActiveUtxoManagement {
+                amount: pending_info.actual_received_amount,
+            },
+        )
     } else {
-        "withdraw"
+        (
+            "withdraw",
+            BtcTxType::Withdraw {
+                amount: pending_info.actual_received_amount,
+            },
+        )
     };
 
     let nonce = match near_nonce.reserve_nonce() {
@@ -590,14 +595,9 @@ pub async fn process_confirmed_tx_hash(
             .await;
 
             if matches!(event_action, EventAction::Retry) {
-                return Ok(utils::utxo::defer_action(
-                    &omni_connector,
-                    chain,
-                    btc_tx_hash,
-                    pending_info.actual_received_amount,
-                    utils::utxo::LcTargetKind::Withdraw,
-                )
-                .await);
+                return Ok(
+                    utils::utxo::defer_action(&omni_connector, chain, btc_tx_hash, tx_type).await,
+                );
             }
 
             Ok(event_action)
@@ -625,18 +625,18 @@ pub async fn process_confirmed_tx_hash(
                 };
             }
 
-            if let BridgeSdkError::LightClientNotSynced(block) = err {
+            if let BridgeSdkError::LightClientNotSynced {
+                current_height,
+                target_height,
+            } = err
+            {
                 warn!(
-                    "Light client is not synced yet for NEAR->{chain:?} {action} ({btc_tx_hash}), block: {block}"
+                    "Light client is not synced yet for NEAR->{chain:?} {action} ({btc_tx_hash}), current: {current_height}, waiting for: {target_height}"
                 );
-                return Ok(utils::utxo::defer_action(
-                    &omni_connector,
+                return Ok(EventAction::DeferUntilBlock {
                     chain,
-                    btc_tx_hash,
-                    pending_info.actual_received_amount,
-                    utils::utxo::LcTargetKind::Withdraw,
-                )
-                .await);
+                    target_block: target_height,
+                });
             }
 
             anyhow::bail!("Failed to verify NEAR->{chain:?} {action} ({btc_tx_hash}): {err:?}");

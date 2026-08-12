@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use omni_connector::{BtcTransferSelection, OmniConnector};
+use omni_connector::{BtcTransferSelection, BtcTxType, OmniConnector};
 use omni_types::{ChainKind, OmniAddress};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -156,20 +156,11 @@ impl UtxoSet {
     }
 }
 
-/// Withdrawals must not use the `get_required_confirmations` view: it mixes in
-/// the deposit block-cumulative ring and would overestimate their target.
-#[derive(Clone, Copy, Debug)]
-pub enum LcTargetKind {
-    Deposit { uses_extra_msg_path: bool },
-    Withdraw,
-}
-
 pub async fn lc_defer_target(
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
-    amount: u128,
-    kind: LcTargetKind,
+    tx_type: BtcTxType,
 ) -> Result<Option<u64>> {
     let lc = omni_connector
         .light_client(chain)
@@ -178,7 +169,7 @@ pub async fn lc_defer_target(
         .get_last_block_number()
         .await
         .with_context(|| format!("Failed to query {chain:?} light client tip"))?;
-    let target = compute_lc_target_block(omni_connector, chain, tx_hash, amount, kind).await?;
+    let target = compute_lc_target_block(omni_connector, chain, tx_hash, tx_type).await?;
     Ok(if tip >= target { None } else { Some(target) })
 }
 
@@ -186,13 +177,8 @@ async fn compute_lc_target_block(
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
-    amount: u128,
-    kind: LcTargetKind,
+    tx_type: BtcTxType,
 ) -> Result<u64> {
-    let near_bridge_client = omni_connector
-        .near_bridge_client()
-        .context("Failed to get NEAR bridge client")?;
-
     let block_height = match chain {
         ChainKind::Btc => {
             fetch_utxo_block_height(omni_connector.btc_bridge_client()?, chain, tx_hash).await?
@@ -203,27 +189,10 @@ async fn compute_lc_target_block(
         _ => anyhow::bail!("Unsupported chain {chain:?} for UTXO LC target"),
     };
 
-    let required_confirmations = match kind {
-        LcTargetKind::Deposit {
-            uses_extra_msg_path,
-        } => near_bridge_client
-            .get_required_confirmations_for_deposit(
-                chain,
-                block_height,
-                amount,
-                uses_extra_msg_path,
-            )
-            .await
-            .with_context(|| {
-                format!("Failed to get required deposit confirmations for {chain:?}")
-            })?,
-        LcTargetKind::Withdraw => near_bridge_client
-            .get_btc_confirmation_context(chain)
-            .await
-            .with_context(|| format!("Failed to get {chain:?} BTC confirmation context"))?
-            .required_confirmations(amount, false)
-            .with_context(|| format!("Failed to compute required confirmations for {chain:?}"))?,
-    };
+    let required_confirmations = omni_connector
+        .get_required_btc_confirmations(chain, block_height, tx_type)
+        .await
+        .with_context(|| format!("Failed to get required {chain:?} confirmations"))?;
 
     Ok(block_height + required_confirmations - 1)
 }
@@ -316,10 +285,9 @@ pub async fn defer_action(
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
-    amount: u128,
-    kind: LcTargetKind,
+    tx_type: BtcTxType,
 ) -> EventAction {
-    match lc_defer_target(omni_connector, chain, tx_hash, amount, kind).await {
+    match lc_defer_target(omni_connector, chain, tx_hash, tx_type).await {
         Ok(Some(target_block)) => EventAction::DeferUntilBlock {
             chain,
             target_block,
