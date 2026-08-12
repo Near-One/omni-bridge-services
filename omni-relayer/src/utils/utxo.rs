@@ -218,15 +218,10 @@ pub struct PendingLcEvent {
     pub event: serde_json::Value,
 }
 
-/// Separator embedding the defer target into the stored key (and thus the
-/// NATS msg id the poller republishes under). Targets strictly increase per
-/// event, so every republish gets a fresh msg id — `JetStream` dedup would
-/// silently drop a repeated one within the duplicate window and the event
-/// would be lost after ZREM.
+/// Embeds the defer target into the stored key, and thus the NATS msg id the
+/// poller republishes under.
 pub const LC_TARGET_SEPARATOR: &str = "@lc-";
 
-/// Split a NATS msg id into the base event key and the target block it was
-/// last deferred to, if any.
 pub fn split_lc_msg_id(msg_id: &str) -> (&str, Option<u64>) {
     if let Some((base, target)) = msg_id.rsplit_once(LC_TARGET_SEPARATOR)
         && let Ok(target) = target.parse()

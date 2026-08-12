@@ -397,10 +397,9 @@ async fn handle_nats_ack(
             };
 
             let (base_key, last_target) = utils::utxo::split_lc_msg_id(msg_id);
-            // A target this event already waited past means the failure is
-            // not about missing blocks (e.g. a lagging light client view);
-            // deferring again would replay immediately under an
-            // already-published msg id, so let the backoff pace it instead.
+            // A repeated target would republish under an already-used msg id,
+            // which JetStream dedup silently drops — the event would be lost
+            // after the poller's ZREM.
             if last_target.is_some_and(|last| *target_block <= last) {
                 return nak_with_backoff(msg, None, consumer_config).await;
             }
