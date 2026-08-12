@@ -12,7 +12,7 @@ use near_rpc_client::NearRpcError;
 use omni_types::{ChainKind, OmniAddress};
 use tracing::{info, warn};
 
-use omni_connector::{BtcDepositArgs, BtcTxType, FinTransferArgs, OmniConnector};
+use omni_connector::{BtcDepositArgs, FinTransferArgs, OmniConnector};
 
 use crate::{config, utils};
 
@@ -186,14 +186,11 @@ pub async fn process_utxo_to_near_init_transfer_event(
         btc_tx_hash,
         vout,
         deposit_msg,
-        amount,
         ..
     } = transfer
     else {
         anyhow::bail!("Expected UtxoToNearTransfer, got: {transfer:?}");
     };
-
-    let uses_extra_msg_path = deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
 
     if config::Config::is_kyt_enabled() {
         let rpc_url = match chain {
@@ -332,7 +329,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 .near_bridge_client()
                 .and_then(near_bridge_client::NearBridgeClient::account_id)?;
 
-            let event_action = utils::near::resolve_tx_action(
+            Ok(utils::near::resolve_tx_action(
                 jsonrpc_client,
                 tx_hash,
                 signer,
@@ -341,22 +338,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                     "Not enough confirmations for the block-cumulative bridge amount",
                 ],
             )
-            .await;
-
-            if matches!(event_action, EventAction::Retry) && amount.0 > 0 {
-                return Ok(utils::utxo::defer_action(
-                    &omni_connector,
-                    chain,
-                    &btc_tx_hash,
-                    BtcTxType::Deposit {
-                        amount: amount.0,
-                        uses_extra_msg_path,
-                    },
-                )
-                .await);
-            }
-
-            Ok(event_action)
+            .await)
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
@@ -528,20 +510,10 @@ pub async fn process_confirmed_tx_hash(
     let chain = confirmed_tx_hash.chain;
     let btc_tx_hash = &confirmed_tx_hash.btc_tx_hash;
 
-    let (action, tx_type) = if pending_info.state.is_active_utxo_management() {
-        (
-            "active utxo management",
-            BtcTxType::ActiveUtxoManagement {
-                amount: pending_info.actual_received_amount,
-            },
-        )
+    let action = if pending_info.state.is_active_utxo_management() {
+        "active utxo management"
     } else {
-        (
-            "withdraw",
-            BtcTxType::Withdraw {
-                amount: pending_info.actual_received_amount,
-            },
-        )
+        "withdraw"
     };
 
     let nonce = match near_nonce.reserve_nonce() {
@@ -586,21 +558,13 @@ pub async fn process_confirmed_tx_hash(
                 .near_bridge_client()
                 .and_then(near_bridge_client::NearBridgeClient::account_id)?;
 
-            let event_action = utils::near::resolve_tx_action(
+            Ok(utils::near::resolve_tx_action(
                 jsonrpc_client,
                 tx_hash,
                 signer,
                 &["Not enough blocks confirmed"],
             )
-            .await;
-
-            if matches!(event_action, EventAction::Retry) {
-                return Ok(
-                    utils::utxo::defer_action(&omni_connector, chain, btc_tx_hash, tx_type).await,
-                );
-            }
-
-            Ok(event_action)
+            .await)
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {

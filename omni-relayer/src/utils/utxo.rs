@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, MutexGuard};
 use tracing::{info, warn};
 use utxo_utils::UTXO;
 
-use crate::{config, utils, workers::EventAction};
+use crate::{config, utils};
 
 struct ChainSlot {
     utxos: Mutex<HashMap<String, UTXO>>,
@@ -279,25 +279,6 @@ where
         anyhow::bail!("Failed to add pending LC event to redis sorted set ({redis_key})");
     }
     Ok(())
-}
-
-pub async fn defer_action(
-    omni_connector: &OmniConnector,
-    chain: ChainKind,
-    tx_hash: &str,
-    tx_type: BtcTxType,
-) -> EventAction {
-    match lc_defer_target(omni_connector, chain, tx_hash, tx_type).await {
-        Ok(Some(target_block)) => EventAction::DeferUntilBlock {
-            chain,
-            target_block,
-        },
-        Ok(None) => EventAction::Retry,
-        Err(err) => {
-            warn!("Failed to compute LC defer target for {chain:?}:{tx_hash}, retrying: {err:?}");
-            EventAction::Retry
-        }
-    }
 }
 
 const UTXO_RPC_TIMEOUT: Duration = Duration::from_secs(10);
