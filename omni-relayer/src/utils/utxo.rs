@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, MutexGuard};
 use tracing::{info, warn};
 use utxo_utils::UTXO;
 
-use crate::{config, utils};
+use crate::{config, utils, workers::EventAction};
 
 struct ChainSlot {
     utxos: Mutex<HashMap<String, UTXO>>,
@@ -291,6 +291,58 @@ where
         anyhow::bail!("Failed to add pending LC event to redis sorted set ({redis_key})");
     }
     Ok(())
+}
+
+/// Hand a failed verify back to the LC poller with a freshly computed target,
+/// or fall back to `Retry` when there is no block gap (transient failure) or
+/// the target cannot be computed/stored. The stored key must differ from the
+/// already-published NATS msg id: `JetStream` dedups by `Nats-Msg-Id`, so a
+/// poller replay landing within the duplicate window of the previous publish
+/// would be silently dropped and the event lost after ZREM.
+#[allow(clippy::too_many_arguments)]
+pub async fn defer_or_retry<E>(
+    config: &config::Config,
+    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    omni_connector: &OmniConnector,
+    chain: ChainKind,
+    tx_hash: &str,
+    amount: u128,
+    kind: LcTargetKind,
+    key: &str,
+    event: &E,
+) -> EventAction
+where
+    E: Serialize + std::fmt::Debug + Send,
+{
+    match lc_defer_target(omni_connector, chain, tx_hash, amount, kind).await {
+        Ok(Some(target_block)) => {
+            let retry_key = format!("{key}@retry-{target_block}");
+            match store_pending_lc_event(
+                config,
+                redis_connection_manager,
+                chain,
+                target_block,
+                retry_key,
+                event,
+            )
+            .await
+            {
+                Ok(()) => {
+                    info!("Re-deferring {key} to LC poller (target_block={target_block})");
+                    EventAction::Remove
+                }
+                Err(err) => {
+                    warn!("Failed to re-defer {key} to LC poller, retrying: {err:?}");
+                    EventAction::Retry
+                }
+            }
+        }
+        Ok(None) => EventAction::Retry,
+        Err(err) => {
+            warn!("Failed to compute LC defer target for {key}, retrying: {err:?}");
+            EventAction::Retry
+        }
+    }
 }
 
 const UTXO_RPC_TIMEOUT: Duration = Duration::from_secs(10);

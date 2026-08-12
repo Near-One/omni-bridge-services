@@ -798,6 +798,7 @@ pub(super) async fn handle_transaction_event(
                 chain,
                 btc_tx_hash: utxo_id.tx_hash.clone(),
                 vout: utxo_id.vout,
+                amount: near_sdk::json_types::U128(amount.0),
                 deposit_msg: crate::types::DepositMsg {
                     recipient_id: deposit_msg.recipient_id.clone(),
                     post_actions: deposit_msg.post_actions.clone().map(|actions| {
