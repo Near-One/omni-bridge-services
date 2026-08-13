@@ -198,13 +198,6 @@ async fn compute_lc_target_block(
     Ok(block_height + required_confirmations - 1)
 }
 
-/// The exact requirement as the contract sees it right now: for deposits this
-/// consults the `get_required_confirmations` view (live block-cumulative ring
-/// state), unlike the amount-tier estimate of [`lc_defer_target`]. Reserved
-/// for the moment the contract has actually rejected a verify — the light
-/// client is known to be behind, so the target is not re-checked against the
-/// tip; a target the tip has meanwhile reached is released on the next poller
-/// tick.
 pub async fn exact_lc_target_block(
     omni_connector: &OmniConnector,
     chain: ChainKind,
