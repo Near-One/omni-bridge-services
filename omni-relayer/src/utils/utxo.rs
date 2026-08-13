@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use omni_connector::{BtcTransferSelection, OmniConnector};
+use omni_connector::{BtcTransferSelection, BtcTxType, OmniConnector};
 use omni_types::{ChainKind, OmniAddress};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, MutexGuard};
 use tracing::{info, warn};
 use utxo_utils::UTXO;
 
-use crate::{config, utils};
+use crate::{config, utils, workers::EventAction};
 
 struct ChainSlot {
     utxos: Mutex<HashMap<String, UTXO>>,
@@ -193,17 +193,64 @@ async fn compute_lc_target_block(
         .required_confirmations(amount, uses_extra_msg_path)
         .with_context(|| format!("Failed to compute required confirmations for {chain:?}"))?;
 
-    let block_height = match chain {
-        ChainKind::Btc => {
-            fetch_utxo_block_height(omni_connector.btc_bridge_client()?, chain, tx_hash).await?
-        }
-        ChainKind::Zcash => {
-            fetch_utxo_block_height(omni_connector.zcash_bridge_client()?, chain, tx_hash).await?
-        }
-        _ => anyhow::bail!("Unsupported chain {chain:?} for UTXO LC target"),
-    };
+    let block_height = utxo_tx_block_height(omni_connector, chain, tx_hash).await?;
 
     Ok(block_height + required_confirmations - 1)
+}
+
+/// The exact requirement as the contract sees it right now: for deposits this
+/// consults the `get_required_confirmations` view (live block-cumulative ring
+/// state), unlike the amount-tier estimate of [`lc_defer_target`]. Reserved
+/// for the moment the contract has actually rejected a verify — the light
+/// client is known to be behind, so the target is not re-checked against the
+/// tip; a target the tip has meanwhile reached is released on the next poller
+/// tick.
+pub async fn defer_action(
+    omni_connector: &OmniConnector,
+    chain: ChainKind,
+    tx_hash: &str,
+    tx_type: BtcTxType,
+) -> EventAction {
+    match exact_lc_target_block(omni_connector, chain, tx_hash, tx_type).await {
+        Ok(target_block) => EventAction::DeferUntilBlock {
+            chain,
+            target_block,
+        },
+        Err(err) => {
+            warn!("Failed to compute LC defer target for {chain:?}:{tx_hash}, retrying: {err:?}");
+            EventAction::Retry
+        }
+    }
+}
+
+async fn exact_lc_target_block(
+    omni_connector: &OmniConnector,
+    chain: ChainKind,
+    tx_hash: &str,
+    tx_type: BtcTxType,
+) -> Result<u64> {
+    let block_height = utxo_tx_block_height(omni_connector, chain, tx_hash).await?;
+    let required_confirmations = omni_connector
+        .get_required_btc_confirmations(chain, block_height, tx_type)
+        .await
+        .with_context(|| format!("Failed to get required {chain:?} confirmations"))?;
+    Ok(block_height + required_confirmations - 1)
+}
+
+async fn utxo_tx_block_height(
+    omni_connector: &OmniConnector,
+    chain: ChainKind,
+    tx_hash: &str,
+) -> Result<u64> {
+    match chain {
+        ChainKind::Btc => {
+            fetch_utxo_block_height(omni_connector.btc_bridge_client()?, chain, tx_hash).await
+        }
+        ChainKind::Zcash => {
+            fetch_utxo_block_height(omni_connector.zcash_bridge_client()?, chain, tx_hash).await
+        }
+        _ => anyhow::bail!("Unsupported chain {chain:?} for UTXO LC target"),
+    }
 }
 
 async fn fetch_utxo_block_height<C: utxo_bridge_client::types::UTXOChain>(

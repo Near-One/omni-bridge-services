@@ -12,7 +12,7 @@ use near_rpc_client::NearRpcError;
 use omni_types::{ChainKind, OmniAddress};
 use tracing::{info, warn};
 
-use omni_connector::{BtcDepositArgs, FinTransferArgs, OmniConnector};
+use omni_connector::{BtcDepositArgs, BtcTxType, FinTransferArgs, OmniConnector};
 
 use crate::{config, utils};
 
@@ -186,11 +186,14 @@ pub async fn process_utxo_to_near_init_transfer_event(
         btc_tx_hash,
         vout,
         deposit_msg,
+        amount,
         ..
     } = transfer
     else {
         anyhow::bail!("Expected UtxoToNearTransfer, got: {transfer:?}");
     };
+
+    let uses_extra_msg_path = deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
 
     if config::Config::is_kyt_enabled() {
         let rpc_url = match chain {
@@ -329,7 +332,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 .near_bridge_client()
                 .and_then(near_bridge_client::NearBridgeClient::account_id)?;
 
-            Ok(utils::near::resolve_tx_action(
+            let event_action = utils::near::resolve_tx_action(
                 jsonrpc_client,
                 tx_hash,
                 signer,
@@ -338,7 +341,22 @@ pub async fn process_utxo_to_near_init_transfer_event(
                     "Not enough confirmations for the block-cumulative bridge amount",
                 ],
             )
-            .await)
+            .await;
+
+            if matches!(event_action, EventAction::Retry) && amount.0 > 0 {
+                return Ok(utils::utxo::defer_action(
+                    &omni_connector,
+                    chain,
+                    &btc_tx_hash,
+                    BtcTxType::Deposit {
+                        amount: amount.0,
+                        uses_extra_msg_path,
+                    },
+                )
+                .await);
+            }
+
+            Ok(event_action)
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
