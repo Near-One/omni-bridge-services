@@ -205,25 +205,7 @@ async fn compute_lc_target_block(
 /// client is known to be behind, so the target is not re-checked against the
 /// tip; a target the tip has meanwhile reached is released on the next poller
 /// tick.
-pub async fn defer_action(
-    omni_connector: &OmniConnector,
-    chain: ChainKind,
-    tx_hash: &str,
-    tx_type: BtcTxType,
-) -> EventAction {
-    match exact_lc_target_block(omni_connector, chain, tx_hash, tx_type).await {
-        Ok(target_block) => EventAction::DeferUntilBlock {
-            chain,
-            target_block,
-        },
-        Err(err) => {
-            warn!("Failed to compute LC defer target for {chain:?}:{tx_hash}, retrying: {err:?}");
-            EventAction::Retry
-        }
-    }
-}
-
-async fn exact_lc_target_block(
+pub async fn exact_lc_target_block(
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
@@ -235,6 +217,38 @@ async fn exact_lc_target_block(
         .await
         .with_context(|| format!("Failed to get required {chain:?} confirmations"))?;
     Ok(block_height + required_confirmations - 1)
+}
+
+pub async fn defer_to_lc_poller<E>(
+    config: &config::Config,
+    redis_connection_manager: &mut redis::aio::ConnectionManager,
+    chain: ChainKind,
+    target_block: u64,
+    key: &str,
+    event: &E,
+) -> EventAction
+where
+    E: Serialize + std::fmt::Debug + Send,
+{
+    match store_pending_lc_event(
+        config,
+        redis_connection_manager,
+        chain,
+        target_block,
+        key,
+        event,
+    )
+    .await
+    {
+        Ok(()) => {
+            info!("Deferred {key} to LC poller (target_block={target_block})");
+            EventAction::Remove
+        }
+        Err(err) => {
+            warn!("Failed to defer {key} to LC poller, retrying: {err:?}");
+            EventAction::Retry
+        }
+    }
 }
 
 async fn utxo_tx_block_height(
@@ -274,20 +288,6 @@ pub struct PendingLcEvent {
     pub event: serde_json::Value,
 }
 
-/// Embeds the defer target into the stored key, and thus the NATS msg id the
-/// poller republishes under.
-pub const LC_TARGET_SEPARATOR: &str = "@lc-";
-
-pub fn split_lc_msg_id(msg_id: &str) -> (&str, Option<u64>) {
-    if let Some((base, target)) = msg_id.rsplit_once(LC_TARGET_SEPARATOR)
-        && let Ok(target) = target.parse()
-    {
-        (base, Some(target))
-    } else {
-        (msg_id, None)
-    }
-}
-
 pub fn pending_lc_key(chain: ChainKind) -> Option<String> {
     if chain.is_utxo_chain() {
         Some(format!(
@@ -315,7 +315,10 @@ where
     let value =
         serde_json::to_value(event).context("Failed to serialize pending LC event payload")?;
     let pending = PendingLcEvent {
-        key: format!("{base_key}{LC_TARGET_SEPARATOR}{target_block}"),
+        key: format!(
+            "{base_key}@lc-{target_block}-{}",
+            chrono::Utc::now().timestamp_millis()
+        ),
         event: value,
     };
     if !utils::redis::zadd(
