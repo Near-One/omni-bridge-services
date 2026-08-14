@@ -119,6 +119,47 @@ pub async fn resolve_tx_receipts(
     }
 }
 
+pub async fn tx_has_errors(
+    jsonrpc_client: &JsonRpcClient,
+    tx_hash: CryptoHash,
+    sender_account_id: AccountId,
+    errors: &[&str],
+) -> Result<bool> {
+    let request = near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest {
+        transaction_info: near_jsonrpc_client::methods::tx::TransactionInfo::TransactionId {
+            tx_hash,
+            sender_account_id,
+        },
+        wait_until: near_primitives::views::TxExecutionStatus::Final,
+    };
+
+    let response = jsonrpc_client
+        .call(request)
+        .await
+        .with_context(|| format!("Failed to get transaction status for {tx_hash}"))?;
+
+    let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(outcome)) =
+        response.final_execution_outcome
+    else {
+        return Err(anyhow::anyhow!("Receipts missing for transaction {tx_hash}"));
+    };
+
+    for receipt_outcome in &outcome.receipts_outcome {
+        if let near_primitives::views::ExecutionStatusView::Failure(ref err) =
+            receipt_outcome.outcome.status
+        {
+            let err_str = err.to_string();
+            if errors.iter().any(|e| err_str.contains(e)) {
+                warn!("Transaction {tx_hash} has receipt failure: {err:?}");
+                return Ok(true);
+            }
+            warn!("Transaction {tx_hash} has unexpected receipt failure: {err:?}");
+        }
+    }
+
+    Ok(false)
+}
+
 pub fn extract_sign_transfer_event(
     receipts: &[near_primitives::views::ExecutionOutcomeWithIdView],
 ) -> Vec<WorkerEvent> {

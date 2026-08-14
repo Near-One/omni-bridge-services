@@ -341,7 +341,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 .near_bridge_client()
                 .and_then(near_bridge_client::NearBridgeClient::account_id)?;
 
-            let event_action = utils::near::resolve_tx_action(
+            match utils::near::tx_has_errors(
                 jsonrpc_client,
                 tx_hash,
                 signer,
@@ -350,9 +350,19 @@ pub async fn process_utxo_to_near_init_transfer_event(
                     "Not enough confirmations for the block-cumulative bridge amount",
                 ],
             )
-            .await;
+            .await
+            {
+                Ok(true) => {}
+                Ok(false) => return Ok(EventAction::Remove),
+                Err(err) => {
+                    warn!(
+                        "Failed to check receipts for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), retrying: {err:?}"
+                    );
+                    return Ok(EventAction::Retry);
+                }
+            }
 
-            if matches!(event_action, EventAction::Retry) && amount.0 > 0 {
+            if amount.0 > 0 {
                 match utils::utxo::exact_lc_target_block(
                     &omni_connector,
                     chain,
@@ -381,7 +391,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 }
             }
 
-            Ok(event_action)
+            Ok(EventAction::Retry)
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
