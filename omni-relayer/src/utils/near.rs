@@ -141,7 +141,9 @@ pub async fn tx_has_errors(
     let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(outcome)) =
         response.final_execution_outcome
     else {
-        return Err(anyhow::anyhow!("Receipts missing for transaction {tx_hash}"));
+        return Err(anyhow::anyhow!(
+            "Receipts missing for transaction {tx_hash}"
+        ));
     };
 
     for receipt_outcome in &outcome.receipts_outcome {

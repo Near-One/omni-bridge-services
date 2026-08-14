@@ -195,15 +195,6 @@ pub async fn process_utxo_to_near_init_transfer_event(
         anyhow::bail!("Expected UtxoToNearTransfer, got: {transfer:?}");
     };
 
-    let uses_extra_msg_path = deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
-    let defer_key = format!(
-        "utxo-deposit:{}",
-        UtxoId {
-            tx_hash: btc_tx_hash.clone(),
-            vout,
-        }
-    );
-
     if config::Config::is_kyt_enabled() {
         let rpc_url = match chain {
             ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
@@ -291,6 +282,15 @@ pub async fn process_utxo_to_near_init_transfer_event(
             return Ok(EventAction::Retry);
         }
     }
+
+    let uses_extra_msg_path = deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
+    let defer_key = format!(
+        "utxo-deposit:{}",
+        UtxoId {
+            tx_hash: btc_tx_hash.clone(),
+            vout,
+        }
+    );
 
     let fin_transfer_args = FinTransferArgs::NearFinTransferBTC {
         chain_kind: chain,
