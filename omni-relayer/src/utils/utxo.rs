@@ -17,7 +17,7 @@ use tokio::sync::{Mutex, MutexGuard};
 use tracing::{info, warn};
 use utxo_utils::UTXO;
 
-use crate::{config, utils, workers::EventAction};
+use crate::{config, utils};
 
 struct ChainSlot {
     utxos: Mutex<HashMap<String, UTXO>>,
@@ -210,38 +210,6 @@ pub async fn exact_lc_target_block(
         .await
         .with_context(|| format!("Failed to get required {chain:?} confirmations"))?;
     Ok(block_height + required_confirmations - 1)
-}
-
-pub async fn defer_to_lc_poller<E>(
-    config: &config::Config,
-    redis_connection_manager: &mut redis::aio::ConnectionManager,
-    chain: ChainKind,
-    target_block: u64,
-    key: &str,
-    event: &E,
-) -> EventAction
-where
-    E: Serialize + std::fmt::Debug + Send,
-{
-    match store_pending_lc_event(
-        config,
-        redis_connection_manager,
-        chain,
-        target_block,
-        key,
-        event,
-    )
-    .await
-    {
-        Ok(()) => {
-            info!("Deferred {key} to LC poller (target_block={target_block})");
-            EventAction::Remove
-        }
-        Err(err) => {
-            warn!("Failed to defer {key} to LC poller, retrying: {err:?}");
-            EventAction::Retry
-        }
-    }
 }
 
 async fn utxo_tx_block_height(

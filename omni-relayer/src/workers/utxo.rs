@@ -365,7 +365,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 .await
                 {
                     Ok(target_block) => {
-                        return Ok(utils::utxo::defer_to_lc_poller(
+                        return Ok(defer_to_lc_poller(
                             config,
                             redis,
                             chain,
@@ -414,7 +414,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 warn!(
                     "{chain:?} light client is not synced yet for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), current: {current_height}, waiting for: {target_height}"
                 );
-                return Ok(utils::utxo::defer_to_lc_poller(
+                return Ok(defer_to_lc_poller(
                     config,
                     redis,
                     chain,
@@ -647,7 +647,7 @@ pub async fn process_confirmed_tx_hash(
                 warn!(
                     "Light client is not synced yet for NEAR->{chain:?} {action} ({btc_tx_hash}), current: {current_height}, waiting for: {target_height}"
                 );
-                return Ok(utils::utxo::defer_to_lc_poller(
+                return Ok(defer_to_lc_poller(
                     config,
                     redis,
                     chain,
@@ -659,6 +659,30 @@ pub async fn process_confirmed_tx_hash(
             }
 
             anyhow::bail!("Failed to verify NEAR->{chain:?} {action} ({btc_tx_hash}): {err:?}");
+        }
+    }
+}
+
+async fn defer_to_lc_poller<E>(
+    config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
+    chain: ChainKind,
+    target_block: u64,
+    key: &str,
+    event: &E,
+) -> EventAction
+where
+    E: serde::Serialize + std::fmt::Debug + Send,
+{
+    match utils::utxo::store_pending_lc_event(config, redis, chain, target_block, key, event).await
+    {
+        Ok(()) => {
+            info!("Deferred {key} to LC poller (target_block={target_block})");
+            EventAction::Remove
+        }
+        Err(err) => {
+            warn!("Failed to defer {key} to LC poller, retrying: {err:?}");
+            EventAction::Retry
         }
     }
 }
