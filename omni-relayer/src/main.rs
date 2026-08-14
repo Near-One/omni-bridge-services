@@ -126,14 +126,14 @@ async fn main() -> Result<()> {
         info!("Allowlist active for destination chains: {restricted_destinations:?}");
         if restricted_destinations.contains(&ChainKind::Near) {
             warn!(
-                "Allowlist restricts destination NEAR, but the UTXO->NEAR path cannot enforce sender rules (the sender is not available in that event); recipient rules are applied to plain UTXO deposits and forwarding deposits are dropped"
+                "Allowlist cannot fully restrict destination NEAR; the UTXO->NEAR path cannot enforce sender rules"
             );
         }
         if restricted_destinations.contains(&ChainKind::Btc)
             || restricted_destinations.contains(&ChainKind::Zcash)
         {
             warn!(
-                "Allowlist restricts a UTXO destination; the NEAR->UTXO signing step cannot see the recipient, so recipient rules there rely on the init-path check of whichever relayer initiated the transfer"
+                "Allowlist cannot fully restrict a UTXO destination; the NEAR->UTXO signing step cannot see the recipient"
             );
         }
     }
