@@ -362,33 +362,31 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 }
             }
 
-            if amount.0 > 0 {
-                match utils::utxo::exact_lc_target_block(
-                    &omni_connector,
-                    chain,
-                    &btc_tx_hash,
-                    BtcTxType::Deposit {
-                        amount: amount.0,
-                        uses_extra_msg_path,
-                    },
-                )
-                .await
-                {
-                    Ok(target_block) => {
-                        return Ok(defer_to_lc_poller(
-                            config,
-                            redis,
-                            chain,
-                            target_block,
-                            &defer_key,
-                            &transfer_payload,
-                        )
-                        .await);
-                    }
-                    Err(err) => warn!(
-                        "Failed to compute LC defer target for {chain:?}:{btc_tx_hash}, retrying: {err:?}"
-                    ),
+            match utils::utxo::exact_lc_target_block(
+                &omni_connector,
+                chain,
+                &btc_tx_hash,
+                BtcTxType::Deposit {
+                    amount: amount.0,
+                    uses_extra_msg_path,
+                },
+            )
+            .await
+            {
+                Ok(target_block) => {
+                    return Ok(defer_to_lc_poller(
+                        config,
+                        redis,
+                        chain,
+                        target_block,
+                        &defer_key,
+                        &transfer_payload,
+                    )
+                    .await);
                 }
+                Err(err) => warn!(
+                    "Failed to compute LC defer target for {chain:?}:{btc_tx_hash}, retrying: {err:?}"
+                ),
             }
 
             Ok(EventAction::Retry)
