@@ -171,12 +171,12 @@ pub async fn lc_defer_target(
         .await
         .with_context(|| format!("Failed to query {chain:?} light client tip"))?;
     let target =
-        compute_lc_target_block(omni_connector, chain, tx_hash, amount, uses_extra_msg_path)
+        estimated_lc_target_block(omni_connector, chain, tx_hash, amount, uses_extra_msg_path)
             .await?;
     Ok(if tip >= target { None } else { Some(target) })
 }
 
-async fn compute_lc_target_block(
+async fn estimated_lc_target_block(
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
