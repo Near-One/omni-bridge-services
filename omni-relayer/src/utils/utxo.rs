@@ -249,14 +249,6 @@ pub struct PendingLcEvent {
     pub event: serde_json::Value,
 }
 
-const LC_TARGET_SEPARATOR: &str = "@lc-";
-
-pub fn deferred_target_from_msg_id(msg_id: &str) -> Option<u64> {
-    msg_id
-        .rsplit_once(LC_TARGET_SEPARATOR)
-        .and_then(|(_, target)| target.parse().ok())
-}
-
 pub fn pending_lc_key(chain: ChainKind) -> Option<String> {
     if chain.is_utxo_chain() {
         Some(format!(
@@ -284,7 +276,10 @@ where
     let value =
         serde_json::to_value(event).context("Failed to serialize pending LC event payload")?;
     let pending = PendingLcEvent {
-        key: format!("{base_key}{LC_TARGET_SEPARATOR}{target_block}"),
+        key: format!(
+            "{base_key}@lc-{target_block}-{}",
+            chrono::Utc::now().timestamp_millis()
+        ),
         event: value,
     };
     if !utils::redis::zadd(
