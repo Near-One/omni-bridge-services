@@ -182,7 +182,6 @@ pub async fn process_utxo_to_near_init_transfer_event(
         anyhow::bail!("Near bridge client is not configured");
     };
 
-    let transfer_payload = transfer.clone();
     let Transfer::UtxoToNear {
         chain,
         btc_tx_hash,
@@ -190,7 +189,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
         deposit_msg,
         amount,
         ..
-    } = transfer
+    } = transfer.clone()
     else {
         anyhow::bail!("Expected UtxoToNearTransfer, got: {transfer:?}");
     };
@@ -380,7 +379,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                         chain,
                         target_block,
                         &defer_key,
-                        &transfer_payload,
+                        &transfer,
                     )
                     .await);
                 }
@@ -428,7 +427,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                     chain,
                     target_height,
                     &defer_key,
-                    &transfer_payload,
+                    &transfer,
                 )
                 .await);
             }
