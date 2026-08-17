@@ -492,6 +492,12 @@ pub async fn process_events(
             }
         };
 
+        let last_deferred_target = msg
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("Nats-Msg-Id"))
+            .and_then(|msg_id| utils::utxo::deferred_target_from_msg_id(msg_id.as_str()));
+
         let consumer_config = nats_config.relayer_consumer.clone();
         let config = config.clone();
         let mut redis = redis_connection_manager.clone();
@@ -521,6 +527,7 @@ pub async fn process_events(
 
                 let message_result = process_message(
                     event,
+                    last_deferred_target,
                     &config,
                     &mut redis,
                     &jsonrpc_client,
@@ -574,6 +581,7 @@ pub async fn process_events(
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn process_message(
     event: serde_json::Value,
+    last_deferred_target: Option<u64>,
     config: &config::Config,
     redis: &mut redis::aio::ConnectionManager,
     jsonrpc_client: &JsonRpcClient,
@@ -730,6 +738,7 @@ async fn process_message(
                     omni_connector.clone(),
                     transfer,
                     near_omni_nonce.clone(),
+                    last_deferred_target,
                 )
                 .await;
                 MessageResult {
@@ -998,6 +1007,7 @@ async fn process_message(
             omni_connector.clone(),
             confirmed_tx_hash,
             near_omni_nonce.clone(),
+            last_deferred_target,
         )
         .await;
         MessageResult {

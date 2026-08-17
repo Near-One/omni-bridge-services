@@ -177,6 +177,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
+    last_deferred_target: Option<u64>,
 ) -> Result<EventAction> {
     let Ok(near_bridge_client) = omni_connector.near_bridge_client() else {
         anyhow::bail!("Near bridge client is not configured");
@@ -380,6 +381,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                             redis,
                             chain,
                             target_block,
+                            last_deferred_target,
                             &defer_key,
                             &transfer_payload,
                         )
@@ -429,6 +431,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                     redis,
                     chain,
                     target_height,
+                    last_deferred_target,
                     &defer_key,
                     &transfer_payload,
                 )
@@ -538,6 +541,7 @@ pub async fn process_confirmed_tx_hash(
     omni_connector: Arc<OmniConnector>,
     confirmed_tx_hash: ConfirmedTxHash,
     near_nonce: Arc<utils::nonce::NonceManager>,
+    last_deferred_target: Option<u64>,
 ) -> Result<EventAction> {
     let Ok(client) = omni_connector.near_bridge_client() else {
         anyhow::bail!("Near bridge client is not configured");
@@ -662,6 +666,7 @@ pub async fn process_confirmed_tx_hash(
                     redis,
                     chain,
                     target_height,
+                    last_deferred_target,
                     &format!("utxo-withdraw:{btc_tx_hash}"),
                     &confirmed_tx_hash,
                 )
@@ -678,12 +683,20 @@ async fn defer_to_lc_poller<E>(
     redis: &mut redis::aio::ConnectionManager,
     chain: ChainKind,
     target_block: u64,
+    last_deferred_target: Option<u64>,
     key: &str,
     event: &E,
 ) -> EventAction
 where
     E: serde::Serialize + std::fmt::Debug + Send,
 {
+    if let Some(last) = last_deferred_target
+        && target_block <= last
+    {
+        warn!("Defer target {target_block} for {key} has not grown past {last}, retrying");
+        return EventAction::Retry;
+    }
+
     match utils::utxo::store_pending_lc_event(config, redis, chain, target_block, key, event).await
     {
         Ok(()) => {
