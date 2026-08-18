@@ -21,7 +21,9 @@ use omni_types::{
 };
 
 use crate::{
-    config, utils,
+    config,
+    metrics::{Metrics, stall_reason},
+    utils,
     workers::{DeployToken, FinTransfer},
 };
 
@@ -148,6 +150,7 @@ pub async fn process_init_transfer_event(
             "VAA is not ready for {chain_kind:?}:{}: {tx_hash:?}",
             log.origin_nonce
         );
+        Metrics::global().record_stalled_retry(stall_reason::VAA_NOT_READY, Some(chain_kind));
         return Ok(EventAction::Retry);
     };
 
@@ -282,6 +285,8 @@ pub async fn process_init_transfer_event(
                             "Failed to finalize transfer ({chain_kind:?}:{}), retrying: {near_rpc_error:?}",
                             log.origin_nonce
                         );
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::NEAR_RPC, Some(ChainKind::Near));
                         return Ok(EventAction::Retry);
                     }
                     _ => {
@@ -296,18 +301,23 @@ pub async fn process_init_transfer_event(
                     "Light client is not synced yet for transfer ({chain_kind:?}:{}), block: {}",
                     log.origin_nonce, block
                 );
+                Metrics::global()
+                    .record_stalled_retry(stall_reason::LIGHT_CLIENT_NOT_SYNCED, Some(chain_kind));
                 return Ok(EventAction::Retry);
             } else if let BridgeSdkError::EthRpcError(EthRpcError::RpcError(err)) = err {
                 warn!(
                     "Ethereum client error occurred while finalizing transfer ({chain_kind:?}:{}), retrying: {err:?}",
                     log.origin_nonce
                 );
+                Metrics::global().record_stalled_retry(stall_reason::EVM_RPC, Some(chain_kind));
                 return Ok(EventAction::Retry);
             } else if let BridgeSdkError::MpcFinalityNotReached = err {
                 warn!(
                     "MPC finality not reached yet for transfer ({chain_kind:?}:{}), retrying",
                     log.origin_nonce
                 );
+                Metrics::global()
+                    .record_stalled_retry(stall_reason::MPC_FINALITY, Some(chain_kind));
                 return Ok(EventAction::Retry);
             }
 

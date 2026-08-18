@@ -20,6 +20,7 @@ use omni_types::{
     prover_args::WormholeVerifyProofArgs, prover_result::ProofKind,
 };
 
+use crate::metrics::{Metrics, stall_reason};
 use crate::{config, utils};
 
 use super::{DeployToken, EventAction, FinTransfer, Transfer};
@@ -141,6 +142,7 @@ pub async fn process_init_transfer_event(
             "VAA is not ready for {:?}:{}",
             transfer_id.origin_chain, transfer_id.origin_nonce
         );
+        Metrics::global().record_stalled_retry(stall_reason::VAA_NOT_READY, Some(chain_kind));
         return Ok(EventAction::Retry);
     };
 
@@ -209,6 +211,8 @@ pub async fn process_init_transfer_event(
                     )
                     | NearRpcError::RpcTransactionError(_) => {
                         warn!("Failed to finalize transfer, retrying: {near_rpc_error:?}",);
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::NEAR_RPC, Some(ChainKind::Near));
                         return Ok(EventAction::Retry);
                     }
                     _ => {
@@ -281,6 +285,7 @@ pub async fn process_fin_transfer_event(
         .await
     else {
         warn!("VAA is not ready for {chain_kind:?}:{sequence}");
+        Metrics::global().record_stalled_retry(stall_reason::VAA_NOT_READY, Some(chain_kind));
         return Ok(EventAction::Retry);
     };
 

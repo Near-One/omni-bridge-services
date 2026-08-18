@@ -8186,12 +8186,13 @@ dependencies = [
 
 [[package]]
 name = "omni-relayer"
-version = "0.6.33"
+version = "0.6.34"
 dependencies = [
  "alloy",
  "anyhow",
  "aptos-bridge-client",
  "async-nats",
+ "base64 0.22.1",
  "borsh 1.8.0",
  "bridge-connector-common",
  "bridge-indexer-types",
@@ -8214,6 +8215,9 @@ dependencies = [
  "near-sdk",
  "omni-connector",
  "omni-types",
+ "opentelemetry 0.27.1",
+ "opentelemetry-otlp 0.27.0",
+ "opentelemetry_sdk 0.27.1",
  "redis",
  "reqwest 0.12.28",
  "rust_decimal",

@@ -17,6 +17,7 @@ use near_rpc_client::NearRpcError;
 use omni_connector::OmniConnector;
 use omni_types::{ChainKind, Fee, TransferId};
 
+use crate::metrics::{Metrics, stall_reason};
 use crate::{config, utils};
 
 use super::{DeployToken, EventAction, FinTransfer, Transfer};
@@ -180,6 +181,8 @@ pub async fn process_init_transfer_event(
                             "Failed to finalize Aptos transfer ({:?}:{}), retrying: {near_rpc_error:?}",
                             transfer_id.origin_chain, transfer_id.origin_nonce
                         );
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::NEAR_RPC, Some(ChainKind::Near));
                         return Ok(EventAction::Retry);
                     }
                     _ => {
@@ -195,6 +198,8 @@ pub async fn process_init_transfer_event(
                     "MPC finality not reached yet for Aptos transfer ({:?}:{}), retrying",
                     transfer_id.origin_chain, transfer_id.origin_nonce
                 );
+                Metrics::global()
+                    .record_stalled_retry(stall_reason::MPC_FINALITY, Some(ChainKind::Aptos));
                 return Ok(EventAction::Retry);
             }
 

@@ -14,7 +14,11 @@ use tracing::{info, warn};
 
 use omni_connector::{BtcDepositArgs, FinTransferArgs, OmniConnector};
 
-use crate::{config, utils};
+use crate::{
+    config,
+    metrics::{Metrics, stall_reason},
+    utils,
+};
 
 use super::{EventAction, Transfer};
 
@@ -347,6 +351,8 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 warn!(
                     "{chain:?} light client is not synced yet for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), block: {block}"
                 );
+                Metrics::global()
+                    .record_stalled_retry(stall_reason::LIGHT_CLIENT_NOT_SYNCED, Some(chain));
                 return Ok(EventAction::Retry);
             }
 
@@ -424,6 +430,8 @@ pub async fn process_sign_transaction_event(
                         warn!(
                             "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}, retrying: {near_rpc_error:?}"
                         );
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::NEAR_RPC, Some(ChainKind::Near));
                         return Ok(EventAction::Retry);
                     }
                     _ => {
@@ -436,6 +444,7 @@ pub async fn process_sign_transaction_event(
                 warn!(
                     "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}, retrying: {err:?}"
                 );
+                Metrics::global().record_stalled_retry(stall_reason::UTXO_RPC, Some(chain));
                 return Ok(EventAction::Retry);
             }
 
@@ -566,6 +575,8 @@ pub async fn process_confirmed_tx_hash(
                 warn!(
                     "Light client is not synced yet for NEAR->{chain:?} {action} ({btc_tx_hash}), block: {block}"
                 );
+                Metrics::global()
+                    .record_stalled_retry(stall_reason::LIGHT_CLIENT_NOT_SYNCED, Some(chain));
                 return Ok(EventAction::Retry);
             }
 

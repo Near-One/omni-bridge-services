@@ -10,6 +10,7 @@ use omni_types::{ChainKind, near_events::OmniBridgeEvent};
 
 use crate::{
     config,
+    metrics::{Metrics, receipt_outcome},
     workers::{EventAction, Transfer, WorkerEvent},
 };
 
@@ -86,6 +87,7 @@ pub async fn resolve_tx_receipts(
         Ok(response) => response,
         Err(err) => {
             warn!("Failed to get transaction status for {tx_hash}: {err:?}");
+            Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_RPC);
             return Err(EventAction::Retry);
         }
     };
@@ -94,6 +96,7 @@ pub async fn resolve_tx_receipts(
         response.final_execution_outcome
     else {
         warn!("Receipts missing for transaction {tx_hash}");
+        Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_MISSING);
         return Err(EventAction::Retry);
     };
 
@@ -105,6 +108,7 @@ pub async fn resolve_tx_receipts(
             let err_str = err.to_string();
             if retryable_errors.iter().any(|e| err_str.contains(e)) {
                 warn!("Transaction {tx_hash} has retryable receipt failure: {err:?}");
+                Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_FAILURE);
                 return Err(EventAction::Retry);
             }
             warn!("Transaction {tx_hash} has non-retryable receipt failure: {err:?}");
@@ -113,8 +117,10 @@ pub async fn resolve_tx_receipts(
     }
 
     if non_retryable_failure {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::REVERTED);
         Err(EventAction::Remove)
     } else {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::OK);
         Ok(outcome.receipts_outcome)
     }
 }

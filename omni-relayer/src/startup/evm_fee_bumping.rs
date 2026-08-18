@@ -14,6 +14,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::{self, Evm},
+    metrics::{Metrics, pending_tx_outcome},
     utils::{
         self,
         pending_transactions::{self, PendingTransaction},
@@ -109,6 +110,8 @@ pub async fn start_evm_fee_bumping(
                     "Error checking transaction {} status for {chain_kind:?}: {err:?}",
                     pending_tx.tx_hash
                 );
+                Metrics::global()
+                    .record_evm_pending_tx(chain_kind, pending_tx_outcome::STATUS_CHECK_FAILED);
                 sleep(fee_bumping_config.check_interval_seconds).await;
                 continue;
             }
@@ -116,6 +119,7 @@ pub async fn start_evm_fee_bumping(
 
         match tx_status {
             TransactionStatus::Included(_) => {
+                Metrics::global().record_evm_pending_tx(chain_kind, pending_tx_outcome::INCLUDED);
                 utils::redis::zrem(config, redis_connection_manager, &redis_key, pending_tx).await;
             }
             TransactionStatus::Missing => {
@@ -123,6 +127,8 @@ pub async fn start_evm_fee_bumping(
                     "Resending source event of missing transaction {} (nonce: {}) on {chain_kind:?}",
                     pending_tx.tx_hash, pending_tx.nonce
                 );
+                Metrics::global()
+                    .record_evm_pending_tx(chain_kind, pending_tx_outcome::MISSING_REPLAYED);
 
                 let chain = chain_kind.as_ref().to_ascii_lowercase();
                 let subject = format!("{}.{chain}", nats_config.relayer_subject);
@@ -151,6 +157,8 @@ pub async fn start_evm_fee_bumping(
                             "Not bumping fee for transaction {} on {chain_kind:?}: {}",
                             pending_tx.tx_hash, reason
                         );
+                        Metrics::global()
+                            .record_evm_pending_tx(chain_kind, pending_tx_outcome::NOT_BUMPED);
                         sleep(fee_bumping_config.check_interval_seconds).await;
                         continue;
                     }
@@ -176,6 +184,8 @@ pub async fn start_evm_fee_bumping(
                             "Error sending replacement transaction for {} on {chain_kind:?}: {err:?}",
                             pending_tx.tx_hash
                         );
+                        Metrics::global()
+                            .record_evm_pending_tx(chain_kind, pending_tx_outcome::BUMP_FAILED);
                         sleep(fee_bumping_config.check_interval_seconds).await;
                         continue;
                     }
@@ -187,6 +197,7 @@ pub async fn start_evm_fee_bumping(
                     "Replacement transaction sent: {} (replaced {}) for {chain_kind:?}",
                     new_tx_hash, pending_tx.tx_hash
                 );
+                Metrics::global().record_evm_pending_tx(chain_kind, pending_tx_outcome::BUMPED);
 
                 utils::redis::zrem(
                     config,

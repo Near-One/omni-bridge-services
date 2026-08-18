@@ -24,6 +24,7 @@ use omni_types::{
     UtxoFinTransferMsg, UtxoId, near_events::OmniBridgeEvent,
 };
 
+use crate::metrics::{Metrics, event_outcome};
 use crate::{config, utils};
 
 mod aptos;
@@ -101,6 +102,7 @@ struct MessageResult {
     needs_evm_nonce_resync: bool,
     fee_key_to_remove: Option<String>,
     produced_events: Vec<WorkerEvent>,
+    origin_chain: Option<ChainKind>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -241,6 +243,24 @@ impl Transfer {
         })
     }
 
+    fn origin_chain(&self) -> ChainKind {
+        match self {
+            Transfer::Near {
+                transfer_message, ..
+            } => transfer_message.get_transfer_id().origin_chain,
+            Transfer::Evm { chain_kind, .. } => *chain_kind,
+            Transfer::Solana { sender, .. } => sender.get_chain(),
+            Transfer::Starknet { .. } => ChainKind::Strk,
+            Transfer::Aptos { .. } => ChainKind::Aptos,
+            Transfer::Fast { transfer_id, .. } => transfer_id.origin_chain,
+            Transfer::Utxo {
+                new_transfer_id, ..
+            } => new_transfer_id.origin_chain,
+            Transfer::UtxoToNear { chain, .. } => *chain,
+            Transfer::NearToUtxo { .. } => ChainKind::Near,
+        }
+    }
+
     fn log_context(&self) -> LogContext {
         let (kind, tx) = match self {
             Transfer::Near { .. } => ("Transfer::Near", None),
@@ -311,6 +331,12 @@ impl FinTransfer {
         }
     }
 
+    /// The chain this fin-transfer's underlying transfer originated from, for
+    /// the `chain` metric label.
+    fn origin_chain(&self) -> Option<ChainKind> {
+        self.transfer_id().map(|id| id.origin_chain)
+    }
+
     fn log_context(&self) -> LogContext {
         let (kind, tx) = match self {
             FinTransfer::Evm { tx_hash, .. } => ("FinTransfer::Evm", Some(tx_hash.to_string())),
@@ -352,6 +378,18 @@ pub enum DeployToken {
 }
 
 impl DeployToken {
+    /// The chain the token is being deployed on, for the `chain` metric label.
+    /// Always known, unlike the transfer-carrying events.
+    fn origin_chain(&self) -> ChainKind {
+        match self {
+            DeployToken::Evm { chain_kind, .. } | DeployToken::Solana { chain_kind, .. } => {
+                *chain_kind
+            }
+            DeployToken::Starknet { .. } => ChainKind::Strk,
+            DeployToken::Aptos { .. } => ChainKind::Aptos,
+        }
+    }
+
     fn log_context(&self) -> LogContext {
         let (kind, tx) = match self {
             DeployToken::Evm { tx_hash, .. } => ("DeployToken::Evm", Some(tx_hash.to_string())),
@@ -371,7 +409,9 @@ async fn handle_nats_ack(
     msg: &async_nats::jetstream::message::Message,
     result: &Result<EventAction>,
     config: &config::RelayerConsumer,
+    origin_chain: Option<ChainKind>,
 ) {
+    let metrics = Metrics::global();
     let max_backoff = Duration::from_secs(config.max_backoff_hours * 3600);
     let max_message_age = Duration::from_secs(config.max_message_age_hours * 3600);
 
@@ -384,6 +424,8 @@ async fn handle_nats_ack(
 
                 if age > max_message_age {
                     warn!("Message exceeded max age ({age:?}), terminating");
+                    metrics.record_event(origin_chain, event_outcome::DROPPED_MAX_AGE);
+                    metrics.record_message_age(origin_chain, age);
                     msg.ack_with(async_nats::jetstream::AckKind::Term)
                         .await
                         .ok();
@@ -391,8 +433,14 @@ async fn handle_nats_ack(
                 }
 
                 let backoff = if let Ok(EventAction::RetryAfter(delay)) = result {
+                    // The scheduled finality wait, which fires on essentially
+                    // every transfer. Counted apart from `RETRY` so that the
+                    // latter stays a usable stall signal.
+                    metrics.record_event(origin_chain, event_outcome::RETRY_SCHEDULED);
                     (*delay).min(max_backoff)
                 } else {
+                    metrics.record_event(origin_chain, event_outcome::RETRY);
+                    metrics.record_message_age(origin_chain, age);
                     let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
                     Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
                         .min(max_backoff)
@@ -400,12 +448,16 @@ async fn handle_nats_ack(
                 msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
                     .await
                     .ok();
+            } else {
+                metrics.record_event(origin_chain, event_outcome::DROPPED_UNACKED);
             }
         }
         Ok(EventAction::Remove) => {
+            metrics.record_event(origin_chain, event_outcome::DONE);
             msg.ack().await.ok();
         }
         Err(_) => {
+            metrics.record_event(origin_chain, event_outcome::DROPPED_TERMINAL);
             msg.ack_with(async_nats::jetstream::AckKind::Term)
                 .await
                 .ok();
@@ -451,6 +503,10 @@ pub async fn process_events(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(
         nats_config.relayer_consumer.worker_count,
     ));
+    crate::metrics::register_workers_in_flight(
+        &semaphore,
+        nats_config.relayer_consumer.worker_count,
+    );
 
     info!(
         "Starting event processing with {} concurrent workers",
@@ -471,6 +527,7 @@ pub async fn process_events(
         if is_evm_nonce_resync_needed.load(Ordering::Relaxed) {
             if let Err(err) = evm_nonces.resync_nonces().await {
                 warn!("Failed to resync evm nonces: {err:?}");
+                Metrics::global().record_event(None, event_outcome::DROPPED_UNACKED);
                 continue;
             }
             is_evm_nonce_resync_needed.store(false, Ordering::Relaxed);
@@ -482,6 +539,7 @@ pub async fn process_events(
             Ok(e) => e,
             Err(err) => {
                 warn!("Failed to deserialize event: {err:?}");
+                Metrics::global().record_event(None, event_outcome::DROPPED_UNDECODABLE);
                 msg.ack_with(async_nats::jetstream::AckKind::Term)
                     .await
                     .ok();
@@ -558,7 +616,13 @@ pub async fn process_events(
                     publish_event(&config, &nats_client, event).await;
                 }
 
-                handle_nats_ack(&msg, &message_result.action, &consumer_config).await;
+                handle_nats_ack(
+                    &msg,
+                    &message_result.action,
+                    &consumer_config,
+                    message_result.origin_chain,
+                )
+                .await;
 
                 drop(permit);
             }
@@ -584,6 +648,7 @@ async fn process_message(
 ) -> MessageResult {
     if let Ok(transfer) = serde_json::from_value::<Transfer>(event.clone()) {
         transfer.log_context().record();
+        let origin_chain = Some(transfer.origin_chain());
 
         match transfer {
             Transfer::Near { .. } | Transfer::Utxo { .. } => {
@@ -638,6 +703,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
                     produced_events,
+                    origin_chain,
                 }
             }
             Transfer::Evm {
@@ -669,6 +735,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::Solana {
@@ -676,7 +743,7 @@ async fn process_message(
                 ref sender,
                 ..
             } => {
-                let origin_chain = sender.get_chain();
+                let sender_chain = sender.get_chain();
                 let result = solana::process_init_transfer_event(
                     config,
                     redis,
@@ -690,7 +757,7 @@ async fn process_message(
 
                 let fee_key = serde_json::to_string(&TransferId {
                     origin_nonce: sequence,
-                    origin_chain,
+                    origin_chain: sender_chain,
                 })
                 .unwrap_or_default();
 
@@ -701,6 +768,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::NearToUtxo { .. } => {
@@ -718,6 +786,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove: None,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::UtxoToNear { .. } => {
@@ -733,6 +802,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove: None,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::Starknet { origin_nonce, .. } => {
@@ -760,6 +830,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::Aptos { origin_nonce, .. } => {
@@ -787,6 +858,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::Fast { .. } => {
@@ -798,6 +870,7 @@ async fn process_message(
                         needs_evm_nonce_resync: false,
                         fee_key_to_remove: None,
                         produced_events: Vec::new(),
+                        origin_chain,
                     };
                 };
 
@@ -813,6 +886,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key_to_remove: None,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
         }
@@ -830,6 +904,7 @@ async fn process_message(
             .record();
 
             let is_evm = message_payload.recipient.get_chain().is_evm_chain();
+            let origin_chain = Some(message_payload.transfer_id.origin_chain);
             let fee_key = serde_json::to_string(&message_payload.transfer_id).unwrap_or_default();
 
             let result = near::process_sign_transfer_event(
@@ -849,6 +924,7 @@ async fn process_message(
                 needs_evm_nonce_resync: is_evm,
                 fee_key_to_remove,
                 produced_events: Vec::new(),
+                origin_chain,
             }
         } else {
             MessageResult {
@@ -856,10 +932,12 @@ async fn process_message(
                 needs_evm_nonce_resync: false,
                 fee_key_to_remove: None,
                 produced_events: Vec::new(),
+                origin_chain: None,
             }
         }
     } else if let Ok(fin_transfer_event) = serde_json::from_value::<FinTransfer>(event.clone()) {
         fin_transfer_event.log_context().record();
+        let origin_chain = fin_transfer_event.origin_chain();
 
         let result = match fin_transfer_event {
             FinTransfer::Evm { .. } => {
@@ -909,9 +987,11 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
             produced_events: Vec::new(),
+            origin_chain,
         }
     } else if let Ok(deploy_token_event) = serde_json::from_value::<DeployToken>(event.clone()) {
         deploy_token_event.log_context().record();
+        let origin_chain = Some(deploy_token_event.origin_chain());
 
         let result = match deploy_token_event {
             DeployToken::Evm { .. } => {
@@ -953,6 +1033,7 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
             produced_events: Vec::new(),
+            origin_chain,
         }
     } else if let Ok(sign_utxo_transaction_event) =
         serde_json::from_value::<utxo::SignUtxoTransaction>(event.clone())
@@ -963,6 +1044,7 @@ async fn process_message(
             tx: sign_utxo_transaction_event.btc_pending_id.clone(),
         }
         .record();
+        let origin_chain = Some(ChainKind::Near);
 
         let result = utxo::process_sign_transaction_event(
             config,
@@ -976,6 +1058,7 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
             produced_events: Vec::new(),
+            origin_chain,
         }
     } else if let Ok(confirmed_tx_hash) =
         serde_json::from_value::<utxo::ConfirmedTxHash>(event.clone())
@@ -986,6 +1069,8 @@ async fn process_message(
             tx: Some(confirmed_tx_hash.btc_tx_hash.clone()),
         }
         .record();
+
+        let origin_chain = Some(ChainKind::Near);
 
         let result = utxo::process_confirmed_tx_hash(
             jsonrpc_client,
@@ -999,6 +1084,7 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
             produced_events: Vec::new(),
+            origin_chain,
         }
     } else {
         MessageResult {
@@ -1006,6 +1092,7 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key_to_remove: None,
             produced_events: Vec::new(),
+            origin_chain: None,
         }
     }
 }
