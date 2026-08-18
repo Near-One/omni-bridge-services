@@ -405,6 +405,26 @@ impl DeployToken {
     }
 }
 
+/// Records exactly one disposition for a message: `outcome` when the
+/// acknowledgement reached the server, or [`event_outcome::DROPPED_UNACKED`]
+/// when it did not. An unacknowledged message stays on the stream and is
+/// redelivered, so the intended disposition never took effect and reporting it
+/// would overstate both throughput and permanent drops.
+fn record_ack(
+    ack: &std::result::Result<(), async_nats::Error>,
+    origin_chain: Option<ChainKind>,
+    outcome: &'static str,
+) {
+    let metrics = Metrics::global();
+    match ack {
+        Ok(()) => metrics.record_event(origin_chain, outcome),
+        Err(err) => {
+            warn!("Failed to acknowledge message (intended {outcome}): {err:?}");
+            metrics.record_event(origin_chain, event_outcome::DROPPED_UNACKED);
+        }
+    }
+}
+
 async fn handle_nats_ack(
     msg: &async_nats::jetstream::message::Message,
     result: &Result<EventAction>,
@@ -424,43 +444,41 @@ async fn handle_nats_ack(
 
                 if age > max_message_age {
                     warn!("Message exceeded max age ({age:?}), terminating");
-                    metrics.record_event(origin_chain, event_outcome::DROPPED_MAX_AGE);
                     metrics.record_message_age(origin_chain, age);
-                    msg.ack_with(async_nats::jetstream::AckKind::Term)
-                        .await
-                        .ok();
+                    let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
+                    record_ack(&ack, origin_chain, event_outcome::DROPPED_MAX_AGE);
                     return;
                 }
 
-                let backoff = if let Ok(EventAction::RetryAfter(delay)) = result {
+                let (outcome, backoff) = if let Ok(EventAction::RetryAfter(delay)) = result {
                     // The scheduled finality wait, which fires on essentially
                     // every transfer. Counted apart from `RETRY` so that the
                     // latter stays a usable stall signal.
-                    metrics.record_event(origin_chain, event_outcome::RETRY_SCHEDULED);
-                    (*delay).min(max_backoff)
+                    (event_outcome::RETRY_SCHEDULED, (*delay).min(max_backoff))
                 } else {
-                    metrics.record_event(origin_chain, event_outcome::RETRY);
                     metrics.record_message_age(origin_chain, age);
                     let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
-                    Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
-                        .min(max_backoff)
+                    (
+                        event_outcome::RETRY,
+                        Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
+                            .min(max_backoff),
+                    )
                 };
-                msg.ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
-                    .await
-                    .ok();
+                let ack = msg
+                    .ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
+                    .await;
+                record_ack(&ack, origin_chain, outcome);
             } else {
                 metrics.record_event(origin_chain, event_outcome::DROPPED_UNACKED);
             }
         }
         Ok(EventAction::Remove) => {
-            metrics.record_event(origin_chain, event_outcome::DONE);
-            msg.ack().await.ok();
+            let ack = msg.ack().await;
+            record_ack(&ack, origin_chain, event_outcome::DONE);
         }
         Err(_) => {
-            metrics.record_event(origin_chain, event_outcome::DROPPED_TERMINAL);
-            msg.ack_with(async_nats::jetstream::AckKind::Term)
-                .await
-                .ok();
+            let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
+            record_ack(&ack, origin_chain, event_outcome::DROPPED_TERMINAL);
         }
     }
 }
@@ -539,10 +557,8 @@ pub async fn process_events(
             Ok(e) => e,
             Err(err) => {
                 warn!("Failed to deserialize event: {err:?}");
-                Metrics::global().record_event(None, event_outcome::DROPPED_UNDECODABLE);
-                msg.ack_with(async_nats::jetstream::AckKind::Term)
-                    .await
-                    .ok();
+                let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
+                record_ack(&ack, None, event_outcome::DROPPED_UNDECODABLE);
                 drop(permit);
                 continue;
             }

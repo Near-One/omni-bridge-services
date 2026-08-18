@@ -37,9 +37,11 @@ pub mod event_outcome {
     pub const DROPPED_MAX_AGE: &str = "dropped_max_age";
     /// Terminated because the payload was not valid JSON.
     pub const DROPPED_UNDECODABLE: &str = "dropped_undecodable";
-    /// Pulled but never acked or nak'd, because the EVM nonce resync failed and
-    /// the loop restarted. Head-of-line stall: throughput goes to zero while the
-    /// process still looks healthy.
+    /// Pulled, but the acknowledgement never reached the server, so the message
+    /// stays on the stream and will be redelivered. Three causes: the EVM nonce
+    /// resync failed and the loop restarted, the message carried no stream info
+    /// to compute a backoff from, or the ack/nak/term call itself errored.
+    /// In every case throughput drops while the process still looks healthy.
     pub const DROPPED_UNACKED: &str = "dropped_unacked";
 }
 

@@ -127,9 +127,6 @@ pub async fn start_evm_fee_bumping(
                     "Resending source event of missing transaction {} (nonce: {}) on {chain_kind:?}",
                     pending_tx.tx_hash, pending_tx.nonce
                 );
-                Metrics::global()
-                    .record_evm_pending_tx(chain_kind, pending_tx_outcome::MISSING_REPLAYED);
-
                 let chain = chain_kind.as_ref().to_ascii_lowercase();
                 let subject = format!("{}.{chain}", nats_config.relayer_subject);
                 let key = format!("replay:{}", pending_tx.tx_hash);
@@ -140,6 +137,9 @@ pub async fn start_evm_fee_bumping(
                     .publish(subject, &key, payload)
                     .await
                     .context("Failed to publish replay event to NATS")?;
+
+                Metrics::global()
+                    .record_evm_pending_tx(chain_kind, pending_tx_outcome::MISSING_REPLAYED);
 
                 utils::redis::zrem(config, redis_connection_manager, &redis_key, pending_tx).await;
             }
