@@ -9,10 +9,10 @@ use near_bridge_client::{
 use near_jsonrpc_client::{JsonRpcClient, errors::JsonRpcError};
 use near_primitives::{hash::CryptoHash, types::AccountId};
 use near_rpc_client::NearRpcError;
-use omni_types::{ChainKind, OmniAddress};
+use omni_types::{ChainKind, OmniAddress, UtxoId};
 use tracing::{info, warn};
 
-use omni_connector::{BtcDepositArgs, FinTransferArgs, OmniConnector};
+use omni_connector::{BtcDepositArgs, BtcTxType, FinTransferArgs, OmniConnector};
 
 use crate::{config, utils};
 
@@ -172,6 +172,8 @@ pub async fn process_near_to_utxo_init_transfer_event(
 
 pub async fn process_utxo_to_near_init_transfer_event(
     config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
+    jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_nonce: Arc<utils::nonce::NonceManager>,
@@ -185,8 +187,9 @@ pub async fn process_utxo_to_near_init_transfer_event(
         btc_tx_hash,
         vout,
         deposit_msg,
+        amount,
         ..
-    } = transfer
+    } = transfer.clone()
     else {
         anyhow::bail!("Expected UtxoToNearTransfer, got: {transfer:?}");
     };
@@ -279,6 +282,15 @@ pub async fn process_utxo_to_near_init_transfer_event(
         }
     }
 
+    let uses_extra_msg_path = deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
+    let defer_key = format!(
+        "utxo-deposit:{}",
+        UtxoId {
+            tx_hash: btc_tx_hash.clone(),
+            vout,
+        }
+    );
+
     let fin_transfer_args = FinTransferArgs::NearFinTransferBTC {
         chain_kind: chain,
         btc_tx_hash: btc_tx_hash.clone(),
@@ -308,7 +320,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
         prefetched: None,
         transaction_options: TransactionOptions {
             nonce,
-            wait_until: near_primitives::views::TxExecutionStatus::Included,
+            wait_until: near_primitives::views::TxExecutionStatus::Final,
             wait_final_outcome_timeout_sec: None,
         },
     };
@@ -318,7 +330,65 @@ pub async fn process_utxo_to_near_init_transfer_event(
             info!(
                 "Finalized {chain:?}->NEAR transfer on NEAR ({btc_tx_hash}:{vout}): near_fin_tx_hash={tx_hash:?}"
             );
-            Ok(EventAction::Remove)
+
+            let Ok(tx_hash) = CryptoHash::from_str(&tx_hash) else {
+                anyhow::bail!(
+                    "Invalid NEAR tx hash for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}): {tx_hash}"
+                );
+            };
+            let signer = omni_connector
+                .near_bridge_client()
+                .and_then(near_bridge_client::NearBridgeClient::account_id)?;
+
+            match utils::near::tx_has_errors(
+                jsonrpc_client,
+                tx_hash,
+                signer,
+                &[
+                    "Not enough blocks confirmed",
+                    "Not enough confirmations for the block-cumulative bridge amount",
+                ],
+            )
+            .await
+            {
+                Ok(true) => {}
+                Ok(false) => return Ok(EventAction::Remove),
+                Err(err) => {
+                    warn!(
+                        "Failed to check receipts for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), retrying: {err:?}"
+                    );
+                    return Ok(EventAction::Retry);
+                }
+            }
+
+            match utils::utxo::exact_lc_target_block(
+                &omni_connector,
+                chain,
+                &btc_tx_hash,
+                BtcTxType::Deposit {
+                    amount: amount.0,
+                    uses_extra_msg_path,
+                },
+            )
+            .await
+            {
+                Ok(target_block) => {
+                    return Ok(defer_to_lc_poller(
+                        config,
+                        redis,
+                        chain,
+                        target_block,
+                        &defer_key,
+                        &transfer,
+                    )
+                    .await);
+                }
+                Err(err) => warn!(
+                    "Failed to compute LC defer target for {chain:?}:{btc_tx_hash}, retrying: {err:?}"
+                ),
+            }
+
+            Ok(EventAction::Retry)
         }
         Err(err) => {
             if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
@@ -343,11 +413,23 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 };
             }
 
-            if let BridgeSdkError::LightClientNotSynced(block) = err {
+            if let BridgeSdkError::LightClientNotSynced {
+                current_height,
+                target_height,
+            } = err
+            {
                 warn!(
-                    "{chain:?} light client is not synced yet for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), block: {block}"
+                    "{chain:?} light client is not synced yet for {chain:?}->NEAR transfer ({btc_tx_hash}:{vout}), current: {current_height}, waiting for: {target_height}"
                 );
-                return Ok(EventAction::Retry);
+                return Ok(defer_to_lc_poller(
+                    config,
+                    redis,
+                    chain,
+                    target_height,
+                    &defer_key,
+                    &transfer,
+                )
+                .await);
             }
 
             anyhow::bail!(
@@ -447,6 +529,8 @@ pub async fn process_sign_transaction_event(
 }
 
 pub async fn process_confirmed_tx_hash(
+    config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
     jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
     confirmed_tx_hash: ConfirmedTxHash,
@@ -562,14 +646,50 @@ pub async fn process_confirmed_tx_hash(
                 };
             }
 
-            if let BridgeSdkError::LightClientNotSynced(block) = err {
+            if let BridgeSdkError::LightClientNotSynced {
+                current_height,
+                target_height,
+            } = err
+            {
                 warn!(
-                    "Light client is not synced yet for NEAR->{chain:?} {action} ({btc_tx_hash}), block: {block}"
+                    "Light client is not synced yet for NEAR->{chain:?} {action} ({btc_tx_hash}), current: {current_height}, waiting for: {target_height}"
                 );
-                return Ok(EventAction::Retry);
+                return Ok(defer_to_lc_poller(
+                    config,
+                    redis,
+                    chain,
+                    target_height,
+                    &format!("utxo-withdraw:{btc_tx_hash}"),
+                    &confirmed_tx_hash,
+                )
+                .await);
             }
 
             anyhow::bail!("Failed to verify NEAR->{chain:?} {action} ({btc_tx_hash}): {err:?}");
+        }
+    }
+}
+
+async fn defer_to_lc_poller<E>(
+    config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
+    chain: ChainKind,
+    target_block: u64,
+    key: &str,
+    event: &E,
+) -> EventAction
+where
+    E: serde::Serialize + std::fmt::Debug + Send,
+{
+    match utils::utxo::store_pending_lc_event(config, redis, chain, target_block, key, event).await
+    {
+        Ok(()) => {
+            info!("Deferred {key} to LC poller (target_block={target_block})");
+            EventAction::Remove
+        }
+        Err(err) => {
+            warn!("Failed to defer {key} to LC poller, retrying: {err:?}");
+            EventAction::Retry
         }
     }
 }

@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use omni_connector::{BtcTransferSelection, OmniConnector};
+use omni_connector::{BtcTransferSelection, BtcTxType, OmniConnector};
 use omni_types::{ChainKind, OmniAddress};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -171,12 +171,12 @@ pub async fn lc_defer_target(
         .await
         .with_context(|| format!("Failed to query {chain:?} light client tip"))?;
     let target =
-        compute_lc_target_block(omni_connector, chain, tx_hash, amount, uses_extra_msg_path)
+        estimated_lc_target_block(omni_connector, chain, tx_hash, amount, uses_extra_msg_path)
             .await?;
     Ok(if tip >= target { None } else { Some(target) })
 }
 
-async fn compute_lc_target_block(
+async fn estimated_lc_target_block(
     omni_connector: &OmniConnector,
     chain: ChainKind,
     tx_hash: &str,
@@ -193,17 +193,39 @@ async fn compute_lc_target_block(
         .required_confirmations(amount, uses_extra_msg_path)
         .with_context(|| format!("Failed to compute required confirmations for {chain:?}"))?;
 
-    let block_height = match chain {
-        ChainKind::Btc => {
-            fetch_utxo_block_height(omni_connector.btc_bridge_client()?, chain, tx_hash).await?
-        }
-        ChainKind::Zcash => {
-            fetch_utxo_block_height(omni_connector.zcash_bridge_client()?, chain, tx_hash).await?
-        }
-        _ => anyhow::bail!("Unsupported chain {chain:?} for UTXO LC target"),
-    };
+    let block_height = utxo_tx_block_height(omni_connector, chain, tx_hash).await?;
 
     Ok(block_height + required_confirmations - 1)
+}
+
+pub async fn exact_lc_target_block(
+    omni_connector: &OmniConnector,
+    chain: ChainKind,
+    tx_hash: &str,
+    tx_type: BtcTxType,
+) -> Result<u64> {
+    let block_height = utxo_tx_block_height(omni_connector, chain, tx_hash).await?;
+    let required_confirmations = omni_connector
+        .get_required_btc_confirmations(chain, block_height, tx_type)
+        .await
+        .with_context(|| format!("Failed to get required {chain:?} confirmations"))?;
+    Ok(block_height + required_confirmations - 1)
+}
+
+async fn utxo_tx_block_height(
+    omni_connector: &OmniConnector,
+    chain: ChainKind,
+    tx_hash: &str,
+) -> Result<u64> {
+    match chain {
+        ChainKind::Btc => {
+            fetch_utxo_block_height(omni_connector.btc_bridge_client()?, chain, tx_hash).await
+        }
+        ChainKind::Zcash => {
+            fetch_utxo_block_height(omni_connector.zcash_bridge_client()?, chain, tx_hash).await
+        }
+        _ => anyhow::bail!("Unsupported chain {chain:?} for UTXO LC target"),
+    }
 }
 
 async fn fetch_utxo_block_height<C: utxo_bridge_client::types::UTXOChain>(
@@ -243,7 +265,7 @@ pub async fn store_pending_lc_event<E>(
     redis_connection_manager: &mut redis::aio::ConnectionManager,
     chain: ChainKind,
     target_block: u64,
-    original_key: String,
+    base_key: &str,
     event: &E,
 ) -> Result<()>
 where
@@ -254,7 +276,10 @@ where
     let value =
         serde_json::to_value(event).context("Failed to serialize pending LC event payload")?;
     let pending = PendingLcEvent {
-        key: original_key,
+        key: format!(
+            "{base_key}@lc-{target_block}-{}",
+            chrono::Utc::now().timestamp_millis()
+        ),
         event: value,
     };
     if !utils::redis::zadd(

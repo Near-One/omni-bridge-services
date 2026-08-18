@@ -172,6 +172,8 @@ pub enum Transfer {
         btc_tx_hash: String,
         vout: u32,
         deposit_msg: DepositMsg,
+        #[serde(default)]
+        amount: U128,
     },
     Fast {
         block_number: u64,
@@ -723,6 +725,8 @@ async fn process_message(
             Transfer::UtxoToNear { .. } => {
                 let result = utxo::process_utxo_to_near_init_transfer_event(
                     config,
+                    redis,
+                    jsonrpc_client,
                     omni_connector.clone(),
                     transfer,
                     near_omni_nonce.clone(),
@@ -988,6 +992,8 @@ async fn process_message(
         .record();
 
         let result = utxo::process_confirmed_tx_hash(
+            config,
+            redis,
             jsonrpc_client,
             omni_connector.clone(),
             confirmed_tx_hash,
