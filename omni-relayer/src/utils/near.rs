@@ -121,24 +121,21 @@ async fn fetch_tx_outcome(
         wait_until: near_primitives::views::TxExecutionStatus::Final,
     };
 
-    let response = match jsonrpc_client.call(request).await {
-        Ok(response) => response,
-        Err(_) => {
-            Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_RPC);
-            anyhow::bail!("Failed to get transaction status for {tx_hash}");
-        }
+    let Ok(response) = jsonrpc_client.call(request).await else {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_RPC);
+        anyhow::bail!("Failed to get transaction status for {tx_hash}");
     };
 
-    match response.final_execution_outcome {
-        Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
-            outcome,
-        )) => Ok(outcome),
-        _ => {
-            Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_MISSING);
-            Err(anyhow::anyhow!(
-                "Receipts missing for transaction {tx_hash}"
-            ))
-        }
+    if let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
+        outcome,
+    )) = response.final_execution_outcome
+    {
+        Ok(outcome)
+    } else {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_MISSING);
+        Err(anyhow::anyhow!(
+            "Receipts missing for transaction {tx_hash}"
+        ))
     }
 }
 
