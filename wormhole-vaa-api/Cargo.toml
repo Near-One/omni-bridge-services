@@ -1,6 +1,6 @@
 [package]
 name = "wormhole-vaa-api"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 
 [dependencies]
@@ -42,4 +42,4 @@ protoc-bin-vendored = "3"
 [dev-dependencies]
 httpmock = "0.7"
 sha3 = "0.10"
-wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "87f336663d2bb7e74a009405d2198357c04cd59a" }
+wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "3fe9c08418dd52884c423400100f8f85fbff590c" }

@@ -296,10 +296,10 @@ pub async fn process_init_transfer_event(
                         );
                     }
                 };
-            } else if let BridgeSdkError::LightClientNotSynced(block) = err {
+            } else if let BridgeSdkError::LightClientNotSynced { current_height, .. } = err {
                 warn!(
                     "Light client is not synced yet for transfer ({chain_kind:?}:{}), block: {}",
-                    log.origin_nonce, block
+                    log.origin_nonce, current_height
                 );
                 Metrics::global()
                     .record_stalled_retry(stall_reason::LIGHT_CLIENT_NOT_SYNCED, Some(chain_kind));
@@ -460,8 +460,8 @@ pub async fn process_evm_transfer_event(
                         anyhow::bail!("Failed to claim fee: {near_rpc_error:?}");
                     }
                 };
-            } else if let BridgeSdkError::LightClientNotSynced(block) = err {
-                warn!("Light client is not synced yet for block: {block}");
+            } else if let BridgeSdkError::LightClientNotSynced { current_height, .. } = err {
+                warn!("Light client is not synced yet for block: {current_height}");
                 return Ok(EventAction::Retry);
             } else if let BridgeSdkError::MpcFinalityNotReached = err {
                 warn!("MPC finality not reached yet, retrying claim fee");
@@ -568,8 +568,8 @@ pub async fn process_deploy_token_event(
                         anyhow::bail!("Failed to bind token: {near_rpc_error:?}");
                     }
                 };
-            } else if let BridgeSdkError::LightClientNotSynced(block) = err {
-                warn!("Light client is not synced yet for block: {block}");
+            } else if let BridgeSdkError::LightClientNotSynced { current_height, .. } = err {
+                warn!("Light client is not synced yet for block: {current_height}");
                 return Ok(EventAction::Retry);
             } else if let BridgeSdkError::MpcFinalityNotReached = err {
                 warn!("MPC finality not reached yet, retrying bind token");
