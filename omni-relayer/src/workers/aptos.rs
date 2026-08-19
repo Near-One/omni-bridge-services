@@ -67,7 +67,7 @@ pub async fn process_init_transfer_event(
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
     if let Some(action) =
-        utils::validation::validate_sender(config, sender, ChainKind::Near, &context).await
+        utils::validation::validate_transfer(config, sender, recipient, &context).await
     {
         return Ok(action);
     }

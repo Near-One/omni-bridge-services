@@ -1,8 +1,5 @@
-//! Sender validation: the configurable per-destination sender allowlist and
-//! KYT screening applied before a transfer is relayed.
-//!
-//! These checks are chain-agnostic (every relaying worker uses them), so they
-//! live in `utils` rather than inside any single chain worker.
+//! Checks applied before a transfer is relayed: the configurable allowlist
+//! and KYT screening.
 
 use omni_types::{ChainKind, OmniAddress};
 use tracing::warn;
@@ -39,28 +36,69 @@ pub(crate) async fn check_kyt_senders(
     }
 }
 
-/// Enforces the configured sender allowlist for `destination_chain`. Returns
-/// `Some(EventAction::Remove)` (and logs) if `sender` is not allowed to bridge
-/// to `destination_chain`, otherwise `None`.
+pub(crate) fn enforce_allowlist(
+    config: &config::Config,
+    sender: &OmniAddress,
+    recipient: &OmniAddress,
+    context: &str,
+) -> Option<EventAction> {
+    if config.is_transfer_allowed(sender, recipient) {
+        return None;
+    }
+
+    warn!(
+        "Transfer from {sender} to {recipient} is not allowed by the allowlist, dropping transfer {context}"
+    );
+
+    Some(EventAction::Remove)
+}
+
 pub(crate) fn enforce_sender_allowlist(
     config: &config::Config,
     sender: &OmniAddress,
     destination_chain: ChainKind,
     context: &str,
 ) -> Option<EventAction> {
-    if config.is_sender_allowed(sender, destination_chain) {
+    if config.is_sender_possibly_allowed(sender, destination_chain) {
         return None;
     }
 
     warn!(
         "Sender {sender} is not allowed to bridge to {destination_chain:?}, dropping transfer {context}"
     );
+
     Some(EventAction::Remove)
 }
 
-/// Validates a transfer's sender before relaying: first the configured sender
-/// allowlist (local), then KYT screening (network). Returns the `EventAction`
-/// to take if the transfer must not be relayed, or `None` if it may proceed.
+pub(crate) fn enforce_recipient_allowlist(
+    config: &config::Config,
+    recipient: &OmniAddress,
+    sender_chain: ChainKind,
+    context: &str,
+) -> Option<EventAction> {
+    if config.is_recipient_possibly_allowed(recipient, sender_chain) {
+        return None;
+    }
+
+    warn!("Recipient {recipient} is not allowed by the allowlist, dropping transfer {context}");
+
+    Some(EventAction::Remove)
+}
+
+pub(crate) async fn validate_transfer(
+    config: &config::Config,
+    sender: &OmniAddress,
+    recipient: &OmniAddress,
+    context: &str,
+) -> Option<EventAction> {
+    if let Some(action) = enforce_allowlist(config, sender, recipient, context) {
+        return Some(action);
+    }
+
+    check_kyt(sender, context).await
+}
+
+/// Sender-only variant of [`validate_transfer`] for paths without a recipient.
 pub(crate) async fn validate_sender(
     config: &config::Config,
     sender: &OmniAddress,

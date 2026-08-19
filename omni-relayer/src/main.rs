@@ -121,12 +121,19 @@ async fn main() -> Result<()> {
 
     let restricted_destinations = config.restricted_destination_chains();
     if restricted_destinations.is_empty() {
-        info!("Sender allowlist inactive (all senders allowed)");
+        info!("Allowlist inactive (all transfers relayed)");
     } else {
-        info!("Sender allowlist active for destination chains: {restricted_destinations:?}");
+        info!("Allowlist active for destination chains: {restricted_destinations:?}");
         if restricted_destinations.contains(&ChainKind::Near) {
             warn!(
-                "Sender allowlist restricts destination NEAR, but the UTXO->NEAR path cannot enforce it (the sender is not available in that event); those senders are NOT filtered"
+                "Allowlist cannot fully restrict destination NEAR; the UTXO->NEAR path cannot enforce sender rules"
+            );
+        }
+        if restricted_destinations.contains(&ChainKind::Btc)
+            || restricted_destinations.contains(&ChainKind::Zcash)
+        {
+            warn!(
+                "Allowlist cannot fully restrict a UTXO destination; the NEAR->UTXO signing step cannot see the recipient"
             );
         }
     }

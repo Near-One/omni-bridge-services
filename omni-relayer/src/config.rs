@@ -111,6 +111,19 @@ where
     Ok(fee_discount)
 }
 
+fn validate_allowlist<'de, D>(deserializer: D) -> Result<Vec<AllowlistRule>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let allowlist = Vec::<AllowlistRule>::deserialize(deserializer)?;
+
+    for rule in &allowlist {
+        rule.validate().map_err(serde::de::Error::custom)?;
+    }
+
+    Ok(allowlist)
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub redis: Redis,
@@ -135,40 +148,119 @@ pub struct Config {
     pub wormhole: Wormhole,
     #[serde(default)]
     pub kyt: Kyt,
-    /// Per-destination sender allowlist. Empty means no restriction. If any
-    /// entry targets a destination chain, only the listed senders may bridge
-    /// to that chain; destination chains with no entry stay unrestricted.
-    #[serde(default)]
-    pub allowlisted_senders: Vec<AllowlistedSender>,
+    #[serde(default, deserialize_with = "validate_allowlist")]
+    pub allowlist: Vec<AllowlistRule>,
 }
 
-/// A single allowlist entry: `sender` is permitted to bridge to
-/// `destination_chain`.
-///
-/// `sender` is an `OmniAddress` whose own chain is the transfer's origin, so an
-/// entry expresses one direction, e.g. `near:frolik.near` -> `HlEvm`
-/// (a NEAR sender to `HyperEVM`) or `eth:0x...` -> `Near` (an Ethereum sender
-/// to NEAR).
+/// Restricts transfers by sender, recipient, or exact sender->recipient pair.
+/// Targets one destination chain: the recipient's chain when a recipient is
+/// present, else `destination_chain`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct AllowlistedSender {
-    pub sender: OmniAddress,
-    pub destination_chain: ChainKind,
+#[serde(deny_unknown_fields)]
+pub struct AllowlistRule {
+    pub sender: Option<OmniAddress>,
+    pub recipient: Option<OmniAddress>,
+    pub destination_chain: Option<ChainKind>,
 }
 
-/// Core allowlist predicate shared by [`Config::is_sender_allowed`]. If no entry
-/// targets `destination_chain`, the destination is unrestricted (returns
-/// `true`); otherwise only listed senders are allowed. An empty `allowlist`
-/// therefore allows everything.
-fn sender_allowed(
-    allowlist: &[AllowlistedSender],
+impl AllowlistRule {
+    fn validate(&self) -> Result<(), String> {
+        if self.sender.is_none() && self.recipient.is_none() {
+            return Err(
+                "allowlist rule must specify at least one of `sender` or `recipient`".to_string(),
+            );
+        }
+
+        match (&self.recipient, self.destination_chain) {
+            (None, None) => Err(
+                "allowlist rule with no `recipient` must specify `destination_chain`".to_string(),
+            ),
+            (Some(recipient), Some(destination_chain))
+                if recipient.get_chain() != destination_chain =>
+            {
+                Err(format!(
+                    "allowlist rule `destination_chain` ({destination_chain:?}) does not match the `recipient`'s chain ({:?})",
+                    recipient.get_chain()
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn target_chain(&self) -> Option<ChainKind> {
+        self.recipient
+            .as_ref()
+            .map(OmniAddress::get_chain)
+            .or(self.destination_chain)
+    }
+
+    fn matches(&self, sender: &OmniAddress, recipient: &OmniAddress) -> bool {
+        self.sender.as_ref().is_none_or(|s| s == sender)
+            && self.recipient.as_ref().is_none_or(|r| r == recipient)
+    }
+}
+
+fn transfer_allowed(
+    allowlist: &[AllowlistRule],
+    sender: &OmniAddress,
+    recipient: &OmniAddress,
+) -> bool {
+    let destination_chain = recipient.get_chain();
+    let mut destination_restricted = false;
+
+    for rule in allowlist {
+        if rule.target_chain() == Some(destination_chain) {
+            destination_restricted = true;
+            if rule.matches(sender, recipient) {
+                return true;
+            }
+        }
+    }
+
+    !destination_restricted
+}
+
+/// For paths that know the sender but not the recipient (NEAR->UTXO signing).
+/// Rules are matched on the sender field only, so a transfer the init-path
+/// check approved is never dropped here.
+fn sender_possibly_allowed(
+    allowlist: &[AllowlistRule],
     sender: &OmniAddress,
     destination_chain: ChainKind,
 ) -> bool {
     let mut destination_restricted = false;
-    for entry in allowlist {
-        if entry.destination_chain == destination_chain {
+
+    for rule in allowlist {
+        if rule.target_chain() == Some(destination_chain) {
             destination_restricted = true;
-            if entry.sender == *sender {
+            if rule.sender.as_ref().is_none_or(|s| s == sender) {
+                return true;
+            }
+        }
+    }
+
+    !destination_restricted
+}
+
+/// For paths that know the recipient and the sender's chain but not the
+/// sender itself (UTXO->NEAR deposits). A rule whose sender lives on another
+/// chain can never match, so it doesn't count.
+fn recipient_possibly_allowed(
+    allowlist: &[AllowlistRule],
+    recipient: &OmniAddress,
+    sender_chain: ChainKind,
+) -> bool {
+    let destination_chain = recipient.get_chain();
+    let mut destination_restricted = false;
+    for rule in allowlist {
+        if rule.target_chain() == Some(destination_chain) {
+            destination_restricted = true;
+            if rule.recipient.as_ref().is_none_or(|r| r == recipient)
+                && rule
+                    .sender
+                    .as_ref()
+                    .is_none_or(|s| s.get_chain() == sender_chain)
+            {
                 return true;
             }
         }
@@ -176,14 +268,11 @@ fn sender_allowed(
     !destination_restricted
 }
 
-/// Returns `true` if at least one entry targets `destination_chain`.
-fn destination_is_restricted(
-    allowlist: &[AllowlistedSender],
-    destination_chain: ChainKind,
-) -> bool {
+/// Returns `true` if at least one rule targets `destination_chain`.
+fn destination_is_restricted(allowlist: &[AllowlistRule], destination_chain: ChainKind) -> bool {
     allowlist
         .iter()
-        .any(|entry| entry.destination_chain == destination_chain)
+        .any(|rule| rule.target_chain() == Some(destination_chain))
 }
 
 impl Config {
@@ -310,18 +399,36 @@ impl Config {
         }
     }
 
-    pub fn is_sender_allowed(&self, sender: &OmniAddress, destination_chain: ChainKind) -> bool {
-        sender_allowed(&self.allowlisted_senders, sender, destination_chain)
+    pub fn is_transfer_allowed(&self, sender: &OmniAddress, recipient: &OmniAddress) -> bool {
+        transfer_allowed(&self.allowlist, sender, recipient)
+    }
+
+    /// See [`sender_possibly_allowed`].
+    pub fn is_sender_possibly_allowed(
+        &self,
+        sender: &OmniAddress,
+        destination_chain: ChainKind,
+    ) -> bool {
+        sender_possibly_allowed(&self.allowlist, sender, destination_chain)
+    }
+
+    /// See [`recipient_possibly_allowed`].
+    pub fn is_recipient_possibly_allowed(
+        &self,
+        recipient: &OmniAddress,
+        sender_chain: ChainKind,
+    ) -> bool {
+        recipient_possibly_allowed(&self.allowlist, recipient, sender_chain)
     }
 
     pub fn is_destination_restricted(&self, destination_chain: ChainKind) -> bool {
-        destination_is_restricted(&self.allowlisted_senders, destination_chain)
+        destination_is_restricted(&self.allowlist, destination_chain)
     }
 
     pub fn restricted_destination_chains(&self) -> BTreeSet<ChainKind> {
-        self.allowlisted_senders
+        self.allowlist
             .iter()
-            .map(|entry| entry.destination_chain)
+            .filter_map(AllowlistRule::target_chain)
             .collect()
     }
 }
@@ -622,134 +729,334 @@ mod tests {
 
     use super::*;
 
-    fn near_sender(account_id: &str) -> OmniAddress {
+    fn near_addr(account_id: &str) -> OmniAddress {
         OmniAddress::Near(AccountId::from_str(account_id).unwrap())
     }
 
-    fn eth_sender(hex_suffix: u8) -> OmniAddress {
+    fn eth_addr(hex_suffix: u8) -> OmniAddress {
         OmniAddress::from_str(&format!(
             "eth:0x00000000000000000000000000000000000000{hex_suffix:02x}"
         ))
         .unwrap()
     }
 
-    fn entry(sender: OmniAddress, destination_chain: ChainKind) -> AllowlistedSender {
-        AllowlistedSender {
+    fn btc_addr(address: &str) -> OmniAddress {
+        OmniAddress::from_str(&format!("btc:{address}")).unwrap()
+    }
+
+    fn rule(
+        sender: Option<OmniAddress>,
+        recipient: Option<OmniAddress>,
+        destination_chain: Option<ChainKind>,
+    ) -> AllowlistRule {
+        AllowlistRule {
             sender,
+            recipient,
             destination_chain,
         }
     }
 
+    /// Parses an `[[allowlist]]` section with the same attributes as
+    /// `Config::allowlist`.
+    fn parse_allowlist(input: &str) -> Result<Vec<AllowlistRule>, toml::de::Error> {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default, deserialize_with = "validate_allowlist")]
+            allowlist: Vec<AllowlistRule>,
+        }
+        toml::from_str::<Wrapper>(input).map(|wrapper| wrapper.allowlist)
+    }
+
     #[test]
-    fn empty_allowlist_allows_every_sender_and_destination() {
-        let allowlist: Vec<AllowlistedSender> = Vec::new();
-        assert!(sender_allowed(
+    fn empty_allowlist_allows_every_transfer() {
+        let allowlist: Vec<AllowlistRule> = Vec::new();
+        assert!(transfer_allowed(
             &allowlist,
-            &near_sender("alice.near"),
-            ChainKind::HyperEvm
+            &near_addr("alice.near"),
+            &eth_addr(1)
         ));
-        assert!(sender_allowed(
+        assert!(transfer_allowed(
             &allowlist,
-            &near_sender("bob.near"),
-            ChainKind::Near
+            &eth_addr(2),
+            &near_addr("bob.near")
         ));
     }
 
     #[test]
-    fn restricted_destination_allows_only_listed_sender() {
-        let allowlist = vec![entry(near_sender("alice.near"), ChainKind::HyperEvm)];
-        assert!(sender_allowed(
+    fn sender_only_rule_restricts_destination() {
+        let allowlist = vec![rule(
+            Some(near_addr("alice.near")),
+            None,
+            Some(ChainKind::Eth),
+        )];
+        // Alice may send to any recipient on Eth; other senders are dropped.
+        assert!(transfer_allowed(
             &allowlist,
-            &near_sender("alice.near"),
-            ChainKind::HyperEvm
+            &near_addr("alice.near"),
+            &eth_addr(1)
         ));
-        assert!(!sender_allowed(
+        assert!(transfer_allowed(
             &allowlist,
-            &near_sender("bob.near"),
-            ChainKind::HyperEvm
+            &near_addr("alice.near"),
+            &eth_addr(2)
+        ));
+        assert!(!transfer_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            &eth_addr(1)
+        ));
+    }
+
+    #[test]
+    fn recipient_only_rule_restricts_destination() {
+        let allowlist = vec![rule(None, Some(eth_addr(1)), None)];
+        // Any sender may send to the listed recipient; other recipients are dropped.
+        assert!(transfer_allowed(
+            &allowlist,
+            &near_addr("alice.near"),
+            &eth_addr(1)
+        ));
+        assert!(transfer_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            &eth_addr(1)
+        ));
+        assert!(!transfer_allowed(
+            &allowlist,
+            &near_addr("alice.near"),
+            &eth_addr(2)
+        ));
+    }
+
+    #[test]
+    fn paired_rule_requires_both_fields_to_match() {
+        let allowlist = vec![rule(Some(near_addr("alice.near")), Some(eth_addr(1)), None)];
+        assert!(transfer_allowed(
+            &allowlist,
+            &near_addr("alice.near"),
+            &eth_addr(1)
+        ));
+        assert!(!transfer_allowed(
+            &allowlist,
+            &near_addr("alice.near"),
+            &eth_addr(2)
+        ));
+        assert!(!transfer_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            &eth_addr(1)
+        ));
+    }
+
+    #[test]
+    fn any_matching_rule_allows_transfer() {
+        // OR across rules: a sender-only rule and a recipient-only rule both
+        // target Eth; matching either one is enough.
+        let allowlist = vec![
+            rule(Some(near_addr("alice.near")), None, Some(ChainKind::Eth)),
+            rule(None, Some(eth_addr(9)), None),
+        ];
+        assert!(transfer_allowed(
+            &allowlist,
+            &near_addr("alice.near"),
+            &eth_addr(1)
+        ));
+        assert!(transfer_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            &eth_addr(9)
+        ));
+        assert!(!transfer_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            &eth_addr(1)
         ));
     }
 
     #[test]
     fn unlisted_destinations_stay_unrestricted() {
-        // Only HyperEVM is restricted; sending to other chains is unaffected.
-        let allowlist = vec![entry(near_sender("alice.near"), ChainKind::HyperEvm)];
-        assert!(sender_allowed(
-            &allowlist,
-            &near_sender("bob.near"),
-            ChainKind::Base
-        ));
-        assert!(sender_allowed(
-            &allowlist,
-            &near_sender("bob.near"),
-            ChainKind::Near
-        ));
-    }
-
-    #[test]
-    fn restrictions_are_per_destination_and_direction() {
+        // Only Eth is restricted; transfers to other chains are unaffected.
         let allowlist = vec![
-            entry(near_sender("alice.near"), ChainKind::HyperEvm),
-            entry(eth_sender(1), ChainKind::Near),
+            rule(Some(near_addr("alice.near")), None, Some(ChainKind::Eth)),
+            rule(None, Some(eth_addr(1)), None),
         ];
-        // NEAR -> HyperEVM: only alice.
-        assert!(sender_allowed(
+        assert!(transfer_allowed(
             &allowlist,
-            &near_sender("alice.near"),
-            ChainKind::HyperEvm
-        ));
-        assert!(!sender_allowed(
-            &allowlist,
-            &near_sender("carol.near"),
-            ChainKind::HyperEvm
-        ));
-        // Eth -> NEAR: only the listed eth sender; NEAR is now restricted, so an
-        // unlisted near sender to NEAR is also blocked.
-        assert!(sender_allowed(&allowlist, &eth_sender(1), ChainKind::Near));
-        assert!(!sender_allowed(&allowlist, &eth_sender(2), ChainKind::Near));
-        assert!(!sender_allowed(
-            &allowlist,
-            &near_sender("alice.near"),
-            ChainKind::Near
+            &eth_addr(2),
+            &near_addr("bob.near")
         ));
     }
 
     #[test]
     fn destination_restriction_detection() {
-        let allowlist = vec![entry(near_sender("alice.near"), ChainKind::HyperEvm)];
-        assert!(destination_is_restricted(&allowlist, ChainKind::HyperEvm));
+        let allowlist = vec![
+            rule(Some(near_addr("alice.near")), None, Some(ChainKind::Eth)),
+            rule(None, Some(btc_addr("bc1qtest")), None),
+        ];
+        // Restricted via explicit destination_chain and via the recipient's chain.
+        assert!(destination_is_restricted(&allowlist, ChainKind::Eth));
+        assert!(destination_is_restricted(&allowlist, ChainKind::Btc));
         assert!(!destination_is_restricted(&allowlist, ChainKind::Near));
-        assert!(!destination_is_restricted(&[], ChainKind::HyperEvm));
+        assert!(!destination_is_restricted(&[], ChainKind::Eth));
     }
 
     #[test]
-    fn allowlisted_sender_deserializes_from_toml() {
-        // `HyperEvm` serializes as "HlEvm" (rename); "hlevm" alias also accepted.
-        let entry: AllowlistedSender =
-            toml::from_str("sender = \"near:frolik.near\"\ndestination_chain = \"HlEvm\"").unwrap();
-        assert_eq!(entry.sender, near_sender("frolik.near"));
-        assert_eq!(entry.destination_chain, ChainKind::HyperEvm);
+    fn restricted_destination_chains_collects_target_chains() {
+        let allowlist = [
+            rule(Some(near_addr("alice.near")), None, Some(ChainKind::Eth)),
+            rule(None, Some(btc_addr("bc1qtest")), None),
+        ];
+        let chains: BTreeSet<ChainKind> = allowlist
+            .iter()
+            .filter_map(AllowlistRule::target_chain)
+            .collect();
+        assert_eq!(chains, BTreeSet::from([ChainKind::Eth, ChainKind::Btc]));
+    }
+
+    #[test]
+    fn sender_possibly_allowed_when_recipient_unknown() {
+        let allowlist = vec![rule(
+            Some(near_addr("alice.near")),
+            Some(btc_addr("bc1qtest")),
+            None,
+        )];
+        assert!(sender_possibly_allowed(
+            &allowlist,
+            &near_addr("alice.near"),
+            ChainKind::Btc
+        ));
+        assert!(!sender_possibly_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            ChainKind::Btc
+        ));
+        // A recipient-only rule leaves every sender possibly allowed.
+        let allowlist = vec![rule(None, Some(btc_addr("bc1qtest")), None)];
+        assert!(sender_possibly_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            ChainKind::Btc
+        ));
+        // Unrestricted chains are unaffected.
+        assert!(sender_possibly_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            ChainKind::Eth
+        ));
+    }
+
+    #[test]
+    fn recipient_possibly_allowed_when_sender_unknown_but_on_known_chain() {
+        // A sender on the deposit's chain cannot be disproved, so the rule
+        // counts for its recipient.
+        let allowlist = vec![rule(
+            Some(btc_addr("bc1qsender")),
+            Some(near_addr("bob.near")),
+            None,
+        )];
+        assert!(recipient_possibly_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            ChainKind::Btc
+        ));
+        assert!(!recipient_possibly_allowed(
+            &allowlist,
+            &near_addr("carol.near"),
+            ChainKind::Btc
+        ));
+        // A sender on a different chain can never match a UTXO deposit.
+        let allowlist = vec![rule(Some(eth_addr(1)), None, Some(ChainKind::Near))];
+        assert!(!recipient_possibly_allowed(
+            &allowlist,
+            &near_addr("carol.near"),
+            ChainKind::Btc
+        ));
+        // A recipient-only rule (no sender) applies regardless of origin.
+        let allowlist = vec![rule(None, Some(near_addr("bob.near")), None)];
+        assert!(recipient_possibly_allowed(
+            &allowlist,
+            &near_addr("bob.near"),
+            ChainKind::Btc
+        ));
+        assert!(!recipient_possibly_allowed(
+            &allowlist,
+            &near_addr("carol.near"),
+            ChainKind::Btc
+        ));
+        // Unrestricted destination chains are unaffected.
+        assert!(recipient_possibly_allowed(
+            &allowlist,
+            &eth_addr(2),
+            ChainKind::Btc
+        ));
+    }
+
+    #[test]
+    fn rule_with_unknown_field_fails_to_parse() {
+        let err = parse_allowlist(
+            "[[allowlist]]\nrecipeint = \"eth:0x0000000000000000000000000000000000000001\"\nsender = \"near:frolik.near\"\ndestination_chain = \"Eth\"",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("recipeint"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rule_with_no_sender_or_recipient_fails_to_parse() {
+        let err = parse_allowlist("[[allowlist]]\ndestination_chain = \"Eth\"")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("sender"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn sender_only_rule_without_destination_chain_fails_to_parse() {
+        let err = parse_allowlist("[[allowlist]]\nsender = \"near:frolik.near\"")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("destination_chain"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn recipient_destination_chain_mismatch_fails_to_parse() {
+        let err = parse_allowlist(
+            "[[allowlist]]\nrecipient = \"eth:0x0000000000000000000000000000000000000001\"\ndestination_chain = \"HlEvm\"",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("does not match"), "unexpected error: {err}");
     }
 
     #[test]
     fn allowlist_section_deserializes_from_toml() {
-        #[derive(Deserialize)]
-        struct Wrapper {
-            #[serde(default)]
-            allowlisted_senders: Vec<AllowlistedSender>,
-        }
-        let parsed: Wrapper = toml::from_str(
-            "[[allowlisted_senders]]\nsender = \"near:frolik.near\"\ndestination_chain = \"hlevm\"\n",
+        // Sender-only; `HyperEvm` serializes as "HlEvm" (rename), "hlevm" alias
+        // also accepted.
+        let sender_only = parse_allowlist(
+            "[[allowlist]]\nsender = \"near:frolik.near\"\ndestination_chain = \"hlevm\"",
         )
         .unwrap();
-        assert_eq!(parsed.allowlisted_senders.len(), 1);
-        assert_eq!(
-            parsed.allowlisted_senders[0].destination_chain,
-            ChainKind::HyperEvm
-        );
+        assert_eq!(sender_only.len(), 1);
+        assert_eq!(sender_only[0].sender, Some(near_addr("frolik.near")));
+        assert_eq!(sender_only[0].recipient, None);
+        assert_eq!(sender_only[0].destination_chain, Some(ChainKind::HyperEvm));
+
+        // Recipient-only; destination chain derived from the recipient.
+        let recipient_only = parse_allowlist(
+            "[[allowlist]]\nrecipient = \"eth:0x0000000000000000000000000000000000000001\"",
+        )
+        .unwrap();
+        assert_eq!(recipient_only[0].recipient, Some(eth_addr(1)));
+        assert_eq!(recipient_only[0].target_chain(), Some(ChainKind::Eth));
+
+        // Paired; explicit destination chain matching the recipient is accepted.
+        let paired = parse_allowlist(
+            "[[allowlist]]\nsender = \"near:alice.near\"\nrecipient = \"eth:0x0000000000000000000000000000000000000001\"\ndestination_chain = \"Eth\"",
+        )
+        .unwrap();
+        assert_eq!(paired[0].sender, Some(near_addr("alice.near")));
+        assert_eq!(paired[0].recipient, Some(eth_addr(1)));
 
         // Omitted section => empty (allow-all).
-        let empty: Wrapper = toml::from_str("").unwrap();
-        assert!(empty.allowlisted_senders.is_empty());
+        assert!(parse_allowlist("").unwrap().is_empty());
     }
 }

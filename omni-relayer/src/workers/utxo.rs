@@ -221,6 +221,34 @@ pub async fn process_utxo_to_near_init_transfer_event(
         }
     }
 
+    // A forwarding deposit (post actions / extra message) delivers funds
+    // wherever those depositor-controlled fields say, and a NEAR-side second
+    // leg exists only when the deposit initiates an onward transfer — so while
+    // NEAR is restricted, only plain deposits can be verified and relayed.
+    if config.is_destination_restricted(ChainKind::Near) {
+        let is_plain_deposit = deposit_msg
+            .post_actions
+            .as_ref()
+            .is_none_or(std::vec::Vec::is_empty)
+            && deposit_msg.extra_msg.is_none()
+            && deposit_msg.safe_deposit.is_none();
+        if !is_plain_deposit {
+            warn!(
+                "Allowlist restricts destination NEAR and the final recipient of a forwarding \
+                 {chain:?} deposit cannot be verified, dropping transfer ({chain:?}:{btc_tx_hash}:{vout})"
+            );
+            return Ok(EventAction::Remove);
+        }
+
+        let recipient = OmniAddress::Near(deposit_msg.recipient_id.clone());
+        let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
+        if let Some(action) =
+            utils::validation::enforce_recipient_allowlist(config, &recipient, chain, &context)
+        {
+            return Ok(action);
+        }
+    }
+
     let mut nonce = match near_nonce.reserve_nonce() {
         Ok(nonce) => Some(nonce),
         Err(err) => {

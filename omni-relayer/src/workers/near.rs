@@ -84,11 +84,10 @@ pub async fn process_transfer_event(
 
     let context = format!("({origin_chain:?}:{origin_nonce})");
 
-    let destination_chain = transfer_message.get_destination_chain();
-    if let Some(action) = utils::validation::validate_sender(
+    if let Some(action) = utils::validation::validate_transfer(
         config,
         &transfer_message.sender,
-        destination_chain,
+        &transfer_message.recipient,
         &context,
     )
     .await
@@ -245,10 +244,10 @@ pub async fn process_transfer_to_utxo_event(
         transfer_message.origin_nonce
     );
     let destination_chain = transfer_message.get_destination_chain();
-    if let Some(action) = utils::validation::validate_sender(
+    if let Some(action) = utils::validation::validate_transfer(
         config,
         &transfer_message.sender,
-        destination_chain,
+        &transfer_message.recipient,
         &context,
     )
     .await
@@ -513,9 +512,9 @@ pub async fn process_sign_transfer_event(
         }
     }
 
-    // The sender allowlist is enforced on the finalization path too, not just at
-    // signing. The allowlist needs the transfer's sender, which is resolved from
-    // the transfer message (the sign payload does not carry it).
+    // The allowlist is enforced on the finalization path too, not just at
+    // signing. It needs the transfer's sender, which is resolved from the
+    // transfer message (the sign payload does not carry it).
     let destination_chain = message_payload.recipient.get_chain();
     let allowlist_active = config.is_destination_restricted(destination_chain);
 
@@ -542,10 +541,10 @@ pub async fn process_sign_transfer_event(
             }
         };
 
-        if let Some(action) = utils::validation::enforce_sender_allowlist(
+        if let Some(action) = utils::validation::enforce_allowlist(
             config,
             &transfer_message.sender,
-            destination_chain,
+            &transfer_message.recipient,
             &format!(
                 "({:?}:{})",
                 message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
@@ -776,7 +775,7 @@ pub async fn initiate_fast_transfer(
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
     if let Some(action) =
-        utils::validation::enforce_sender_allowlist(config, &sender, ChainKind::Near, &context)
+        utils::validation::enforce_allowlist(config, &sender, &recipient, &context)
     {
         return Ok(action);
     }

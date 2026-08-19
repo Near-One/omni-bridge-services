@@ -58,9 +58,16 @@ sign_without_checking_fee = ["near:aurora"]
 # To enable fast relayer, uncomment the line below
 # fast_relayer_enabled = true
 
-# [[allowlisted_senders]]
+# [[allowlist]]                     # sender-only rule
 # sender = "near:frolik.near"
 # destination_chain = "HlEvm"
+#
+# [[allowlist]]                     # recipient-only rule
+# recipient = "hlevm:0x1234567890123456789012345678901234567890"
+#
+# [[allowlist]]                     # paired rule: this sender only to this recipient
+# sender = "near:frolik.near"
+# recipient = "hlevm:0x1234567890123456789012345678901234567890"
 
 # KYT (Know Your Transaction) checks are enabled by setting KYT_API_URL and
 # KYT_API_KEY environment variables.
