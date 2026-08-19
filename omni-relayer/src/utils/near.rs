@@ -10,6 +10,7 @@ use omni_types::{ChainKind, near_events::OmniBridgeEvent};
 
 use crate::{
     config,
+    metrics::{Metrics, receipt_outcome},
     workers::{EventAction, Transfer, WorkerEvent},
 };
 
@@ -85,10 +86,13 @@ pub async fn resolve_tx_receipts(
     let (has_listed_failure, has_any_failure) =
         scan_receipt_failures(tx_hash, &outcome, retryable_errors);
     if has_listed_failure {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_FAILURE);
         Err(EventAction::Retry)
     } else if has_any_failure {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::REVERTED);
         Err(EventAction::Remove)
     } else {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::OK);
         Ok(outcome.receipts_outcome)
     }
 }
@@ -117,18 +121,21 @@ async fn fetch_tx_outcome(
         wait_until: near_primitives::views::TxExecutionStatus::Final,
     };
 
-    let response = jsonrpc_client
-        .call(request)
-        .await
-        .with_context(|| format!("Failed to get transaction status for {tx_hash}"))?;
+    let Ok(response) = jsonrpc_client.call(request).await else {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_RPC);
+        anyhow::bail!("Failed to get transaction status for {tx_hash}");
+    };
 
-    match response.final_execution_outcome {
-        Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
-            outcome,
-        )) => Ok(outcome),
-        _ => Err(anyhow::anyhow!(
+    if let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
+        outcome,
+    )) = response.final_execution_outcome
+    {
+        Ok(outcome)
+    } else {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_MISSING);
+        Err(anyhow::anyhow!(
             "Receipts missing for transaction {tx_hash}"
-        )),
+        ))
     }
 }
 

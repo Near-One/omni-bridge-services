@@ -7,7 +7,12 @@ use omni_types::{Fee, OmniAddress, TransferId};
 use reqwest::{Client, Url};
 use tracing::{info, warn};
 
-use crate::{config, utils, workers::EventAction};
+use crate::{
+    config,
+    metrics::{Metrics, rejection_reason},
+    utils,
+    workers::EventAction,
+};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -165,13 +170,21 @@ impl TransferFee {
         provided_fee: &Fee,
     ) -> Option<EventAction> {
         if !self.is_fee_sufficient(config, provided_fee) {
+            let origin_chain = Some(transfer_id.origin_chain);
+
             if provided_fee == &Fee::default() {
                 info!("No fee provided for transfer: {transfer:?}, skipping transfer");
+                Metrics::global()
+                    .record_preflight_rejection(rejection_reason::NO_FEE, origin_chain);
                 return Some(EventAction::Remove);
             }
 
             let Ok(transfer_id) = serde_json::to_string(&transfer_id) else {
                 warn!("Failed to serialize transfer id: {transfer_id:?}");
+                // A permanent drop, like the two paths around it. Without this it
+                // would ack as `event_outcome::DONE`, i.e. look relayed.
+                Metrics::global()
+                    .record_preflight_rejection(rejection_reason::UNPROCESSABLE, origin_chain);
                 return Some(EventAction::Remove);
             };
 
@@ -189,6 +202,10 @@ impl TransferFee {
                             .min(historical_fee)
                             .apply_discount(config.bridge_indexer.fee_discount)
                     );
+                    Metrics::global().record_preflight_rejection(
+                        rejection_reason::INSUFFICIENT_FEE,
+                        origin_chain,
+                    );
                     return Some(EventAction::Retry);
                 }
             } else {
@@ -204,6 +221,8 @@ impl TransferFee {
                     "Insufficient fee for transfer: {transfer:?}\nGot: {provided_fee:?}, required: {:?}",
                     self.apply_discount(config.bridge_indexer.fee_discount)
                 );
+                Metrics::global()
+                    .record_preflight_rejection(rejection_reason::INSUFFICIENT_FEE, origin_chain);
                 return Some(EventAction::Retry);
             }
         }

@@ -1,9 +1,17 @@
 RUST_LOG=info
 
-# Used for logging (optional)
-# GRAFANA_LOKI_URL=
-# GRAFANA_LOKI_USER=
+# GRAFANA_OTLP_URL must include the signal path. The exporter uses this value
+# verbatim, so the `https://otlp-gateway-<zone>.grafana.net/otlp` value shown in
+# Grafana Cloud's UI 404s on every export -- append `/v1/metrics`. Note that
+# OTEL_EXPORTER_OTLP_METRICS_ENDPOINT and OTEL_EXPORTER_OTLP_ENDPOINT, if set in
+# the environment, silently take precedence over this variable.
+# GRAFANA_OTLP_URL=
+# GRAFANA_OTLP_USER=
 # GRAFANA_CLOUD_API_KEY=
+
+# Reported as the k8s.cluster.name / k8s.pod.name metric attributes (optional)
+# CLUSTER_NAME=
+# POD_NAME=
 
 # It's used for near-lake-framework
 AWS_ACCESS_KEY_ID=

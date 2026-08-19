@@ -14,7 +14,11 @@ use tracing::{info, warn};
 
 use omni_connector::{BtcDepositArgs, BtcTxType, FinTransferArgs, OmniConnector};
 
-use crate::{config, utils};
+use crate::{
+    config,
+    metrics::{Metrics, stall_reason},
+    utils,
+};
 
 use super::{EventAction, Transfer};
 
@@ -506,6 +510,8 @@ pub async fn process_sign_transaction_event(
                         warn!(
                             "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}, retrying: {near_rpc_error:?}"
                         );
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::NEAR_RPC, Some(ChainKind::Near));
                         return Ok(EventAction::Retry);
                     }
                     _ => {
@@ -518,6 +524,7 @@ pub async fn process_sign_transaction_event(
                 warn!(
                     "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}, retrying: {err:?}"
                 );
+                Metrics::global().record_stalled_retry(stall_reason::UTXO_RPC, Some(chain));
                 return Ok(EventAction::Retry);
             }
 

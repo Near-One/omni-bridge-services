@@ -8,6 +8,7 @@ use omni_types::{ChainKind, OmniAddress};
 use tracing::warn;
 
 use crate::config;
+use crate::metrics::{Metrics, rejection_reason};
 use crate::workers::EventAction;
 
 use super::kyt;
@@ -24,16 +25,21 @@ pub(crate) async fn check_kyt_senders(
         return None;
     }
 
+    let origin_chain = senders.first().map(OmniAddress::get_chain);
+
     match kyt::check_senders(senders).await {
         Ok(kyt::SuggestedAction::StopRelaying) => {
             warn!(
                 "KYT suggested STOP_RELAYING for senders {senders:?}, rejecting transfer {context}"
             );
+            Metrics::global().record_preflight_rejection(rejection_reason::KYT_STOP, origin_chain);
             Some(EventAction::Remove)
         }
         Ok(kyt::SuggestedAction::None) => None,
         Err(err) => {
             warn!("KYT check failed for {senders:?}: {err:?}, retrying");
+            Metrics::global()
+                .record_preflight_rejection(rejection_reason::KYT_UNAVAILABLE, origin_chain);
             Some(EventAction::Retry)
         }
     }
@@ -55,6 +61,8 @@ pub(crate) fn enforce_sender_allowlist(
     warn!(
         "Sender {sender} is not allowed to bridge to {destination_chain:?}, dropping transfer {context}"
     );
+    Metrics::global()
+        .record_preflight_rejection(rejection_reason::ALLOWLIST_DENIED, Some(sender.get_chain()));
     Some(EventAction::Remove)
 }
 
