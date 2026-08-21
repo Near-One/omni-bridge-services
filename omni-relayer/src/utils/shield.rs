@@ -14,6 +14,7 @@
 use std::{sync::OnceLock, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
+use near_sdk::AccountId;
 use omni_types::{ChainKind, OmniAddress};
 use reqwest::{Client, header::HeaderMap};
 
@@ -64,10 +65,20 @@ struct WithdrawalRequest<'a> {
     timestamp: String,
 }
 
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DecisionType {
+    Allow,
+    Block,
+    Delay,
+    Approval,
+    NotEnoughPermissions,
+}
+
 #[derive(serde::Deserialize)]
 struct EvaluateResponse {
     #[serde(rename = "type")]
-    decision: String,
+    decision: DecisionType,
     #[serde(default)]
     reason: String,
     #[serde(default)]
@@ -129,16 +140,11 @@ pub fn blockchain_tag(chain: ChainKind) -> Option<&'static str> {
     }
 }
 
-fn to_asset_id(token: &OmniAddress) -> Result<String> {
-    match token {
-        OmniAddress::Near(account_id) => Ok(format!("nep141:{account_id}")),
-        other => Err(anyhow!(
-            "Cannot build SHIELD asset id from non-NEAR token address: {other:?}"
-        )),
-    }
+fn to_asset_id(token_id: &AccountId) -> String {
+    format!("nep141:{token_id}")
 }
 
-pub fn bare_address(address: &OmniAddress) -> String {
+fn bare_address(address: &OmniAddress) -> String {
     let full = address.to_string();
     full.split_once(':')
         .map_or(full.clone(), |(_, addr)| addr.to_string())
@@ -146,13 +152,14 @@ pub fn bare_address(address: &OmniAddress) -> String {
 
 pub async fn evaluate_deposit(
     chain: ChainKind,
-    token: &OmniAddress,
+    token_id: &AccountId,
     amount: u128,
-    sender_address: &str,
+    sender: &OmniAddress,
 ) -> Result<Decision> {
     let blockchain =
         blockchain_tag(chain).with_context(|| format!("No SHIELD blockchain tag for {chain:?}"))?;
-    let token = to_asset_id(token)?;
+    let token = to_asset_id(token_id);
+    let sender_address = bare_address(sender);
 
     let request = DepositRequest {
         blockchain,
@@ -161,7 +168,7 @@ pub async fn evaluate_deposit(
         amount: amount.to_string(),
         amount_usd: AMOUNT_USD_UNKNOWN,
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        sender_address,
+        sender_address: &sender_address,
     };
 
     evaluate("deposit", &request).await
@@ -169,13 +176,14 @@ pub async fn evaluate_deposit(
 
 pub async fn evaluate_withdrawal(
     chain: ChainKind,
-    token: &OmniAddress,
+    token_id: &AccountId,
     amount: u128,
-    recipient: &str,
+    recipient: &OmniAddress,
 ) -> Result<Decision> {
     let blockchain =
         blockchain_tag(chain).with_context(|| format!("No SHIELD blockchain tag for {chain:?}"))?;
-    let token = to_asset_id(token)?;
+    let token = to_asset_id(token_id);
+    let recipient_address = bare_address(recipient);
 
     let request = WithdrawalRequest {
         blockchain,
@@ -183,7 +191,7 @@ pub async fn evaluate_withdrawal(
         token: &token,
         amount: amount.to_string(),
         amount_usd: AMOUNT_USD_UNKNOWN,
-        recipient,
+        recipient: &recipient_address,
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
     };
 
@@ -224,26 +232,25 @@ fn decision_from_response(raw: &str) -> Result<Decision> {
         format!("SHIELD response did not match expected schema. Raw body: {raw}")
     })?;
 
-    match response.decision.as_str() {
-        "allow" => Ok(Decision::Allow),
-        "block" => Ok(Decision::Block {
+    Ok(match response.decision {
+        DecisionType::Allow => Decision::Allow,
+        DecisionType::Block => Decision::Block {
             reason: response.reason,
-        }),
-        "delay" => Ok(Decision::Delay {
+        },
+        DecisionType::Delay => Decision::Delay {
             delay: response
                 .metadata
                 .and_then(|metadata| metadata.delay_ms)
                 .map(Duration::from_millis),
             reason: response.reason,
-        }),
-        "approval" => Ok(Decision::Approval {
+        },
+        DecisionType::Approval => Decision::Approval {
             reason: response.reason,
-        }),
-        "not_enough_permissions" => Ok(Decision::NotEnoughPermissions {
+        },
+        DecisionType::NotEnoughPermissions => Decision::NotEnoughPermissions {
             reason: response.reason,
-        }),
-        other => Err(anyhow!("Unexpected SHIELD decision type: {other}")),
-    }
+        },
+    })
 }
 
 #[cfg(test)]
@@ -399,16 +406,9 @@ mod tests {
     }
 
     #[test]
-    fn to_asset_id_requires_near_token() {
-        let near_token = OmniAddress::Near("eth.omft.near".parse().unwrap());
-        assert_eq!(
-            to_asset_id(&near_token).unwrap(),
-            "nep141:eth.omft.near".to_string()
-        );
-
-        let eth_token =
-            OmniAddress::from_str("eth:0x0000000000000000000000000000000000000001").unwrap();
-        assert!(to_asset_id(&eth_token).is_err());
+    fn to_asset_id_prefixes_near_token_id() {
+        let token_id: AccountId = "eth.omft.near".parse().unwrap();
+        assert_eq!(to_asset_id(&token_id), "nep141:eth.omft.near".to_string());
     }
 
     #[test]

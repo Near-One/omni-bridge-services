@@ -102,6 +102,23 @@ pub async fn process_init_transfer_event(
         }
     }
 
+    if config::Config::is_shield_enabled() {
+        let Ok(token_id) =
+            utils::storage::get_token_id(&omni_connector, chain_kind, &token.to_string()).await
+        else {
+            warn!("Failed to get token id for transfer: {transfer_id:?}");
+            return Ok(EventAction::Retry);
+        };
+
+        if let Some(action) = utils::validation::check_shield_deposit(
+            chain_kind, &token_id, amount.0, sender, &context,
+        )
+        .await
+        {
+            return Ok(action);
+        }
+    }
+
     if config.is_bridge_api_enabled() {
         let token = OmniAddress::new_from_slice(chain_kind, &token.to_bytes()).map_err(|err| {
             anyhow::anyhow!("Failed to parse \"{token}\" as `OmniAddress`: {err:?}")
@@ -131,27 +148,6 @@ pub async fn process_init_transfer_event(
             .await
         {
             return Ok(event_action);
-        }
-    }
-
-    if config::Config::is_shield_enabled() {
-        let Ok(token_id) =
-            utils::storage::get_token_id(&omni_connector, chain_kind, &token.to_string()).await
-        else {
-            warn!("Failed to get token id for transfer: {transfer_id:?}");
-            return Ok(EventAction::Retry);
-        };
-
-        if let Some(action) = utils::validation::check_shield_deposit(
-            chain_kind,
-            &OmniAddress::Near(token_id),
-            amount.0,
-            &utils::shield::bare_address(sender),
-            &context,
-        )
-        .await
-        {
-            return Ok(action);
         }
     }
 

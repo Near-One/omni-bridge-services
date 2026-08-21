@@ -3,7 +3,7 @@ use std::{str::FromStr, sync::Arc};
 use anyhow::{Context, Result};
 use bridge_connector_common::result::BridgeSdkError;
 use near_bridge_client::{
-    TransactionOptions,
+    NearBridgeClient, TransactionOptions,
     btc::{DepositMsg, PostAction, SafeDepositMsg},
 };
 use near_jsonrpc_client::{JsonRpcClient, errors::JsonRpcError};
@@ -174,6 +174,67 @@ pub async fn process_near_to_utxo_init_transfer_event(
     }
 }
 
+async fn screen_utxo_deposit(
+    config: &config::Config,
+    near_bridge_client: &NearBridgeClient,
+    chain: ChainKind,
+    btc_tx_hash: &str,
+    vout: u32,
+    amount: u128,
+) -> Result<Option<EventAction>> {
+    let shield_enabled = config::Config::is_shield_enabled();
+    if !config::Config::is_kyt_enabled() && !shield_enabled {
+        return Ok(None);
+    }
+
+    let rpc_url = match chain {
+        ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
+        ChainKind::Zcash => config.zcash.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
+        _ => anyhow::bail!("UtxoToNear transfer for unsupported chain {chain:?}"),
+    }
+    .with_context(|| format!("{chain:?} UTXO config missing for input screening"))?;
+
+    let input_addresses = match utils::utxo::fetch_input_addresses(rpc_url, chain, btc_tx_hash)
+        .await
+    {
+        Ok(addresses) => addresses,
+        Err(err) => {
+            warn!(
+                "Failed to fetch input addresses for {chain:?} tx {btc_tx_hash}, retrying: {err:?}"
+            );
+            return Ok(Some(EventAction::Retry));
+        }
+    };
+
+    let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
+    if let Some(action) = utils::validation::check_kyt_senders(&input_addresses, &context).await {
+        return Ok(Some(action));
+    }
+
+    if !shield_enabled {
+        return Ok(None);
+    }
+
+    // A deposit can legitimately have no screenable inputs (e.g. fully shielded
+    // Zcash spends yield no transparent addresses); skip the SHIELD check then,
+    // exactly as KYT does.
+    let Some(sender) = input_addresses.first() else {
+        warn!(
+            "No input addresses found for {chain:?} tx {btc_tx_hash}, skipping SHIELD deposit check"
+        );
+        return Ok(None);
+    };
+
+    Ok(utils::validation::check_shield_deposit(
+        chain,
+        &near_bridge_client.utxo_chain_token(chain)?,
+        amount,
+        sender,
+        &context,
+    )
+    .await)
+}
+
 pub async fn process_utxo_to_near_init_transfer_event(
     config: &config::Config,
     redis: &mut redis::aio::ConnectionManager,
@@ -198,55 +259,17 @@ pub async fn process_utxo_to_near_init_transfer_event(
         anyhow::bail!("Expected UtxoToNearTransfer, got: {transfer:?}");
     };
 
-    let shield_enabled = config::Config::is_shield_enabled();
-    if config::Config::is_kyt_enabled() || shield_enabled {
-        let rpc_url = match chain {
-            ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
-            ChainKind::Zcash => config.zcash.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
-            _ => anyhow::bail!("UtxoToNear transfer for unsupported chain {chain:?}"),
-        }
-        .with_context(|| format!("{chain:?} UTXO config missing for input screening"))?;
-
-        let input_addresses = match utils::utxo::fetch_input_addresses(rpc_url, chain, &btc_tx_hash)
-            .await
-        {
-            Ok(addresses) => addresses,
-            Err(err) => {
-                warn!(
-                    "Failed to fetch input addresses for {chain:?} tx {btc_tx_hash}, retrying: {err:?}"
-                );
-                return Ok(EventAction::Retry);
-            }
-        };
-
-        let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
-        if let Some(action) = utils::validation::check_kyt_senders(&input_addresses, &context).await
-        {
-            return Ok(action);
-        }
-
-        if shield_enabled {
-            // A deposit can legitimately have no screenable inputs (e.g. fully
-            // shielded Zcash spends yield no transparent addresses); skip the
-            // SHIELD check then, exactly as KYT does.
-            if let Some(sender) = input_addresses.first() {
-                if let Some(action) = utils::validation::check_shield_deposit(
-                    chain,
-                    &OmniAddress::Near(near_bridge_client.utxo_chain_token(chain)?),
-                    amount.0,
-                    &utils::shield::bare_address(sender),
-                    &context,
-                )
-                .await
-                {
-                    return Ok(action);
-                }
-            } else {
-                warn!(
-                    "No input addresses found for {chain:?} tx {btc_tx_hash}, skipping SHIELD deposit check"
-                );
-            }
-        }
+    if let Some(action) = screen_utxo_deposit(
+        config,
+        near_bridge_client,
+        chain,
+        &btc_tx_hash,
+        vout,
+        amount.0,
+    )
+    .await?
+    {
+        return Ok(action);
     }
 
     let mut nonce = match near_nonce.reserve_nonce() {

@@ -96,6 +96,29 @@ pub async fn process_init_transfer_event(
         }
     }
 
+    let Ok(token_id) = utils::storage::get_token_id(
+        &omni_connector,
+        transfer_id.origin_chain,
+        &log.token_address.to_string(),
+    )
+    .await
+    else {
+        warn!("Failed to get token id for transfer: {transfer_id:?}");
+        return Ok(EventAction::Retry);
+    };
+
+    if let Some(action) = utils::validation::check_shield_deposit(
+        chain_kind,
+        &token_id,
+        log.amount.0,
+        &sender,
+        &context,
+    )
+    .await
+    {
+        return Ok(action);
+    }
+
     if config.is_bridge_api_enabled() {
         let token =
             utils::evm::string_to_evm_omniaddress(chain_kind, &log.token_address.to_string())
@@ -159,29 +182,6 @@ pub async fn process_init_transfer_event(
         .near_bridge_client()
         .and_then(NearBridgeClient::account_id)
         .context("Failed to get relayer account id")?;
-
-    let Ok(token_id) = utils::storage::get_token_id(
-        &omni_connector,
-        transfer_id.origin_chain,
-        &log.token_address.to_string(),
-    )
-    .await
-    else {
-        warn!("Failed to get token id for transfer: {transfer_id:?}");
-        return Ok(EventAction::Retry);
-    };
-
-    if let Some(action) = utils::validation::check_shield_deposit(
-        chain_kind,
-        &OmniAddress::Near(token_id.clone()),
-        log.amount.0,
-        &utils::shield::bare_address(&sender),
-        &context,
-    )
-    .await
-    {
-        return Ok(action);
-    }
 
     let fast_transfer_args = FastTransfer {
         transfer_id: transfer_id.into(),

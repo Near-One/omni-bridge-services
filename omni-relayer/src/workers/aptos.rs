@@ -15,7 +15,7 @@ use near_primitives::views::TxExecutionStatus;
 use near_rpc_client::NearRpcError;
 
 use omni_connector::OmniConnector;
-use omni_types::{ChainKind, Fee, OmniAddress, TransferId};
+use omni_types::{ChainKind, Fee, TransferId};
 
 use crate::metrics::{Metrics, stall_reason};
 use crate::{config, utils};
@@ -85,6 +85,31 @@ pub async fn process_init_transfer_event(
         }
     }
 
+    if config::Config::is_shield_enabled() {
+        let Ok(token_id) = utils::storage::get_token_id(
+            &omni_connector,
+            transfer_id.origin_chain,
+            &token.to_string(),
+        )
+        .await
+        else {
+            warn!("Failed to get token id for transfer: {transfer_id:?}");
+            return Ok(EventAction::Retry);
+        };
+
+        if let Some(action) = utils::validation::check_shield_deposit(
+            transfer_id.origin_chain,
+            &token_id,
+            amount.0,
+            sender,
+            &context,
+        )
+        .await
+        {
+            return Ok(action);
+        }
+    }
+
     if config.is_bridge_api_enabled() {
         let Ok(needed_fee) =
             utils::bridge_api::TransferFee::get_transfer_fee(config, sender, recipient, token)
@@ -110,31 +135,6 @@ pub async fn process_init_transfer_event(
             .await
         {
             return Ok(event_action);
-        }
-    }
-
-    if config::Config::is_shield_enabled() {
-        let Ok(token_id) = utils::storage::get_token_id(
-            &omni_connector,
-            transfer_id.origin_chain,
-            &token.to_string(),
-        )
-        .await
-        else {
-            warn!("Failed to get token id for transfer: {transfer_id:?}");
-            return Ok(EventAction::Retry);
-        };
-
-        if let Some(action) = utils::validation::check_shield_deposit(
-            transfer_id.origin_chain,
-            &OmniAddress::Near(token_id),
-            amount.0,
-            &utils::shield::bare_address(sender),
-            &context,
-        )
-        .await
-        {
-            return Ok(action);
         }
     }
 
