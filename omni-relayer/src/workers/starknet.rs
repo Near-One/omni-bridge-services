@@ -17,6 +17,7 @@ use near_rpc_client::NearRpcError;
 use omni_connector::OmniConnector;
 use omni_types::{ChainKind, Fee, OmniAddress, TransferId};
 
+use crate::metrics::{Metrics, stall_reason};
 use crate::{config, utils};
 
 use super::{DeployToken, EventAction, FinTransfer, Transfer};
@@ -205,6 +206,8 @@ pub async fn process_init_transfer_event(
                             "Failed to finalize Starknet transfer ({:?}:{}), retrying: {near_rpc_error:?}",
                             transfer_id.origin_chain, transfer_id.origin_nonce
                         );
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::NEAR_RPC, Some(ChainKind::Near));
                         return Ok(EventAction::Retry);
                     }
                     _ => {
@@ -220,6 +223,8 @@ pub async fn process_init_transfer_event(
                     "MPC finality not reached yet for Starknet transfer ({:?}:{}), retrying",
                     transfer_id.origin_chain, transfer_id.origin_nonce
                 );
+                Metrics::global()
+                    .record_stalled_retry(stall_reason::MPC_FINALITY, Some(ChainKind::Strk));
                 return Ok(EventAction::Retry);
             }
 

@@ -9,6 +9,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 #[allow(dead_code)]
 mod config;
 mod json_logging;
+mod metrics;
 mod startup;
 mod types;
 mod utils;
@@ -96,6 +97,9 @@ async fn main() -> Result<()> {
     );
 
     init_logging().context("Failed to initialize logging")?;
+    // Must precede any metric emit site: instruments bind to whichever meter
+    // provider is installed the first time they are touched.
+    metrics::init_metrics(&config);
 
     info!(
         "Starting omni-relayer v{} on {}",
