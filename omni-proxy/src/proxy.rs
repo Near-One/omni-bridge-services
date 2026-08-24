@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
 use opentelemetry::KeyValue;
@@ -12,7 +13,7 @@ use pingora::upstreams::peer::HttpPeer;
 use serde_json::Value;
 use tracing::warn;
 
-use crate::config::Route;
+use crate::config::{Route, Upstream};
 use crate::types::Prefix;
 
 const MAX_RPC_BODY_BYTES: usize = 256 * 1024;
@@ -53,6 +54,23 @@ impl UpstreamHealth {
     fn is_degraded(&self, threshold: usize, window: Duration) -> bool {
         self.recent_failures(window) >= threshold
     }
+
+    fn snapshot_failures(&self) -> VecDeque<Instant> {
+        self.failures.lock().unwrap().clone()
+    }
+
+    fn from_failures(failures: VecDeque<Instant>) -> Self {
+        Self {
+            failures: Mutex::new(failures),
+        }
+    }
+}
+
+fn same_endpoint(a: &Upstream, b: &Upstream) -> bool {
+    a.is_tls() == b.is_tls()
+        && a.addr() == b.addr()
+        && a.url_path() == b.url_path()
+        && a.url_query() == b.url_query()
 }
 
 struct RouteState {
@@ -62,13 +80,29 @@ struct RouteState {
 }
 
 impl RouteState {
-    fn new(route: Route) -> Self {
-        let count = route.upstreams().len();
+    /// Carry over failure history for unchanged upstreams
+    fn merge(route: Route, previous: Option<&RouteState>) -> Self {
         let route_label: Arc<str> = route.prefix().as_str().trim_start_matches('/').into();
+        let health = route
+            .upstreams()
+            .iter()
+            .map(|new_up| {
+                previous
+                    .and_then(|p| {
+                        p.route
+                            .upstreams()
+                            .iter()
+                            .zip(p.health.iter())
+                            .find(|(old_up, _)| same_endpoint(old_up, new_up))
+                            .map(|(_, h)| h.snapshot_failures())
+                    })
+                    .map_or_else(UpstreamHealth::new, UpstreamHealth::from_failures)
+            })
+            .collect();
         Self {
             route,
             route_label,
-            health: (0..count).map(|_| UpstreamHealth::new()).collect(),
+            health,
         }
     }
 
@@ -151,8 +185,37 @@ fn sanitize_service(raw: &str) -> String {
     }
 }
 
+/// Cheap, cloneable handle to the route table.
+/// Used by background refresher to swap in a newly fetched config.
+#[derive(Clone)]
+pub struct RoutesHandle(Arc<ArcSwap<HashMap<Prefix, RouteState>>>);
+
+impl RoutesHandle {
+    pub fn apply(&self, new_routes: Vec<Route>) {
+        let merged = {
+            let previous = self.0.load();
+            build_route_map(new_routes, Some(&previous))
+        };
+        self.0.store(Arc::new(merged));
+    }
+}
+
+fn build_route_map(
+    routes: Vec<Route>,
+    previous: Option<&HashMap<Prefix, RouteState>>,
+) -> HashMap<Prefix, RouteState> {
+    routes
+        .into_iter()
+        .map(|route| {
+            let prefix = route.prefix().clone();
+            let prev_state = previous.and_then(|p| p.get(&prefix));
+            (prefix, RouteState::merge(route, prev_state))
+        })
+        .collect()
+}
+
 pub struct RpcProxy {
-    routes: Arc<HashMap<Prefix, RouteState>>,
+    routes: Arc<ArcSwap<HashMap<Prefix, RouteState>>>,
     requests: Counter<u64>,
     errors: Counter<u64>,
     jsonrpc_errors: Counter<u64>,
@@ -166,11 +229,8 @@ pub struct RpcProxy {
 impl RpcProxy {
     #[must_use]
     pub fn new(routes: Vec<Route>) -> Self {
-        let map: HashMap<Prefix, RouteState> = routes
-            .into_iter()
-            .map(|r| (r.prefix().clone(), RouteState::new(r)))
-            .collect();
-        let routes = Arc::new(map);
+        let map = build_route_map(routes, None);
+        let routes = Arc::new(ArcSwap::new(Arc::new(map)));
 
         let meter = opentelemetry::global::meter("omni-proxy");
         let requests = meter
@@ -219,21 +279,26 @@ impl RpcProxy {
         }
     }
 
-    fn match_route(&self, path: &str) -> Option<&RouteState> {
-        self.routes
-            .iter()
-            .filter(|(prefix, _)| {
-                let p = prefix.as_str();
-                path == p || (path.starts_with(p) && path.as_bytes().get(p.len()) == Some(&b'/'))
-            })
-            .max_by_key(|(prefix, _)| prefix.as_str().len())
-            .map(|(_, state)| state)
+    #[must_use]
+    pub fn routes_handle(&self) -> RoutesHandle {
+        RoutesHandle(Arc::clone(&self.routes))
     }
+}
+
+fn match_route<'a>(routes: &'a HashMap<Prefix, RouteState>, path: &str) -> Option<&'a RouteState> {
+    routes
+        .iter()
+        .filter(|(prefix, _)| {
+            let p = prefix.as_str();
+            path == p || (path.starts_with(p) && path.as_bytes().get(p.len()) == Some(&b'/'))
+        })
+        .max_by_key(|(prefix, _)| prefix.as_str().len())
+        .map(|(_, state)| state)
 }
 
 fn register_observable_gauges(
     meter: &opentelemetry::metrics::Meter,
-    routes: &Arc<HashMap<Prefix, RouteState>>,
+    routes: &Arc<ArcSwap<HashMap<Prefix, RouteState>>>,
     in_flight: &Arc<AtomicI64>,
     ws_active: &Arc<AtomicI64>,
 ) {
@@ -242,7 +307,7 @@ fn register_observable_gauges(
         .u64_observable_gauge("rpc_upstream_circuit_state")
         .with_description("1 when an upstream is degraded (too many recent failures), else 0")
         .with_callback(move |observer| {
-            for state in circuit_routes.values() {
+            for state in circuit_routes.load().values() {
                 let failover = state.route.failover();
                 let threshold = failover.failure_threshold();
                 let window = failover.window();
@@ -266,7 +331,7 @@ fn register_observable_gauges(
         .u64_observable_gauge("rpc_upstream_recent_failures")
         .with_description("Failures recorded for an upstream within the failover window (leading indicator; climbs toward failure_threshold before the breaker trips)")
         .with_callback(move |observer| {
-            for state in recent_failures_routes.values() {
+            for state in recent_failures_routes.load().values() {
                 let window = state.route.failover().window();
                 for (idx, health) in state.health.iter().enumerate() {
                     let count = u64::try_from(health.recent_failures(window)).unwrap_or(u64::MAX);
@@ -288,7 +353,7 @@ fn register_observable_gauges(
         .u64_observable_gauge("rpc_upstream_failure_threshold")
         .with_description("Configured failure_threshold per route (the breaker trips at this many failures within the window)")
         .with_callback(move |observer| {
-            for state in threshold_routes.values() {
+            for state in threshold_routes.load().values() {
                 let threshold =
                     u64::try_from(state.route.failover().failure_threshold()).unwrap_or(u64::MAX);
                 observer.observe(threshold, &[KeyValue::new("route", state.route_label.clone())]);
@@ -361,11 +426,19 @@ impl ProxyHttp for RpcProxy {
             .query()
             .and_then(|q| {
                 q.split('&')
-                    .find_map(|p| p.strip_prefix(SERVICE_QUERY_PREFIX))
+                    .find_map(|p| {
+                        println!("with prefix: {p}");
+                        let r = p.strip_prefix(SERVICE_QUERY_PREFIX);
+                        println!("with prefix: {}", if let Some(s) = r { s } else { "none" });
+                        r
+            })
             })
             .map_or_else(|| "unknown".to_owned(), sanitize_service);
 
-        let Some(state) = self.match_route(uri.path()) else {
+        println!("SERVICE: {}", &ctx.service);
+
+        let routes = self.routes.load();
+        let Some(state) = match_route(&routes, uri.path()) else {
             self.route_not_matched
                 .add(1, &[KeyValue::new("service", ctx.service.clone())]);
             self.requests.add(
@@ -408,6 +481,8 @@ impl ProxyHttp for RpcProxy {
             peer.options.write_timeout = Some(t);
         }
 
+        // println!("PEER: {}", &peer);
+
         Ok(Box::new(peer))
     }
 
@@ -423,7 +498,8 @@ impl ProxyHttp for RpcProxy {
         let Some(ref prefix) = ctx.route_prefix else {
             return Ok(());
         };
-        let Some(state) = self.routes.get(prefix) else {
+        let routes = self.routes.load();
+        let Some(state) = routes.get(prefix) else {
             return Ok(());
         };
         let upstream = &state.route.upstreams()[ctx.upstream_idx];
@@ -457,7 +533,15 @@ impl ProxyHttp for RpcProxy {
             .query()
             .unwrap_or("")
             .split('&')
-            .filter(|p| !p.is_empty() && !p.starts_with(SERVICE_QUERY_PREFIX))
+            .filter(|p| {
+                if p.starts_with(SERVICE_QUERY_PREFIX) {
+                    println!("starts with prefix: {p}");
+                } else {
+                    println!("does not start with prefix: {p}")
+                }
+                !p.is_empty() && !p.starts_with(SERVICE_QUERY_PREFIX)
+            }
+            )
             .collect::<Vec<_>>()
             .join("&");
         let client_query = if client_query.is_empty() {
@@ -494,20 +578,21 @@ impl ProxyHttp for RpcProxy {
         Self::CTX: Send + Sync,
     {
         ctx.status_code = upstream_response.status.as_u16();
+        let routes = self.routes.load();
         if ctx.status_code == 101
             && let Some(ref prefix) = ctx.route_prefix
-            && let Some(state) = self.routes.get(prefix)
+            && let Some(state) = routes.get(prefix)
             && state
                 .route
                 .upstreams()
                 .get(ctx.upstream_idx)
-                .is_some_and(crate::config::Upstream::is_websocket)
+                .is_some_and(Upstream::is_websocket)
         {
             ctx.ws_upgraded = true;
             self.ws_active.fetch_add(1, Ordering::Relaxed);
         }
         if let Some(ref prefix) = ctx.route_prefix
-            && let Some(state) = self.routes.get(prefix)
+            && let Some(state) = routes.get(prefix)
             && state.route.failover().is_failure_status(ctx.status_code)
         {
             ctx.is_failure = true;
@@ -531,10 +616,11 @@ impl ProxyHttp for RpcProxy {
                 buf.extend_from_slice(&chunk[..take]);
             }
 
+            let routes = self.routes.load();
             if end_of_stream
                 && buf.len() < MAX_RPC_BODY_BYTES
                 && let Some(ref prefix) = ctx.route_prefix
-                && let Some(state) = self.routes.get(prefix)
+                && let Some(state) = routes.get(prefix)
                 && let Ok(json) = serde_json::from_slice::<Value>(buf)
                 && let Some(code) = json.pointer("/error/code").and_then(Value::as_i64)
                 && let Ok(code) = i32::try_from(code)
@@ -564,8 +650,9 @@ impl ProxyHttp for RpcProxy {
         }
 
         let failed = ctx.is_failure || e.is_some();
+        let routes = self.routes.load();
         if let Some(ref prefix) = ctx.route_prefix
-            && let Some(state) = self.routes.get(prefix)
+            && let Some(state) = routes.get(prefix)
             && let Some(health) = state.health.get(ctx.upstream_idx)
         {
             if failed {
@@ -699,14 +786,16 @@ failover = {{ status_codes = [500], failure_threshold = {threshold}, window_secs
     #[test]
     fn test_select_primary_when_healthy() {
         let proxy = make_proxy(3, 60);
-        let state = proxy.routes.values().next().unwrap();
+        let routes = proxy.routes.load();
+        let state = routes.values().next().unwrap();
         assert_eq!(state.select(), Selection::Primary);
     }
 
     #[test]
     fn test_select_failover_when_primary_degraded() {
         let proxy = make_proxy(3, 60);
-        let state = proxy.routes.values().next().unwrap();
+        let routes = proxy.routes.load();
+        let state = routes.values().next().unwrap();
         for _ in 0..3 {
             state.health[0].record_failure();
         }
@@ -716,7 +805,8 @@ failover = {{ status_codes = [500], failure_threshold = {threshold}, window_secs
     #[test]
     fn test_select_defaults_to_primary_when_all_degraded() {
         let proxy = make_proxy(2, 60);
-        let state = proxy.routes.values().next().unwrap();
+        let routes = proxy.routes.load();
+        let state = routes.values().next().unwrap();
         for h in &state.health {
             for _ in 0..2 {
                 h.record_failure();
@@ -729,24 +819,151 @@ failover = {{ status_codes = [500], failure_threshold = {threshold}, window_secs
     #[test]
     fn test_match_route_exact() {
         let proxy = make_proxy(3, 60);
-        assert!(proxy.match_route("/test").is_some());
+        assert!(match_route(&proxy.routes.load(), "/test").is_some());
     }
 
     #[test]
     fn test_match_route_subpath() {
         let proxy = make_proxy(3, 60);
-        assert!(proxy.match_route("/test/foo").is_some());
+        assert!(match_route(&proxy.routes.load(), "/test/foo").is_some());
     }
 
     #[test]
     fn test_match_route_rejects_partial_prefix() {
         let proxy = make_proxy(3, 60);
-        assert!(proxy.match_route("/testing").is_none());
+        assert!(match_route(&proxy.routes.load(), "/testing").is_none());
     }
 
     #[test]
     fn test_match_route_unknown_returns_none() {
         let proxy = make_proxy(3, 60);
-        assert!(proxy.match_route("/eth").is_none());
+        assert!(match_route(&proxy.routes.load(), "/eth").is_none());
+    }
+
+    fn route_from_toml(toml_str: &str) -> Route {
+        let config: Config = toml::from_str(toml_str).unwrap();
+        config.routes.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn test_merge_preserves_health_for_unchanged_upstream() {
+        let route = route_from_toml(
+            r#"
+[[routes]]
+prefix = "/test"
+upstreams = [{ url = "http://primary.example.com" }]
+"#,
+        );
+        let original = RouteState::merge(route, None);
+        original.health[0].record_failure();
+        original.health[0].record_failure();
+
+        let same_route = route_from_toml(
+            r#"
+[[routes]]
+prefix = "/test"
+upstreams = [{ url = "http://primary.example.com" }]
+"#,
+        );
+        let merged = RouteState::merge(same_route, Some(&original));
+        assert_eq!(merged.health[0].recent_failures(Duration::from_mins(1)), 2);
+    }
+
+    #[test]
+    fn test_merge_starts_fresh_for_changed_upstream() {
+        let route = route_from_toml(
+            r#"
+[[routes]]
+prefix = "/test"
+upstreams = [{ url = "http://primary.example.com" }]
+"#,
+        );
+        let original = RouteState::merge(route, None);
+        original.health[0].record_failure();
+
+        let changed_route = route_from_toml(
+            r#"
+[[routes]]
+prefix = "/test"
+upstreams = [{ url = "http://different.example.com" }]
+"#,
+        );
+        let merged = RouteState::merge(changed_route, Some(&original));
+        assert_eq!(merged.health[0].recent_failures(Duration::from_mins(1)), 0);
+    }
+
+    #[test]
+    fn test_merge_follows_reordered_upstream_by_identity() {
+        let route = route_from_toml(
+            r#"
+[[routes]]
+prefix = "/test"
+upstreams = [
+  { url = "http://primary.example.com" },
+  { url = "http://fallback.example.com" },
+]
+"#,
+        );
+        let original = RouteState::merge(route, None);
+        original.health[1].record_failure();
+        original.health[1].record_failure();
+        original.health[1].record_failure();
+
+        // Same two upstreams, swapped order.
+        let reordered_route = route_from_toml(
+            r#"
+[[routes]]
+prefix = "/test"
+upstreams = [
+  { url = "http://fallback.example.com" },
+  { url = "http://primary.example.com" },
+]
+"#,
+        );
+        let merged = RouteState::merge(reordered_route, Some(&original));
+        assert_eq!(merged.health[0].recent_failures(Duration::from_mins(1)), 3);
+        assert_eq!(merged.health[1].recent_failures(Duration::from_mins(1)), 0);
+    }
+
+    #[test]
+    fn test_build_route_map_drops_removed_routes_without_panic() {
+        let map = build_route_map(
+            vec![route_from_toml(
+                r#"
+[[routes]]
+prefix = "/test"
+upstreams = [{ url = "http://primary.example.com" }]
+"#,
+            )],
+            None,
+        );
+        let empty_map = build_route_map(Vec::new(), Some(&map));
+        assert!(empty_map.is_empty());
+    }
+
+    #[test]
+    fn test_build_route_map_new_route_gets_fresh_health() {
+        let previous = build_route_map(
+            vec![route_from_toml(
+                r#"
+[[routes]]
+prefix = "/test"
+upstreams = [{ url = "http://primary.example.com" }]
+"#,
+            )],
+            None,
+        );
+        let new_map = build_route_map(
+            vec![route_from_toml(
+                r#"
+[[routes]]
+prefix = "/new"
+upstreams = [{ url = "http://other.example.com" }]
+"#,
+            )],
+            Some(&previous),
+        );
+        let state = new_map.values().next().unwrap();
+        assert_eq!(state.select(), Selection::Primary);
     }
 }

@@ -11,18 +11,24 @@ use url::Url;
 
 use omni_proxy::{
     config::{Config, Network},
+    dynamic_config,
     errors::LoggerError,
-    proxy::RpcProxy,
+    proxy::{RoutesHandle, RpcProxy},
 };
+
+const DYNAMIC_CONFIG_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
 struct CliArgs {
     #[clap(long)]
     network: Network,
     #[clap(long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
     #[clap(long, default_value = "8080")]
     port: u16,
+    /// Enable periodic fetching of routes from config service instead of config file.
+    #[clap(long)]
+    dynamic_config: bool,
 }
 
 fn init_logging(network: &Network) -> Result<(), LoggerError> {
@@ -158,13 +164,73 @@ fn init_metrics(network: &Network) {
     }
 }
 
+fn spawn_dynamic_config_refresher(
+    client: reqwest::Client,
+    config_service_url: String,
+    config_service_jwt: String,
+    routes_handle: RoutesHandle,
+) {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("dynamic-config refresher runtime");
+
+        rt.block_on(async move {
+            // First tick completes immediately, skip as fetch is firstly done in main().
+            let mut interval = tokio::time::interval(DYNAMIC_CONFIG_REFRESH_INTERVAL);
+            interval.tick().await;
+
+            loop {
+                interval.tick().await;
+                match dynamic_config::fetch_config(&client, &config_service_url, &config_service_jwt).await {
+                    Ok(config) => {
+                        routes_handle.apply(config.routes);
+                        info!("dynamic config: route table reloaded");
+                    }
+                    Err(e) => {
+                        warn!("dynamic config: refresh failed, keeping last-known-good routes: {e}");
+                    }
+                }
+            }
+        });
+    });
+}
+
 fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
     let args = CliArgs::parse();
-    let config = Config::load_config(args.config)?;
+
+    let config_service_url = std::env::var("CONFIG_SERVICE_URL").ok();
+    let config_service_jwt = std::env::var("CONFIG_SERVICE_JWT").ok();
+
+    if args.dynamic_config && (config_service_url.is_none() || config_service_jwt.is_none()) {
+        anyhow::bail!(
+            "--dynamic-config requires CONFIG_SERVICE_URL and CONFIG_SERVICE_JWT env vars"
+        );
+    }
+    if !args.dynamic_config && args.config.is_none() {
+        anyhow::bail!("--config is required unless --dynamic-config is set");
+    }
 
     init_logging(&args.network)?;
+
+    let http_client = reqwest::Client::new();
+
+    // Fetch config initially
+    let config = if args.dynamic_config {
+        let config_service_url = config_service_url.clone().expect("validated above");
+        let config_service_jwt = config_service_jwt.clone().expect("validated above");
+        let http_client = http_client.clone();
+        let init_rt = tokio::runtime::Runtime::new()?;
+        init_rt.block_on(async move {
+            dynamic_config::fetch_config(&http_client, &config_service_url, &config_service_jwt).await
+        })?
+    } else {
+        Config::load_config(args.config.expect("validated above"))?
+    };
+
     init_metrics(&args.network);
 
     info!(
@@ -178,6 +244,17 @@ fn main() -> Result<()> {
     server.bootstrap();
 
     let proxy = RpcProxy::new(config.routes);
+    if args.dynamic_config {
+        let config_service_url = config_service_url.expect("validated above");
+        let config_service_jwt = config_service_jwt.expect("validated above");
+        spawn_dynamic_config_refresher(
+            http_client,
+            config_service_url,
+            config_service_jwt,
+            proxy.routes_handle(),
+        );
+    }
+
     let mut svc = pingora::proxy::http_proxy_service(&server.configuration, proxy);
     svc.add_tcp(&format!("0.0.0.0:{}", args.port));
     server.add_service(svc);
