@@ -424,18 +424,8 @@ impl ProxyHttp for RpcProxy {
 
         ctx.service = uri
             .query()
-            .and_then(|q| {
-                q.split('&')
-                    .find_map(|p| {
-                        println!("with prefix: {p}");
-                        let r = p.strip_prefix(SERVICE_QUERY_PREFIX);
-                        println!("with prefix: {}", if let Some(s) = r { s } else { "none" });
-                        r
-            })
-            })
+            .and_then(|q| q.split('&').find_map(|p| p.strip_prefix(SERVICE_QUERY_PREFIX)))
             .map_or_else(|| "unknown".to_owned(), sanitize_service);
-
-        println!("SERVICE: {}", &ctx.service);
 
         let routes = self.routes.load();
         let Some(state) = match_route(&routes, uri.path()) else {
@@ -480,8 +470,6 @@ impl ProxyHttp for RpcProxy {
             peer.options.read_timeout = Some(t);
             peer.options.write_timeout = Some(t);
         }
-
-        // println!("PEER: {}", &peer);
 
         Ok(Box::new(peer))
     }
@@ -533,14 +521,7 @@ impl ProxyHttp for RpcProxy {
             .query()
             .unwrap_or("")
             .split('&')
-            .filter(|p| {
-                if p.starts_with(SERVICE_QUERY_PREFIX) {
-                    println!("starts with prefix: {p}");
-                } else {
-                    println!("does not start with prefix: {p}")
-                }
-                !p.is_empty() && !p.starts_with(SERVICE_QUERY_PREFIX)
-            }
+            .filter(|p| !p.is_empty() && !p.starts_with(SERVICE_QUERY_PREFIX)
             )
             .collect::<Vec<_>>()
             .join("&");
