@@ -18,6 +18,7 @@ use solana_sdk::{instruction::InstructionError, pubkey::Pubkey, transaction::Tra
 use omni_connector::OmniConnector;
 use omni_types::{ChainKind, FastTransfer, OmniAddress, TransferId, near_events::OmniBridgeEvent};
 
+use crate::metrics::{Metrics, stall_reason};
 use crate::{
     config, utils, utils::pending_transactions::PendingTransaction, workers::PAUSED_ERROR,
 };
@@ -185,9 +186,8 @@ pub async fn process_transfer_event(
                 Err(action) => (action, Vec::new()),
             },
         ),
-        Err(err) => {
-            anyhow::bail!("Failed to sign transfer ({origin_chain:?}:{origin_nonce}): {err:?}");
-        }
+        Err(err) => Err(err)
+            .with_context(|| format!("Failed to sign transfer ({origin_chain:?}:{origin_nonce})")),
     }
 }
 
@@ -406,12 +406,20 @@ pub async fn process_transfer_to_utxo_event(
                     transfer_message.recipient.get_chain(),
                     transfer_message.origin_nonce
                 );
+                Metrics::global().record_stalled_retry(
+                    stall_reason::UTXO_BALANCE,
+                    Some(transfer_message.recipient.get_chain()),
+                );
                 return Ok((EventAction::Retry, Vec::new()));
             } else if let BridgeSdkError::InsufficientUTXOGasFee(err) = err {
                 warn!(
                     "Gas fee is too large for {:?} transfer ({}): {err}, retrying",
                     transfer_message.recipient.get_chain(),
                     transfer_message.origin_nonce
+                );
+                Metrics::global().record_stalled_retry(
+                    stall_reason::UTXO_FEE,
+                    Some(transfer_message.recipient.get_chain()),
                 );
                 return Ok((EventAction::Retry, Vec::new()));
             } else if let BridgeSdkError::UtxoRpcError(ref msg) = err
@@ -421,6 +429,10 @@ pub async fn process_transfer_to_utxo_event(
                     "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
                     transfer_message.recipient.get_chain(),
                     transfer_message.origin_nonce
+                );
+                Metrics::global().record_stalled_retry(
+                    stall_reason::UTXO_FEE,
+                    Some(transfer_message.recipient.get_chain()),
                 );
                 return Ok((EventAction::Retry, Vec::new()));
             }
@@ -436,11 +448,13 @@ pub async fn process_transfer_to_utxo_event(
                 return Ok((EventAction::Remove, Vec::new()));
             }
 
-            anyhow::bail!(
-                "Failed to submit {:?} transfer ({}): {err:?}",
-                transfer_message.recipient.get_chain(),
-                transfer_message.origin_nonce
-            );
+            Err(err).with_context(|| {
+                format!(
+                    "Failed to submit {:?} transfer ({})",
+                    transfer_message.recipient.get_chain(),
+                    transfer_message.origin_nonce
+                )
+            })
         }
     }
 }
@@ -695,6 +709,8 @@ pub async fn process_sign_transfer_event(
                 }
 
                 warn!("Failed to finalize deposit, retrying: {err}");
+                Metrics::global()
+                    .record_stalled_retry(stall_reason::EVM_GAS_ESTIMATE, Some(chain_kind));
                 return Ok(EventAction::Retry);
             }
 
@@ -717,6 +733,8 @@ pub async fn process_sign_transfer_event(
                     }
                     _ => {
                         warn!("EVM fin_transfer transient error, retrying: {err}");
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::EVM_RPC, Some(chain_kind));
                         return Ok(EventAction::Retry);
                     }
                 }
@@ -741,9 +759,17 @@ pub async fn process_sign_transfer_event(
                     )) => {
                         if error_code == PAUSED_ERROR {
                             warn!("Solana bridge is paused, retrying");
+                            Metrics::global().record_stalled_retry(
+                                stall_reason::SOLANA_PAUSED,
+                                Some(chain_kind),
+                            );
                         } else {
                             warn!(
                                 "Solana program custom error at preflight (retryable): {result:?}"
+                            );
+                            Metrics::global().record_stalled_retry(
+                                stall_reason::SOLANA_PROGRAM_ERROR,
+                                Some(chain_kind),
                             );
                         }
                         return Ok(EventAction::Retry);
@@ -765,6 +791,8 @@ pub async fn process_sign_transfer_event(
                         | TransactionError::ResanitizationNeeded,
                     ) => {
                         warn!("Solana preflight transient failure, retrying: {result:?}");
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::SOLANA_PREFLIGHT, Some(chain_kind));
                         return Ok(EventAction::Retry);
                     }
                     Some(
@@ -773,12 +801,16 @@ pub async fn process_sign_transfer_event(
                         | TransactionError::AccountNotFound,
                     ) => {
                         warn!("Solana fee-payer funding issue, retrying: {result:?}");
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::SOLANA_FUNDING, Some(chain_kind));
                         return Ok(EventAction::Retry);
                     }
                     None => {
                         warn!(
                             "Solana preflight failure without structured error, retrying: {result:?}"
                         );
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::OTHER, Some(chain_kind));
                         return Ok(EventAction::Retry);
                     }
                     Some(_) => {
@@ -801,6 +833,7 @@ pub async fn process_sign_transfer_event(
             }
 
             warn!("Failed to finalize deposit, retrying: {err}");
+            Metrics::global().record_stalled_retry(stall_reason::OTHER, Some(chain_kind));
             Ok(EventAction::Retry)
         }
     }
@@ -989,9 +1022,7 @@ pub async fn initiate_fast_transfer(
             )
             .await)
         }
-        Err(err) => {
-            anyhow::bail!("Failed to initiate fast transfer: {err:?}");
-        }
+        Err(err) => Err(err).context("Failed to initiate fast transfer"),
     }
 }
 

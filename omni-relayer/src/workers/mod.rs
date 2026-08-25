@@ -9,6 +9,7 @@ use std::{
 use crate::types::DepositMsg;
 use alloy::primitives::TxHash;
 use anyhow::{Context, Result};
+use bridge_connector_common::result::BridgeSdkError;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;
@@ -24,6 +25,7 @@ use omni_types::{
     UtxoFinTransferMsg, UtxoId, near_events::OmniBridgeEvent,
 };
 
+use crate::metrics::{Metrics, event_outcome, stall_reason};
 use crate::{config, utils};
 
 mod aptos;
@@ -131,6 +133,7 @@ struct MessageResult {
     /// event leaves the queue (Remove or max-age Term), not on retry.
     fee_key: Option<String>,
     produced_events: Vec<WorkerEvent>,
+    origin_chain: Option<ChainKind>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -202,6 +205,8 @@ pub enum Transfer {
         btc_tx_hash: String,
         vout: u32,
         deposit_msg: DepositMsg,
+        #[serde(default)]
+        amount: U128,
     },
     Fast {
         block_number: u64,
@@ -269,6 +274,24 @@ impl Transfer {
             },
             Transfer::NearToUtxo { .. } => return None,
         })
+    }
+
+    fn origin_chain(&self) -> ChainKind {
+        match self {
+            Transfer::Near {
+                transfer_message, ..
+            } => transfer_message.get_transfer_id().origin_chain,
+            Transfer::Evm { chain_kind, .. } => *chain_kind,
+            Transfer::Solana { sender, .. } => sender.get_chain(),
+            Transfer::Starknet { .. } => ChainKind::Strk,
+            Transfer::Aptos { .. } => ChainKind::Aptos,
+            Transfer::Fast { transfer_id, .. } => transfer_id.origin_chain,
+            Transfer::Utxo {
+                new_transfer_id, ..
+            } => new_transfer_id.origin_chain,
+            Transfer::UtxoToNear { chain, .. } => *chain,
+            Transfer::NearToUtxo { .. } => ChainKind::Near,
+        }
     }
 
     fn log_context(&self) -> LogContext {
@@ -341,6 +364,12 @@ impl FinTransfer {
         }
     }
 
+    /// The chain this fin-transfer's underlying transfer originated from, for
+    /// the `chain` metric label.
+    fn origin_chain(&self) -> Option<ChainKind> {
+        self.transfer_id().map(|id| id.origin_chain)
+    }
+
     fn log_context(&self) -> LogContext {
         let (kind, tx) = match self {
             FinTransfer::Evm { tx_hash, .. } => ("FinTransfer::Evm", Some(tx_hash.to_string())),
@@ -382,6 +411,18 @@ pub enum DeployToken {
 }
 
 impl DeployToken {
+    /// The chain the token is being deployed on, for the `chain` metric label.
+    /// Always known, unlike the transfer-carrying events.
+    fn origin_chain(&self) -> ChainKind {
+        match self {
+            DeployToken::Evm { chain_kind, .. } | DeployToken::Solana { chain_kind, .. } => {
+                *chain_kind
+            }
+            DeployToken::Starknet { .. } => ChainKind::Strk,
+            DeployToken::Aptos { .. } => ChainKind::Aptos,
+        }
+    }
+
     fn log_context(&self) -> LogContext {
         let (kind, tx) = match self {
             DeployToken::Evm { tx_hash, .. } => ("DeployToken::Evm", Some(tx_hash.to_string())),
@@ -397,6 +438,56 @@ impl DeployToken {
     }
 }
 
+/// The `reason` and `target_chain` labels for a retry caused by a worker error.
+fn stall_reason_for(
+    err: &anyhow::Error,
+    origin_chain: Option<ChainKind>,
+) -> (&'static str, Option<ChainKind>) {
+    match err.downcast_ref::<BridgeSdkError>() {
+        Some(BridgeSdkError::NearRpcError(_)) => (stall_reason::NEAR_RPC, Some(ChainKind::Near)),
+        Some(BridgeSdkError::EthRpcError(_)) => (stall_reason::EVM_RPC, origin_chain),
+        Some(BridgeSdkError::EvmGasEstimateError(_)) => {
+            (stall_reason::EVM_GAS_ESTIMATE, origin_chain)
+        }
+        Some(BridgeSdkError::MpcFinalityNotReached) => (stall_reason::MPC_FINALITY, origin_chain),
+        Some(BridgeSdkError::LightClientNotSynced { .. }) => {
+            (stall_reason::LIGHT_CLIENT_NOT_SYNCED, origin_chain)
+        }
+        Some(BridgeSdkError::UtxoRpcError(_) | BridgeSdkError::UtxoClientError(_)) => {
+            (stall_reason::UTXO_RPC, origin_chain)
+        }
+        Some(BridgeSdkError::InsufficientUTXOBalance) => (stall_reason::UTXO_BALANCE, origin_chain),
+        Some(BridgeSdkError::InsufficientUTXOGasFee(_)) => (stall_reason::UTXO_FEE, origin_chain),
+        _ => (stall_reason::OTHER, origin_chain),
+    }
+}
+
+/// Records exactly one disposition for a message: `outcome` when the
+/// acknowledgement reached the server, or [`event_outcome::DROPPED_UNACKED`]
+/// when it did not. An unacknowledged message stays on the stream and is
+/// redelivered, so the intended disposition never took effect and reporting it
+/// would overstate both throughput and permanent drops.
+///
+/// Returns whether the acknowledgement landed.
+fn record_ack(
+    ack: &std::result::Result<(), async_nats::Error>,
+    origin_chain: Option<ChainKind>,
+    outcome: &'static str,
+) -> bool {
+    let metrics = Metrics::global();
+    match ack {
+        Ok(()) => {
+            metrics.record_event(origin_chain, outcome);
+            true
+        }
+        Err(err) => {
+            warn!("Failed to acknowledge message (intended {outcome}): {err:?}");
+            metrics.record_event(origin_chain, event_outcome::DROPPED_UNACKED);
+            false
+        }
+    }
+}
+
 /// Acknowledges the NATS message according to the worker result and message age.
 /// Returns `true` if the event left the queue (acked or terminated), `false` if
 /// it was re-queued for retry — the caller uses this to clean up terminal state.
@@ -406,17 +497,20 @@ async fn handle_nats_ack(
     msg: &async_nats::jetstream::message::Message,
     result: &Result<EventAction>,
     config: &config::RelayerConsumer,
+    origin_chain: Option<ChainKind>,
 ) -> bool {
     if let Ok(EventAction::Remove) = result {
         // Terminal only if the ack actually landed; otherwise NATS may redeliver,
         // so the caller must keep any terminal-only state (e.g. the fee cache).
-        return msg.ack().await.is_ok();
+        let ack = msg.ack().await;
+        return record_ack(&ack, origin_chain, event_outcome::DONE);
     }
 
     if let Err(err) = result {
         warn!("Worker returned error: {err:?}");
     }
 
+    let metrics = Metrics::global();
     let max_backoff = Duration::from_secs(config.max_backoff_hours.saturating_mul(3600));
     let max_message_age = Duration::from_secs(config.max_message_age_hours.saturating_mul(3600));
 
@@ -429,26 +523,41 @@ async fn handle_nats_ack(
         // Ack/Term are terminal only if the ack landed; a failed Nak (or failed
         // Ack/Term) means NATS will redeliver, so we are not done with the event.
         return match compute_ack_decision(result, age, delivered, max_backoff, max_message_age) {
-            NatsAckDecision::Ack => msg.ack().await.is_ok(),
+            NatsAckDecision::Ack => {
+                let ack = msg.ack().await;
+                record_ack(&ack, origin_chain, event_outcome::DONE)
+            }
             NatsAckDecision::Term => {
                 warn!("Message exceeded max age ({age:?}), terminating");
-                msg.ack_with(async_nats::jetstream::AckKind::Term)
-                    .await
-                    .is_ok()
+                metrics.record_message_age(origin_chain, age);
+                let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
+                record_ack(&ack, origin_chain, event_outcome::DROPPED_MAX_AGE)
             }
             NatsAckDecision::NakWithBackoff(backoff) => {
-                if let Err(err) = msg
+                // `RetryAfter` is the scheduled finality wait, which fires on
+                // essentially every transfer. Counted apart from `RETRY` so that
+                // the latter stays a usable stall signal.
+                let outcome = if matches!(result, Ok(EventAction::RetryAfter(_))) {
+                    event_outcome::RETRY_SCHEDULED
+                } else {
+                    metrics.record_message_age(origin_chain, age);
+                    if let Err(err) = result {
+                        let (reason, target_chain) = stall_reason_for(err, origin_chain);
+                        metrics.record_stalled_retry(reason, target_chain);
+                    }
+                    event_outcome::RETRY
+                };
+                let ack = msg
                     .ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
-                    .await
-                {
-                    warn!("Failed to NAK message (backoff={backoff:?}): {err:?}");
-                }
+                    .await;
+                record_ack(&ack, origin_chain, outcome);
                 false
             }
         };
     }
 
     // msg.info() failed: no ack sent, NATS will redeliver after ack-wait — not terminal.
+    metrics.record_event(origin_chain, event_outcome::DROPPED_UNACKED);
     false
 }
 
@@ -490,6 +599,10 @@ pub async fn process_events(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(
         nats_config.relayer_consumer.worker_count,
     ));
+    crate::metrics::register_workers_in_flight(
+        &semaphore,
+        nats_config.relayer_consumer.worker_count,
+    );
 
     info!(
         "Starting event processing with {} concurrent workers",
@@ -510,6 +623,7 @@ pub async fn process_events(
         if is_evm_nonce_resync_needed.load(Ordering::Relaxed) {
             if let Err(err) = evm_nonces.resync_nonces().await {
                 warn!("Failed to resync evm nonces: {err:?}");
+                Metrics::global().record_event(None, event_outcome::DROPPED_UNACKED);
                 continue;
             }
             is_evm_nonce_resync_needed.store(false, Ordering::Relaxed);
@@ -521,9 +635,8 @@ pub async fn process_events(
             Ok(e) => e,
             Err(err) => {
                 warn!("Failed to deserialize event: {err:?}");
-                msg.ack_with(async_nats::jetstream::AckKind::Term)
-                    .await
-                    .ok();
+                let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
+                record_ack(&ack, None, event_outcome::DROPPED_UNDECODABLE);
                 drop(permit);
                 continue;
             }
@@ -587,8 +700,13 @@ pub async fn process_events(
                     publish_event(&config, &nats_client, event).await;
                 }
 
-                let left_queue =
-                    handle_nats_ack(&msg, &message_result.action, &consumer_config).await;
+                let left_queue = handle_nats_ack(
+                    &msg,
+                    &message_result.action,
+                    &consumer_config,
+                    message_result.origin_chain,
+                )
+                .await;
 
                 // Clean up the cached required-fee only when the event leaves the queue
                 // (acked on Remove, or terminated by max age). Retries keep it so the fee
@@ -627,6 +745,7 @@ async fn process_message(
 ) -> MessageResult {
     if let Ok(transfer) = serde_json::from_value::<Transfer>(event.clone()) {
         transfer.log_context().record();
+        let origin_chain = Some(transfer.origin_chain());
 
         match transfer {
             Transfer::Near { .. } | Transfer::Utxo { .. } => {
@@ -680,6 +799,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key: Some(fee_key),
                     produced_events,
+                    origin_chain,
                 }
             }
             Transfer::Evm {
@@ -709,6 +829,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key: Some(fee_key),
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::Solana {
@@ -716,7 +837,7 @@ async fn process_message(
                 ref sender,
                 ..
             } => {
-                let origin_chain = sender.get_chain();
+                let sender_chain = sender.get_chain();
                 let result = solana::process_init_transfer_event(
                     config,
                     redis,
@@ -730,7 +851,7 @@ async fn process_message(
 
                 let fee_key = serde_json::to_string(&TransferId {
                     origin_nonce: sequence,
-                    origin_chain,
+                    origin_chain: sender_chain,
                 })
                 .unwrap_or_default();
 
@@ -739,6 +860,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key: Some(fee_key),
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::NearToUtxo { .. } => {
@@ -757,11 +879,14 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key: None,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::UtxoToNear { .. } => {
                 let result = utxo::process_utxo_to_near_init_transfer_event(
                     config,
+                    redis,
+                    jsonrpc_client,
                     omni_connector.clone(),
                     transfer,
                     near_omni_nonce.clone(),
@@ -772,6 +897,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key: None,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::Starknet { origin_nonce, .. } => {
@@ -797,6 +923,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key: Some(fee_key),
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::Aptos { origin_nonce, .. } => {
@@ -822,6 +949,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key: Some(fee_key),
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
             Transfer::Fast { .. } => {
@@ -832,6 +960,7 @@ async fn process_message(
                         needs_evm_nonce_resync: false,
                         fee_key: None,
                         produced_events: Vec::new(),
+                        origin_chain,
                     };
                 };
 
@@ -848,6 +977,7 @@ async fn process_message(
                     needs_evm_nonce_resync: false,
                     fee_key: None,
                     produced_events: Vec::new(),
+                    origin_chain,
                 }
             }
         }
@@ -865,6 +995,7 @@ async fn process_message(
             .record();
 
             let is_evm = message_payload.recipient.get_chain().is_evm_chain();
+            let origin_chain = Some(message_payload.transfer_id.origin_chain);
             let fee_key = serde_json::to_string(&message_payload.transfer_id).unwrap_or_default();
 
             let result = near::process_sign_transfer_event(
@@ -882,6 +1013,7 @@ async fn process_message(
                 needs_evm_nonce_resync: is_evm,
                 fee_key: Some(fee_key),
                 produced_events: Vec::new(),
+                origin_chain,
             }
         } else {
             warn!("Unhandled OmniBridgeEvent, removing: {event}");
@@ -890,10 +1022,12 @@ async fn process_message(
                 needs_evm_nonce_resync: false,
                 fee_key: None,
                 produced_events: Vec::new(),
+                origin_chain: None,
             }
         }
     } else if let Ok(fin_transfer_event) = serde_json::from_value::<FinTransfer>(event.clone()) {
         fin_transfer_event.log_context().record();
+        let origin_chain = fin_transfer_event.origin_chain();
 
         let result = match fin_transfer_event {
             FinTransfer::Evm { .. } => {
@@ -943,9 +1077,11 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key: None,
             produced_events: Vec::new(),
+            origin_chain,
         }
     } else if let Ok(deploy_token_event) = serde_json::from_value::<DeployToken>(event.clone()) {
         deploy_token_event.log_context().record();
+        let origin_chain = Some(deploy_token_event.origin_chain());
 
         let result = match deploy_token_event {
             DeployToken::Evm { .. } => {
@@ -993,6 +1129,7 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key: None,
             produced_events: Vec::new(),
+            origin_chain,
         }
     } else if let Ok(sign_utxo_transaction_event) =
         serde_json::from_value::<utxo::SignUtxoTransaction>(event.clone())
@@ -1003,6 +1140,7 @@ async fn process_message(
             tx: sign_utxo_transaction_event.btc_pending_id.clone(),
         }
         .record();
+        let origin_chain = Some(ChainKind::Near);
 
         let result = utxo::process_sign_transaction_event(
             config,
@@ -1016,6 +1154,7 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key: None,
             produced_events: Vec::new(),
+            origin_chain,
         }
     } else if let Ok(confirmed_tx_hash) =
         serde_json::from_value::<utxo::ConfirmedTxHash>(event.clone())
@@ -1027,7 +1166,11 @@ async fn process_message(
         }
         .record();
 
+        let origin_chain = Some(ChainKind::Near);
+
         let result = utxo::process_confirmed_tx_hash(
+            config,
+            redis,
             jsonrpc_client,
             omni_connector.clone(),
             confirmed_tx_hash,
@@ -1039,6 +1182,7 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key: None,
             produced_events: Vec::new(),
+            origin_chain,
         }
     } else {
         warn!("Unknown event type, removing: {event}");
@@ -1047,6 +1191,7 @@ async fn process_message(
             needs_evm_nonce_resync: false,
             fee_key: None,
             produced_events: Vec::new(),
+            origin_chain: None,
         }
     }
 }
@@ -1136,6 +1281,57 @@ mod tests {
             Duration::from_hours(1),      // max_backoff = 1h
             Duration::from_hours(7 * 24), // max_message_age = 7 days
         )
+    }
+
+    #[test]
+    fn stall_reason_survives_worker_context() {
+        // The workers attach their message with `.context(...)`; the typed SDK
+        // error must still be recoverable here or every retry reads as "other".
+        let err = Err::<(), _>(BridgeSdkError::MpcFinalityNotReached)
+            .context("Failed to finalize transfer (Eth:7)")
+            .unwrap_err();
+        assert_eq!(
+            stall_reason_for(&err, Some(ChainKind::Eth)),
+            (stall_reason::MPC_FINALITY, Some(ChainKind::Eth))
+        );
+    }
+
+    #[test]
+    fn stall_reason_reads_struct_variants() {
+        let err = Err::<(), _>(BridgeSdkError::LightClientNotSynced {
+            current_height: 10,
+            target_height: 42,
+        })
+        .context("Failed to finalize Btc->NEAR transfer")
+        .unwrap_err();
+        assert_eq!(
+            stall_reason_for(&err, Some(ChainKind::Btc)),
+            (stall_reason::LIGHT_CLIENT_NOT_SYNCED, Some(ChainKind::Btc))
+        );
+    }
+
+    #[test]
+    fn stall_reason_defaults_to_other_for_untyped_errors() {
+        let err = anyhow::anyhow!("Near bridge client is not configured");
+        assert_eq!(
+            stall_reason_for(&err, Some(ChainKind::Sol)),
+            (stall_reason::OTHER, Some(ChainKind::Sol))
+        );
+    }
+
+    #[test]
+    fn near_rpc_stalls_are_attributed_to_near_not_the_origin() {
+        // `target_chain` is the unready dependency's chain: a NEAR RPC failure
+        // while relaying an Eth transfer is NEAR being unavailable, not Eth.
+        let err = Err::<(), _>(BridgeSdkError::NearRpcError(
+            near_rpc_client::NearRpcError::NonceError,
+        ))
+        .context("Failed to finalize transfer (Eth:7)")
+        .unwrap_err();
+        assert_eq!(
+            stall_reason_for(&err, Some(ChainKind::Eth)),
+            (stall_reason::NEAR_RPC, Some(ChainKind::Near))
+        );
     }
 
     #[test]

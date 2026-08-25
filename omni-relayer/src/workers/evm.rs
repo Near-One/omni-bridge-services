@@ -21,7 +21,9 @@ use omni_types::{
 };
 
 use crate::{
-    config, utils,
+    config,
+    metrics::{Metrics, stall_reason},
+    utils,
     workers::{DeployToken, FinTransfer},
 };
 
@@ -152,6 +154,7 @@ pub async fn process_init_transfer_event(
             "VAA is not ready for {chain_kind:?}:{}: {tx_hash:?}",
             log.origin_nonce
         );
+        Metrics::global().record_stalled_retry(stall_reason::VAA_NOT_READY, Some(chain_kind));
         return Ok(EventAction::Retry);
     };
 
@@ -272,10 +275,12 @@ pub async fn process_init_transfer_event(
             )
             .await)
         }
-        Err(err) => anyhow::bail!(
-            "Failed to finalize transfer ({chain_kind:?}:{}): {err:?}",
-            log.origin_nonce
-        ),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "Failed to finalize transfer ({chain_kind:?}:{})",
+                log.origin_nonce
+            )
+        }),
     }
 }
 
@@ -393,7 +398,7 @@ pub async fn process_evm_transfer_event(
             )
             .await)
         }
-        Err(err) => anyhow::bail!("Failed to claim fee: {err:?}"),
+        Err(err) => Err(err).context("Failed to claim fee"),
     }
 }
 
@@ -488,6 +493,6 @@ pub async fn process_deploy_token_event(
             )
             .await)
         }
-        Err(err) => anyhow::bail!("Failed to bind token: {err:?}"),
+        Err(err) => Err(err).context("Failed to bind token"),
     }
 }

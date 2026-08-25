@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use async_nats::jetstream::{self, consumer};
 
 use crate::config;
+use crate::metrics::Metrics;
 
 pub struct NatsClient {
     jetstream: jetstream::Context,
@@ -75,10 +76,20 @@ impl NatsClient {
         let mut headers = async_nats::HeaderMap::new();
         headers.insert("Nats-Msg-Id", key);
 
-        self.jetstream
+        // Resolved up front: `publish_with_headers` takes the subject by value
+        // (`ToSubject` is not implemented for `&String`), so it is gone by the
+        // time the outcome is known. The label is `&'static str`, so this
+        // borrows nothing.
+        let chain = crate::metrics::chain_label_from_subject(&subject);
+
+        let result = self
+            .jetstream
             .publish_with_headers(subject, headers, payload.into())
-            .await
-            .context("Failed to publish work item to NATS")?;
+            .await;
+
+        Metrics::global().record_nats_publish(chain, result.is_ok());
+
+        result.context("Failed to publish work item to NATS")?;
 
         Ok(())
     }

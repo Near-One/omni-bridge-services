@@ -170,13 +170,12 @@ pub async fn process_init_transfer_event(
             )
             .await)
         }
-        Err(err) => {
-            anyhow::bail!(
-                "Failed to finalize Starknet transfer ({:?}:{}): {err:?}",
-                transfer_id.origin_chain,
-                transfer_id.origin_nonce
-            );
-        }
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "Failed to finalize Starknet transfer ({:?}:{})",
+                transfer_id.origin_chain, transfer_id.origin_nonce
+            )
+        }),
     }
 }
 
@@ -242,9 +241,7 @@ pub async fn process_fin_transfer_event(
             )
             .await)
         }
-        Err(err) => {
-            anyhow::bail!("Failed to claim Starknet fee: {err:?}");
-        }
+        Err(err) => Err(err).context("Failed to claim Starknet fee"),
     }
 }
 
@@ -298,8 +295,6 @@ pub async fn process_deploy_token_event(
             )
             .await)
         }
-        Err(err) => {
-            anyhow::bail!("Failed to bind Starknet token: {err:?}");
-        }
+        Err(err) => Err(err).context("Failed to bind Starknet token"),
     }
 }

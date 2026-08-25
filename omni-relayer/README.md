@@ -22,6 +22,12 @@ Edit `.env` and fill in your credentials:
 | `INFURA_API_KEY` | If using Infura | API key for EVM RPC endpoints |
 | `MONGODB_USERNAME` / `MONGODB_PASSWORD` / `MONGODB_HOST` | If using bridge indexer | Bridge indexer database credentials |
 | `BRIDGE_NATS_USERNAME` / `BRIDGE_NATS_PASSWORD` | Yes | NATS authentication credentials |
+| `GRAFANA_OTLP_URL` / `GRAFANA_OTLP_USER` | Optional | Grafana Cloud OTLP endpoint and user — metrics are pushed every 30s |
+| `GRAFANA_CLOUD_API_KEY` | Optional | Grafana Cloud API key, used by metrics |
+
+Metrics are pushed to Grafana Cloud via OTLP every 30s, and only when all three Grafana variables are set — otherwise the relayer logs a warning at startup and runs normally without them. Logs are separate: they go to stdout as JSON for the cluster's log agent to collect.
+
+`GRAFANA_OTLP_URL` must include the signal path (`.../otlp/v1/metrics`); the exporter uses the value verbatim, so the bare `.../otlp` endpoint shown in Grafana Cloud's UI returns 404 on every export while startup still logs `OTLP metrics enabled`. If `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` is set in the environment, it overrides `GRAFANA_OTLP_URL`.
 
 ### 2. Configure the relayer
 

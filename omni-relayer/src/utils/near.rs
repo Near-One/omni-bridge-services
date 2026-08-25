@@ -10,6 +10,7 @@ use omni_types::{ChainKind, near_events::OmniBridgeEvent};
 
 use crate::{
     config,
+    metrics::{Metrics, receipt_outcome},
     workers::{EventAction, Transfer, WorkerEvent},
 };
 
@@ -74,6 +75,44 @@ pub async fn resolve_tx_receipts(
     sender_account_id: AccountId,
     retryable_errors: &[&str],
 ) -> Result<Vec<near_primitives::views::ExecutionOutcomeWithIdView>, EventAction> {
+    let outcome = match fetch_tx_outcome(jsonrpc_client, tx_hash, sender_account_id).await {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            warn!("{err:?}");
+            return Err(EventAction::Retry);
+        }
+    };
+
+    let (has_listed_failure, has_any_failure) =
+        scan_receipt_failures(tx_hash, &outcome, retryable_errors);
+    if has_listed_failure {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_FAILURE);
+        Err(EventAction::Retry)
+    } else if has_any_failure {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::REVERTED);
+        Err(EventAction::Remove)
+    } else {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::OK);
+        Ok(outcome.receipts_outcome)
+    }
+}
+
+pub async fn tx_has_errors(
+    jsonrpc_client: &JsonRpcClient,
+    tx_hash: CryptoHash,
+    sender_account_id: AccountId,
+    errors: &[&str],
+) -> Result<bool> {
+    let outcome = fetch_tx_outcome(jsonrpc_client, tx_hash, sender_account_id).await?;
+    let (has_listed_failure, _) = scan_receipt_failures(tx_hash, &outcome, errors);
+    Ok(has_listed_failure)
+}
+
+async fn fetch_tx_outcome(
+    jsonrpc_client: &JsonRpcClient,
+    tx_hash: CryptoHash,
+    sender_account_id: AccountId,
+) -> Result<near_primitives::views::FinalExecutionOutcomeView> {
     let request = near_jsonrpc_client::methods::tx::RpcTransactionStatusRequest {
         transaction_info: near_jsonrpc_client::methods::tx::TransactionInfo::TransactionId {
             tx_hash,
@@ -82,41 +121,48 @@ pub async fn resolve_tx_receipts(
         wait_until: near_primitives::views::TxExecutionStatus::Final,
     };
 
-    let response = match jsonrpc_client.call(request).await {
-        Ok(response) => response,
-        Err(err) => {
-            warn!("Failed to get transaction status for {tx_hash}: {err:?}");
-            return Err(EventAction::Retry);
-        }
+    let Ok(response) = jsonrpc_client.call(request).await else {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_RPC);
+        anyhow::bail!("Failed to get transaction status for {tx_hash}");
     };
 
-    let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(outcome)) =
-        response.final_execution_outcome
-    else {
-        warn!("Receipts missing for transaction {tx_hash}");
-        return Err(EventAction::Retry);
-    };
+    if let Some(near_primitives::views::FinalExecutionOutcomeViewEnum::FinalExecutionOutcome(
+        outcome,
+    )) = response.final_execution_outcome
+    {
+        Ok(outcome)
+    } else {
+        Metrics::global().record_near_tx_receipt(receipt_outcome::RETRY_MISSING);
+        Err(anyhow::anyhow!(
+            "Receipts missing for transaction {tx_hash}"
+        ))
+    }
+}
 
-    let mut non_retryable_failure = false;
+fn scan_receipt_failures(
+    tx_hash: CryptoHash,
+    outcome: &near_primitives::views::FinalExecutionOutcomeView,
+    errors: &[&str],
+) -> (bool, bool) {
+    let mut has_listed_failure = false;
+    let mut has_any_failure = false;
+
     for receipt_outcome in &outcome.receipts_outcome {
         if let near_primitives::views::ExecutionStatusView::Failure(ref err) =
             receipt_outcome.outcome.status
         {
+            has_any_failure = true;
             let err_str = err.to_string();
-            if retryable_errors.iter().any(|e| err_str.contains(e)) {
-                warn!("Transaction {tx_hash} has retryable receipt failure: {err:?}");
-                return Err(EventAction::Retry);
+            if errors.iter().any(|e| err_str.contains(e)) {
+                has_listed_failure = true;
+                warn!("Transaction {tx_hash} has expected receipt failure: {err:?}");
+            } else {
+                warn!("Transaction {tx_hash} has unexpected receipt failure: {err:?}");
             }
-            warn!("Transaction {tx_hash} has non-retryable receipt failure: {err:?}");
-            non_retryable_failure = true;
         }
     }
 
-    if non_retryable_failure {
-        Err(EventAction::Remove)
-    } else {
-        Ok(outcome.receipts_outcome)
-    }
+    (has_listed_failure, has_any_failure)
 }
 
 pub fn extract_sign_transfer_event(

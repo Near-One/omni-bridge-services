@@ -1,12 +1,18 @@
 [package]
 name = "omni-relayer"
-version = "0.6.33"
+version = "0.6.35"
 edition = "2024"
 repository = "https://github.com/Near-One/omni-bridge"
 
 [dependencies]
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+
+# Metrics are pushed via OTLP to Grafana Cloud (no scrape endpoint), matching
+# omni-proxy and wormhole-vaa-api. Keep these versions in sync with those crates.
+opentelemetry = { version = "0.27", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.27", features = ["metrics", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["metrics", "http-proto", "reqwest-client"] }
 
 chrono = "0.4"
 
@@ -48,6 +54,7 @@ near-crypto = "0.34.2"
 near-sdk = { version = "5.24.1", features = ["unit-testing"] }
 
 hex = "0.4.3"
+base64 = "0.22.1"
 sha2 = "0.10"
 alloy = { version = "1.1", features = ["node-bindings", "providers", "rpc-types", "sol-types", "provider-ws", "signers", "signer-local"] }
 
@@ -57,21 +64,21 @@ async-nats = "0.45"
 reqwest = "0.12"
 uuid = { version = "1", features = ["v4", "fast-rng"] }
 
-bridge-connector-common = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "bridge-connector-common", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-near-rpc-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-rpc-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
+bridge-connector-common = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "bridge-connector-common", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+near-rpc-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-rpc-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
 
-near-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-bridge-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-evm-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "evm-bridge-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-solana-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "solana-bridge-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-starknet-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "starknet-bridge-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-aptos-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "aptos-bridge-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-utxo-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-bridge-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-utxo-utils = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-utils", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-hypercore-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "hypercore-bridge-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
-light-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "light-client", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
+near-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "near-bridge-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+evm-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "evm-bridge-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+solana-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "solana-bridge-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+starknet-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "starknet-bridge-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+aptos-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "aptos-bridge-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+utxo-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-bridge-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+utxo-utils = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "utxo-utils", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+hypercore-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "hypercore-bridge-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+light-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "light-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
 
-omni-connector = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "omni-connector", rev = "204318a0744245f60b92fcc4028ab3e9ae07ad71" }
+omni-connector = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "omni-connector", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
 
 [features]
 default = ["nats-ingestion"]
