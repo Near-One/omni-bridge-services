@@ -205,6 +205,9 @@ fn main() -> Result<()> {
     let config_service_url = std::env::var("CONFIG_SERVICE_URL").ok();
     let config_service_jwt = std::env::var("CONFIG_SERVICE_JWT").ok();
 
+    if args.dynamic_config && args.config.is_some() {
+        anyhow::bail!("--config cannot be used together with --dynamic-config, select one");
+    }
     if args.dynamic_config && (config_service_url.is_none() || config_service_jwt.is_none()) {
         anyhow::bail!(
             "--dynamic-config requires CONFIG_SERVICE_URL and CONFIG_SERVICE_JWT env vars"
