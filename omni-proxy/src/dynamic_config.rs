@@ -205,7 +205,7 @@ mod tests {
         let mock = server
             .mock_async(|when, then| {
                 when.method(httpmock::Method::GET)
-                    .path("/route")
+                    .path("/admin/route")
                     .header("Authorization", "Bearer test-jwt");
                 then.status(200).json_body(json!([route_dto_json(
                     "eth",
@@ -232,7 +232,7 @@ mod tests {
         let server = MockServer::start_async().await;
         server
             .mock_async(|when, then| {
-                when.method(httpmock::Method::GET).path("/route");
+                when.method(httpmock::Method::GET).path("/admin/route");
                 then.status(401);
             })
             .await;
