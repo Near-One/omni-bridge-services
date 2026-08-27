@@ -44,13 +44,15 @@ struct RouteDto {
     upstreams: Vec<UpstreamDto>,
 }
 
-/// `http` is the implicit/default connection type and is omitted from the path,
-/// any other connection type is kept explicit.
-fn route_prefix(blockchain: &str, conn_type: &str) -> String {
-    if conn_type == "http" {
-        format!("/{blockchain}")
-    } else {
-        format!("/{conn_type}/{blockchain}")
+impl RouteDto {
+    /// `http` is the implicit/default connection type and is omitted from the path,
+    /// any other connection type is kept explicit.
+    fn route_prefix(&self) -> String {
+        if self.conn_type == ConnType::Http {
+            format!("/{}", self.blockchain)
+        } else {
+            format!("/{}/{}", self.conn_type.as_str(), self.blockchain)
+        }
     }
 }
 
@@ -58,6 +60,7 @@ fn assemble_config_value(routes: Vec<RouteDto>) -> serde_json::Value {
     let route_values: Vec<serde_json::Value> = routes
         .into_iter()
         .map(|route| {
+            let prefix = route.route_prefix();
             let upstreams: Vec<serde_json::Value> = route
                 .upstreams
                 .into_iter()
@@ -69,7 +72,7 @@ fn assemble_config_value(routes: Vec<RouteDto>) -> serde_json::Value {
                 })
                 .collect();
             json!({
-                "prefix": route_prefix(&route.blockchain, route.conn_type.as_str()),
+                "prefix": prefix,
                 "upstreams": upstreams,
                 "failover": {
                     "status_codes": DEFAULT_FAILOVER_STATUS_CODES,
@@ -195,8 +198,13 @@ mod tests {
 
     #[test]
     fn test_route_prefix_omits_default_http_conn_type() {
-        assert_eq!(route_prefix("eth", "http"), "/eth");
-        assert_eq!(route_prefix("solana", "ws"), "/ws/solana");
+        let http_route: RouteDto =
+            serde_json::from_value(route_dto_json("eth", "http", 3, 60, vec![])).unwrap();
+        assert_eq!(http_route.route_prefix(), "/eth");
+
+        let ws_route: RouteDto =
+            serde_json::from_value(route_dto_json("solana", "ws", 3, 60, vec![])).unwrap();
+        assert_eq!(ws_route.route_prefix(), "/ws/solana");
     }
 
     #[tokio::test]
