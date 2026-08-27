@@ -219,7 +219,10 @@ fn main() -> Result<()> {
 
     init_logging(&args.network)?;
 
-    let http_client = reqwest::Client::new();
+    let http_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(10))
+        .build()?;
 
     // Fetch config initially
     let config = if args.dynamic_config {
