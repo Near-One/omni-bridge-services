@@ -16,7 +16,7 @@ use omni_proxy::{
     proxy::{RoutesHandle, RpcProxy},
 };
 
-const DYNAMIC_CONFIG_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+const DYNAMIC_CONFIG_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 
 #[derive(Parser)]
 struct CliArgs {
