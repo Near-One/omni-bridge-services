@@ -145,6 +145,10 @@ pub struct RequestCtx {
     upstream_idx: usize,
     all_degraded: bool,
     route_prefix: Option<Prefix>,
+    /// snapshot taken once in `upstream_peer`, reused by every
+    /// later callback for this request so they all see the exact same
+    /// upstream, even if a dynamic config refresh swaps it mid-request.
+    routes: Option<Arc<HashMap<Prefix, RouteState>>>,
     body_buf: Option<Vec<u8>>,
     is_failure: bool,
     pub service: String,
@@ -160,6 +164,7 @@ impl Default for RequestCtx {
             upstream_idx: 0,
             all_degraded: false,
             route_prefix: None,
+            routes: None,
             body_buf: None,
             is_failure: false,
             service: "unknown".to_owned(),
@@ -427,7 +432,7 @@ impl ProxyHttp for RpcProxy {
             .and_then(|q| q.split('&').find_map(|p| p.strip_prefix(SERVICE_QUERY_PREFIX)))
             .map_or_else(|| "unknown".to_owned(), sanitize_service);
 
-        let routes = self.routes.load();
+        let routes = self.routes.load_full();
         let Some(state) = match_route(&routes, uri.path()) else {
             self.route_not_matched
                 .add(1, &[KeyValue::new("service", ctx.service.clone())]);
@@ -471,6 +476,8 @@ impl ProxyHttp for RpcProxy {
             peer.options.write_timeout = Some(t);
         }
 
+        ctx.routes = Some(routes);
+
         Ok(Box::new(peer))
     }
 
@@ -486,11 +493,15 @@ impl ProxyHttp for RpcProxy {
         let Some(ref prefix) = ctx.route_prefix else {
             return Ok(());
         };
-        let routes = self.routes.load();
+        let Some(routes) = ctx.routes.as_ref() else {
+            return Ok(());
+        };
         let Some(state) = routes.get(prefix) else {
             return Ok(());
         };
-        let upstream = &state.route.upstreams()[ctx.upstream_idx];
+        let Some(upstream) = state.route.upstreams().get(ctx.upstream_idx) else {
+            return Ok(());
+        };
 
         upstream_request.insert_header("Host", upstream.authority())?;
         if let Some(auth) = upstream.auth_header() {
@@ -559,7 +570,9 @@ impl ProxyHttp for RpcProxy {
         Self::CTX: Send + Sync,
     {
         ctx.status_code = upstream_response.status.as_u16();
-        let routes = self.routes.load();
+        let Some(routes) = ctx.routes.as_ref() else {
+            return Ok(());
+        };
         if ctx.status_code == 101
             && let Some(ref prefix) = ctx.route_prefix
             && let Some(state) = routes.get(prefix)
@@ -597,9 +610,9 @@ impl ProxyHttp for RpcProxy {
                 buf.extend_from_slice(&chunk[..take]);
             }
 
-            let routes = self.routes.load();
             if end_of_stream
                 && buf.len() < MAX_RPC_BODY_BYTES
+                && let Some(routes) = ctx.routes.as_ref()
                 && let Some(ref prefix) = ctx.route_prefix
                 && let Some(state) = routes.get(prefix)
                 && let Ok(json) = serde_json::from_slice::<Value>(buf)
@@ -631,8 +644,8 @@ impl ProxyHttp for RpcProxy {
         }
 
         let failed = ctx.is_failure || e.is_some();
-        let routes = self.routes.load();
-        if let Some(ref prefix) = ctx.route_prefix
+        if let Some(routes) = ctx.routes.as_ref()
+            && let Some(ref prefix) = ctx.route_prefix
             && let Some(state) = routes.get(prefix)
             && let Some(health) = state.health.get(ctx.upstream_idx)
         {
