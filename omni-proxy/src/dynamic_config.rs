@@ -164,8 +164,20 @@ mod tests {
     #[test]
     fn test_assemble_groups_multiple_routes() {
         let value = json!([
-            route_dto_json("eth", "http", 3, 60, vec![upstream_dto_json("http://a.example.com", None, 0)]),
-            route_dto_json("arb", "http", 3, 60, vec![upstream_dto_json("http://b.example.com", None, 0)]),
+            route_dto_json(
+                "eth",
+                "http",
+                3,
+                60,
+                vec![upstream_dto_json("http://a.example.com", None, 0)]
+            ),
+            route_dto_json(
+                "arb",
+                "http",
+                3,
+                60,
+                vec![upstream_dto_json("http://b.example.com", None, 0)]
+            ),
         ]);
         let routes: Vec<RouteDto> = serde_json::from_value(value).unwrap();
         let config = Config::from_dynamic_value(assemble_config_value(routes)).unwrap();

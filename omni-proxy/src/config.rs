@@ -360,7 +360,10 @@ upstreams = [{ url = "https://b.example" }]
         assert_eq!(config.routes.len(), 1);
         let route = &config.routes[0];
         assert!(route.upstreams()[0].url_path().ends_with("/secret456"));
-        assert_eq!(route.upstreams()[0].timeout(), Some(Duration::from_millis(500)));
+        assert_eq!(
+            route.upstreams()[0].timeout(),
+            Some(Duration::from_millis(500))
+        );
         assert!(route.failover().is_failure_status(500));
         assert!(route.failover().is_failure_rpc_code(-32000));
     }

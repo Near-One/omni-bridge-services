@@ -183,13 +183,21 @@ fn spawn_dynamic_config_refresher(
 
             loop {
                 interval.tick().await;
-                match dynamic_config::fetch_config(&client, &config_service_url, &config_service_jwt).await {
+                match dynamic_config::fetch_config(
+                    &client,
+                    &config_service_url,
+                    &config_service_jwt,
+                )
+                .await
+                {
                     Ok(config) => {
                         routes_handle.apply(config.routes);
                         info!("dynamic config: route table reloaded");
                     }
                     Err(e) => {
-                        warn!("dynamic config: refresh failed, keeping last-known-good routes: {e}");
+                        warn!(
+                            "dynamic config: refresh failed, keeping last-known-good routes: {e}"
+                        );
                     }
                 }
             }
@@ -231,7 +239,8 @@ fn main() -> Result<()> {
         let http_client = http_client.clone();
         let init_rt = tokio::runtime::Runtime::new()?;
         init_rt.block_on(async move {
-            dynamic_config::fetch_config(&http_client, &config_service_url, &config_service_jwt).await
+            dynamic_config::fetch_config(&http_client, &config_service_url, &config_service_jwt)
+                .await
         })?
     } else {
         Config::load_config(args.config.expect("validated above"))?
