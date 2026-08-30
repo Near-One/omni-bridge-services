@@ -176,16 +176,17 @@ impl TransferFee {
                 info!("No fee provided for transfer: {transfer:?}, skipping transfer");
                 Metrics::global()
                     .record_preflight_rejection(rejection_reason::NO_FEE, origin_chain);
-                return Some(EventAction::Remove);
+                return Some(EventAction::Drop);
             }
 
             let Ok(transfer_id) = serde_json::to_string(&transfer_id) else {
                 warn!("Failed to serialize transfer id: {transfer_id:?}");
-                // A permanent drop, like the two paths around it. Without this it
-                // would ack as `event_outcome::DONE`, i.e. look relayed.
+                // A permanent drop, like the two paths around it — recorded so
+                // it is attributable, and returned as `Drop` so it is terminated
+                // as a give-up rather than acked as a relayed transfer.
                 Metrics::global()
                     .record_preflight_rejection(rejection_reason::UNPROCESSABLE, origin_chain);
-                return Some(EventAction::Remove);
+                return Some(EventAction::Drop);
             };
 
             if let Some(historical_fee) =

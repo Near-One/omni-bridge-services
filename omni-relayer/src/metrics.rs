@@ -20,17 +20,23 @@ pub const CHAIN_UNKNOWN: &str = "unknown";
 
 /// Terminal disposition of a work item pulled from the relayer's NATS consumer.
 pub mod event_outcome {
-    /// Acked as handled. Note this is "the relayer is done with it", not
-    /// "the transfer settled" — see [`super::receipt_outcome::REVERTED`].
+    /// Acked as handled: the relayer did its part — it submitted the
+    /// transaction, or handed the transfer to the next stage. Note this is
+    /// "the relayer is done with it", not "the transfer settled" — see
+    /// [`super::receipt_outcome::REVERTED`]. A give-up is counted under
+    /// [`DROPPED_TERMINAL`] instead, so this stays a usable throughput signal.
     pub const DONE: &str = "done";
     /// Nak'd for immediate retry: a real stall (dependency not ready, RPC error).
     pub const RETRY: &str = "retry";
     /// Nak'd with an explicit delay: the scheduled finality wait, which fires on
     /// essentially every transfer. Kept separate so [`RETRY`] stays alertable.
     pub const RETRY_SCHEDULED: &str = "retry_scheduled";
-    /// Terminated after a worker returned `Err`. Has a healthy nonzero baseline:
-    /// the "Transfer is already finalised" de-duplication path also lands here.
-    /// Alert on rate-of-change, not on an absolute threshold.
+    /// Terminated because a worker returned `EventAction::Drop`: the relayer
+    /// gave up on the event permanently and nothing downstream follows it — an
+    /// unroutable payload, a deterministic revert, a compliance stop, an
+    /// already-finalised duplicate. Has a healthy nonzero baseline: the
+    /// "Transfer is already finalised" de-duplication path lands here. Alert on
+    /// rate-of-change, not on an absolute threshold.
     pub const DROPPED_TERMINAL: &str = "dropped_terminal";
     /// Terminated for exceeding `max_message_age_hours` — a transfer the relayer
     /// gave up on entirely.
@@ -56,9 +62,9 @@ pub mod receipt_outcome {
     /// A receipt failed with a configured-retryable error; will retry.
     pub const RETRY_FAILURE: &str = "retry_failure";
     /// A receipt failed non-retryably: the transaction was broadcast but the
-    /// contract call reverted. The caller converts this to `EventAction::Remove`,
-    /// so without this counter a revert is indistinguishable from a relayed
-    /// transfer.
+    /// contract call reverted. The caller converts this to `EventAction::Drop`,
+    /// so it is also counted under [`super::event_outcome::DROPPED_TERMINAL`];
+    /// this counter is what separates a revert from the other give-ups.
     pub const REVERTED: &str = "reverted";
 }
 
@@ -84,12 +90,30 @@ pub mod stall_reason {
     pub const UTXO_RPC: &str = "utxo_rpc";
     /// The Solana bridge contract is paused.
     pub const SOLANA_PAUSED: &str = "solana_paused";
+    /// The bridge program returned a custom error at preflight other than the
+    /// paused flag (Anchor / SPL / System-CPI). Reflects mutable on-chain state
+    /// that can clear on a later attempt, so it retries rather than drops.
+    pub const SOLANA_PROGRAM_ERROR: &str = "solana_program_error";
+    /// Solana preflight rejected the transaction for a transient cluster-side
+    /// reason: stale blockhash, account in use, cost limits, maintenance.
+    /// Self-healing, so alert on it being sustained rather than on any of it.
+    pub const SOLANA_PREFLIGHT: &str = "solana_preflight";
+    /// The Solana fee payer cannot cover the fee or rent. The SVM counterpart of
+    /// an underfunded EVM signer surfacing as [`EVM_GAS_ESTIMATE`]: it needs a
+    /// top-up and will not clear on its own.
+    pub const SOLANA_FUNDING: &str = "solana_funding";
     /// A retryable NEAR RPC error. NEAR is the hub every transfer crosses, so
     /// this moving across many `target_chain` values at once is the fastest
     /// discriminator between "one chain is broken" and "NEAR is broken".
     pub const NEAR_RPC: &str = "near_rpc";
-    /// Any other retryable error. A rise here means a failure mode nobody has
-    /// classified yet — it is the bucket to watch after an SDK upgrade.
+    /// Any other retryable error. Every worker error that reaches the NATS ack
+    /// path unclassified lands here, so it has a nonzero baseline: a failure
+    /// that is permanent but not *recognised* as permanent (a missing config
+    /// section, a bad signer) retries until it ages out and counts once per
+    /// delivery. Conditions a worker can recognise as permanent return
+    /// `EventAction::Drop` and never reach this bucket. A *rise* here means a
+    /// failure mode nobody has classified yet — it is the bucket to watch after
+    /// an SDK upgrade.
     pub const OTHER: &str = "other";
 }
 
@@ -270,10 +294,12 @@ impl Metrics {
     /// Records how long a work item has been alive.
     ///
     /// Recorded only for real stalls (`event_outcome::RETRY`) and for the
-    /// `event_outcome::DROPPED_MAX_AGE` give-up, never for
-    /// `event_outcome::RETRY_SCHEDULED`: the scheduled finality wait fires on
-    /// essentially every transfer, and including those near-zero samples would
-    /// make every percentile track transfer volume instead of backlog.
+    /// `event_outcome::DROPPED_MAX_AGE` give-up. Never for
+    /// `event_outcome::RETRY_SCHEDULED` (the scheduled finality wait fires on
+    /// essentially every transfer) and never for
+    /// `event_outcome::DROPPED_TERMINAL` (a recognised give-up usually lands on
+    /// the first delivery): including either set of near-zero samples would make
+    /// every percentile track transfer volume instead of backlog.
     pub fn record_message_age(&self, chain: Option<ChainKind>, age: Duration) {
         self.message_age.record(
             age.as_secs_f64(),

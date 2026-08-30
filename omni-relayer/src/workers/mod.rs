@@ -9,6 +9,7 @@ use std::{
 use crate::types::DepositMsg;
 use alloy::primitives::TxHash;
 use anyhow::{Context, Result};
+use bridge_connector_common::result::BridgeSdkError;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;
@@ -24,7 +25,7 @@ use omni_types::{
     UtxoFinTransferMsg, UtxoId, near_events::OmniBridgeEvent,
 };
 
-use crate::metrics::{Metrics, event_outcome};
+use crate::metrics::{Metrics, event_outcome, stall_reason};
 use crate::{config, utils};
 
 mod aptos;
@@ -89,7 +90,52 @@ impl<E> RetryableEvent<E> {
 pub enum EventAction {
     Retry,
     RetryAfter(Duration),
+    /// The relayer did its part: the transfer was submitted, or handed to the
+    /// next stage. Acked as [`event_outcome::DONE`].
     Remove,
+    /// The relayer permanently gives up on this event and nothing downstream
+    /// follows it — an unroutable payload, a deterministic revert, a compliance
+    /// stop, an already-finalised duplicate. Terminated as
+    /// [`event_outcome::DROPPED_TERMINAL`], kept apart from `Remove` so that a
+    /// give-up does not read as a relayed transfer.
+    Drop,
+}
+
+#[derive(Debug)]
+enum NatsAckDecision {
+    Ack,
+    NakWithBackoff(Duration),
+    /// Terminated because the worker gave up on the event.
+    Drop,
+    /// Terminated because the message exceeded `max_message_age_hours`.
+    Term,
+}
+
+fn compute_ack_decision(
+    result: &Result<EventAction>,
+    age: Duration,
+    delivered: u32,
+    max_backoff: Duration,
+    max_message_age: Duration,
+) -> NatsAckDecision {
+    // Exhaustive on purpose: a new `EventAction` variant must fail the build
+    // here rather than fall into the backoff arm below and be silently aged out.
+    match result {
+        // Both are terminal on their own merits — never backed off, never aged
+        // out, and a give-up is never counted as a successful relay.
+        Ok(EventAction::Remove) => return NatsAckDecision::Ack,
+        Ok(EventAction::Drop) => return NatsAckDecision::Drop,
+        Ok(EventAction::Retry | EventAction::RetryAfter(_)) | Err(_) => {}
+    }
+
+    if age > max_message_age {
+        return NatsAckDecision::Term;
+    }
+    let backoff = match result {
+        Ok(EventAction::RetryAfter(d)) => (*d).min(max_backoff),
+        _ => Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1))).min(max_backoff),
+    };
+    NatsAckDecision::NakWithBackoff(backoff)
 }
 
 pub enum WorkerEvent {
@@ -100,7 +146,12 @@ pub enum WorkerEvent {
 struct MessageResult {
     action: Result<EventAction>,
     needs_evm_nonce_resync: bool,
-    fee_key_to_remove: Option<String>,
+    /// `FEE_MAPPING` key to clean up once this event leaves the queue (acked on
+    /// `Remove`, or terminated by max age) — never on retry, so the fee check
+    /// doesn't re-fetch and re-store the entry on every attempt. `None` when the
+    /// event has no fee key, or when its `Remove` is a hand-off to a later stage
+    /// that reads the same key and owns the cleanup instead.
+    fee_key: Option<String>,
     produced_events: Vec<WorkerEvent>,
     origin_chain: Option<ChainKind>,
 }
@@ -407,82 +458,137 @@ impl DeployToken {
     }
 }
 
+/// The `reason` and `target_chain` labels for a retry caused by a worker error.
+fn stall_reason_for(
+    err: &anyhow::Error,
+    origin_chain: Option<ChainKind>,
+) -> (&'static str, Option<ChainKind>) {
+    match err.downcast_ref::<BridgeSdkError>() {
+        Some(BridgeSdkError::NearRpcError(_)) => (stall_reason::NEAR_RPC, Some(ChainKind::Near)),
+        Some(BridgeSdkError::EthRpcError(_)) => (stall_reason::EVM_RPC, origin_chain),
+        Some(BridgeSdkError::EvmGasEstimateError(_)) => {
+            (stall_reason::EVM_GAS_ESTIMATE, origin_chain)
+        }
+        Some(BridgeSdkError::MpcFinalityNotReached) => (stall_reason::MPC_FINALITY, origin_chain),
+        Some(BridgeSdkError::LightClientNotSynced { .. }) => {
+            (stall_reason::LIGHT_CLIENT_NOT_SYNCED, origin_chain)
+        }
+        Some(BridgeSdkError::UtxoRpcError(_) | BridgeSdkError::UtxoClientError(_)) => {
+            (stall_reason::UTXO_RPC, origin_chain)
+        }
+        Some(BridgeSdkError::InsufficientUTXOBalance) => (stall_reason::UTXO_BALANCE, origin_chain),
+        Some(BridgeSdkError::InsufficientUTXOGasFee(_)) => (stall_reason::UTXO_FEE, origin_chain),
+        _ => (stall_reason::OTHER, origin_chain),
+    }
+}
+
 /// Records exactly one disposition for a message: `outcome` when the
 /// acknowledgement reached the server, or [`event_outcome::DROPPED_UNACKED`]
 /// when it did not. An unacknowledged message stays on the stream and is
 /// redelivered, so the intended disposition never took effect and reporting it
 /// would overstate both throughput and permanent drops.
+///
+/// Returns whether the acknowledgement landed.
 fn record_ack(
     ack: &std::result::Result<(), async_nats::Error>,
     origin_chain: Option<ChainKind>,
     outcome: &'static str,
-) {
+) -> bool {
     let metrics = Metrics::global();
     match ack {
-        Ok(()) => metrics.record_event(origin_chain, outcome),
+        Ok(()) => {
+            metrics.record_event(origin_chain, outcome);
+            true
+        }
         Err(err) => {
             warn!("Failed to acknowledge message (intended {outcome}): {err:?}");
             metrics.record_event(origin_chain, event_outcome::DROPPED_UNACKED);
+            false
         }
     }
 }
 
+/// Acknowledges the NATS message according to the worker result and message age.
+/// Returns `true` if the event left the queue (acked or terminated), `false` if
+/// it was re-queued for retry — the caller uses this to clean up terminal state.
+/// If `msg.info()` is unavailable, nothing is acked and NATS redelivers after
+/// `ack_wait`; this returns `false` (not terminal).
 async fn handle_nats_ack(
     msg: &async_nats::jetstream::message::Message,
     result: &Result<EventAction>,
     config: &config::RelayerConsumer,
     origin_chain: Option<ChainKind>,
-) {
-    let metrics = Metrics::global();
-    let max_backoff = Duration::from_secs(config.max_backoff_hours * 3600);
-    let max_message_age = Duration::from_secs(config.max_message_age_hours * 3600);
-
+) -> bool {
+    // `Remove` and `Drop` are terminal on their own merits — neither needs the
+    // stream info, the message age or the delivery count to be decided. Both are
+    // terminal only if the ack actually landed; otherwise NATS may redeliver, so
+    // the caller must keep any terminal-only state (e.g. the fee cache).
     match result {
-        Ok(EventAction::Retry | EventAction::RetryAfter(_)) => {
-            if let Ok(info) = msg.info() {
-                let now = chrono::Utc::now().timestamp();
-                let published_at = info.published.unix_timestamp();
-                let age = Duration::from_secs(now.saturating_sub(published_at).unsigned_abs());
+        Ok(EventAction::Remove) => {
+            let ack = msg.ack().await;
+            return record_ack(&ack, origin_chain, event_outcome::DONE);
+        }
+        Ok(EventAction::Drop) => {
+            let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
+            return record_ack(&ack, origin_chain, event_outcome::DROPPED_TERMINAL);
+        }
+        Err(err) => warn!("Worker returned error: {err:?}"),
+        Ok(EventAction::Retry | EventAction::RetryAfter(_)) => {}
+    }
 
-                if age > max_message_age {
-                    warn!("Message exceeded max age ({age:?}), terminating");
-                    metrics.record_message_age(origin_chain, age);
-                    let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
-                    record_ack(&ack, origin_chain, event_outcome::DROPPED_MAX_AGE);
-                    return;
-                }
+    let metrics = Metrics::global();
+    let max_backoff = Duration::from_secs(config.max_backoff_hours.saturating_mul(3600));
+    let max_message_age = Duration::from_secs(config.max_message_age_hours.saturating_mul(3600));
 
-                let (outcome, backoff) = if let Ok(EventAction::RetryAfter(delay)) = result {
-                    // The scheduled finality wait, which fires on essentially
-                    // every transfer. Counted apart from `RETRY` so that the
-                    // latter stays a usable stall signal.
-                    (event_outcome::RETRY_SCHEDULED, (*delay).min(max_backoff))
+    if let Ok(info) = msg.info() {
+        let now = chrono::Utc::now().timestamp();
+        let published_at = info.published.unix_timestamp();
+        let age = Duration::from_secs(now.saturating_sub(published_at).unsigned_abs());
+        let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
+
+        // Ack/Term are terminal only if the ack landed; a failed Nak (or failed
+        // Ack/Term) means NATS will redeliver, so we are not done with the event.
+        return match compute_ack_decision(result, age, delivered, max_backoff, max_message_age) {
+            NatsAckDecision::Ack => {
+                let ack = msg.ack().await;
+                record_ack(&ack, origin_chain, event_outcome::DONE)
+            }
+            NatsAckDecision::Drop => {
+                let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
+                record_ack(&ack, origin_chain, event_outcome::DROPPED_TERMINAL)
+            }
+            NatsAckDecision::Term => {
+                warn!("Message exceeded max age ({age:?}), terminating");
+                metrics.record_message_age(origin_chain, age);
+                let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
+                record_ack(&ack, origin_chain, event_outcome::DROPPED_MAX_AGE)
+            }
+            NatsAckDecision::NakWithBackoff(backoff) => {
+                // `RetryAfter` is the scheduled finality wait, which fires on
+                // essentially every transfer. Counted apart from `RETRY` so that
+                // the latter stays a usable stall signal.
+                let outcome = if matches!(result, Ok(EventAction::RetryAfter(_))) {
+                    event_outcome::RETRY_SCHEDULED
                 } else {
                     metrics.record_message_age(origin_chain, age);
-                    let delivered = u32::try_from(info.delivered).unwrap_or(u32::MAX);
-                    (
-                        event_outcome::RETRY,
-                        Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
-                            .min(max_backoff),
-                    )
+                    if let Err(err) = result {
+                        let (reason, target_chain) = stall_reason_for(err, origin_chain);
+                        metrics.record_stalled_retry(reason, target_chain);
+                    }
+                    event_outcome::RETRY
                 };
                 let ack = msg
                     .ack_with(async_nats::jetstream::AckKind::Nak(Some(backoff)))
                     .await;
                 record_ack(&ack, origin_chain, outcome);
-            } else {
-                metrics.record_event(origin_chain, event_outcome::DROPPED_UNACKED);
+                false
             }
-        }
-        Ok(EventAction::Remove) => {
-            let ack = msg.ack().await;
-            record_ack(&ack, origin_chain, event_outcome::DONE);
-        }
-        Err(_) => {
-            let ack = msg.ack_with(async_nats::jetstream::AckKind::Term).await;
-            record_ack(&ack, origin_chain, event_outcome::DROPPED_TERMINAL);
-        }
+        };
     }
+
+    // msg.info() failed: no ack sent, NATS will redeliver after ack-wait — not terminal.
+    metrics.record_event(origin_chain, event_outcome::DROPPED_UNACKED);
+    false
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -611,16 +717,6 @@ pub async fn process_events(
                     warn!("{err:?}");
                 }
 
-                if let Some(ref fee_key) = message_result.fee_key_to_remove {
-                    utils::redis::remove_event(
-                        &config,
-                        &mut redis,
-                        utils::redis::FEE_MAPPING,
-                        fee_key,
-                    )
-                    .await;
-                }
-
                 if message_result.needs_evm_nonce_resync
                     && matches!(
                         message_result.action,
@@ -634,13 +730,26 @@ pub async fn process_events(
                     publish_event(&config, &nats_client, event).await;
                 }
 
-                handle_nats_ack(
+                let left_queue = handle_nats_ack(
                     &msg,
                     &message_result.action,
                     &consumer_config,
                     message_result.origin_chain,
                 )
                 .await;
+
+                // Clean up the cached required-fee only when the event leaves the queue
+                // (acked on Remove, or terminated by max age). Retries keep it so the fee
+                // check doesn't re-fetch and re-store the entry on every attempt.
+                if left_queue && let Some(ref fee_key) = message_result.fee_key {
+                    utils::redis::remove_event(
+                        &config,
+                        &mut redis,
+                        utils::redis::FEE_MAPPING,
+                        fee_key,
+                    )
+                    .await;
+                }
 
                 drop(permit);
             }
@@ -683,7 +792,15 @@ async fn process_message(
                         new_transfer_id,
                     } => (
                         utxo_transfer_message.recipient.is_utxo_chain(),
-                        serde_json::to_string(new_transfer_id).unwrap_or_default(),
+                        // `check_fee` keys on the `TransferId` that
+                        // `process_transfer_event` derives from this id, not on the
+                        // `UnifiedTransferId` itself: the two serialize to different
+                        // JSON (`origin_nonce` vs `kind: { Nonce }`), so keying on the
+                        // latter never matches the entry that was written.
+                        TryInto::<TransferId>::try_into(new_transfer_id)
+                            .ok()
+                            .and_then(|id| serde_json::to_string(&id).ok())
+                            .unwrap_or_default(),
                     ),
                     _ => unreachable!(),
                 };
@@ -715,11 +832,12 @@ async fn process_message(
                     Err(err) => (Err(err), Vec::new()),
                 };
 
-                let fee_key_to_remove = action.is_err().then_some(fee_key);
+                let fee_key = (!matches!(action, Ok(EventAction::Remove))).then_some(fee_key);
+
                 MessageResult {
                     action,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    fee_key,
                     produced_events,
                     origin_chain,
                 }
@@ -729,6 +847,13 @@ async fn process_message(
                 chain_kind,
                 ..
             } => {
+                // Stage 1 owns the fee key only when the transfer ends on NEAR.
+                // For any other recipient the NEAR contract re-emits the same
+                // `TransferMessage`, which the indexer republishes as
+                // `Transfer::Near` under this exact key, so the later stage owns
+                // the cleanup — including after an already-finalised give-up,
+                // where that later stage may already be in flight.
+                let owns_fee_key = log.recipient.get_chain() == ChainKind::Near;
                 let fee_key = serde_json::to_string(&TransferId {
                     origin_nonce: log.origin_nonce,
                     origin_chain: chain_kind,
@@ -746,12 +871,10 @@ async fn process_message(
                 )
                 .await;
 
-                let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    fee_key: owns_fee_key.then_some(fee_key),
                     produced_events: Vec::new(),
                     origin_chain,
                 }
@@ -759,9 +882,17 @@ async fn process_message(
             Transfer::Solana {
                 sequence,
                 ref sender,
+                ref recipient,
                 ..
             } => {
                 let sender_chain = sender.get_chain();
+                // Stage 1 owns the fee key only when the transfer ends on NEAR.
+                // For any other recipient the NEAR contract re-emits the same
+                // `TransferMessage`, which the indexer republishes as
+                // `Transfer::Near` under this exact key, so the later stage owns
+                // the cleanup — including after an already-finalised give-up,
+                // where that later stage may already be in flight.
+                let owns_fee_key = recipient.get_chain() == ChainKind::Near;
                 let result = solana::process_init_transfer_event(
                     config,
                     redis,
@@ -779,12 +910,10 @@ async fn process_message(
                 })
                 .unwrap_or_default();
 
-                let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    fee_key: owns_fee_key.then_some(fee_key),
                     produced_events: Vec::new(),
                     origin_chain,
                 }
@@ -795,6 +924,7 @@ async fn process_message(
                     redis,
                     jsonrpc_client,
                     omni_connector.clone(),
+                    signer.clone(),
                     transfer,
                     near_omni_nonce.clone(),
                 )
@@ -802,7 +932,7 @@ async fn process_message(
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove: None,
+                    fee_key: None,
                     produced_events: Vec::new(),
                     origin_chain,
                 }
@@ -820,12 +950,23 @@ async fn process_message(
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove: None,
+                    fee_key: None,
                     produced_events: Vec::new(),
                     origin_chain,
                 }
             }
-            Transfer::Starknet { origin_nonce, .. } => {
+            Transfer::Starknet {
+                origin_nonce,
+                ref recipient,
+                ..
+            } => {
+                // Stage 1 owns the fee key only when the transfer ends on NEAR.
+                // For any other recipient the NEAR contract re-emits the same
+                // `TransferMessage`, which the indexer republishes as
+                // `Transfer::Near` under this exact key, so the later stage owns
+                // the cleanup — including after an already-finalised give-up,
+                // where that later stage may already be in flight.
+                let owns_fee_key = recipient.get_chain() == ChainKind::Near;
                 let result = starknet::process_init_transfer_event(
                     config,
                     redis,
@@ -843,17 +984,26 @@ async fn process_message(
                 })
                 .unwrap_or_default();
 
-                let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    fee_key: owns_fee_key.then_some(fee_key),
                     produced_events: Vec::new(),
                     origin_chain,
                 }
             }
-            Transfer::Aptos { origin_nonce, .. } => {
+            Transfer::Aptos {
+                origin_nonce,
+                ref recipient,
+                ..
+            } => {
+                // Stage 1 owns the fee key only when the transfer ends on NEAR.
+                // For any other recipient the NEAR contract re-emits the same
+                // `TransferMessage`, which the indexer republishes as
+                // `Transfer::Near` under this exact key, so the later stage owns
+                // the cleanup — including after an already-finalised give-up,
+                // where that later stage may already be in flight.
+                let owns_fee_key = recipient.get_chain() == ChainKind::Near;
                 let result = aptos::process_init_transfer_event(
                     config,
                     redis,
@@ -871,24 +1021,21 @@ async fn process_message(
                 })
                 .unwrap_or_default();
 
-                let fee_key_to_remove =
-                    matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove,
+                    fee_key: owns_fee_key.then_some(fee_key),
                     produced_events: Vec::new(),
                     origin_chain,
                 }
             }
             Transfer::Fast { .. } => {
                 let Some(near_fast_nonce) = near_fast_nonce.clone() else {
+                    warn!("Fast transfer event but fast nonce manager not configured, dropping");
                     return MessageResult {
-                        action: Err(anyhow::anyhow!(
-                            "Fast transfer event found but near fast nonce manager is not configured"
-                        )),
+                        action: Ok(EventAction::Drop),
                         needs_evm_nonce_resync: false,
-                        fee_key_to_remove: None,
+                        fee_key: None,
                         produced_events: Vec::new(),
                         origin_chain,
                     };
@@ -896,6 +1043,7 @@ async fn process_message(
 
                 let result = near::initiate_fast_transfer(
                     config,
+                    jsonrpc_client,
                     fast_connector.clone(),
                     transfer,
                     near_fast_nonce,
@@ -904,7 +1052,7 @@ async fn process_message(
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key_to_remove: None,
+                    fee_key: None,
                     produced_events: Vec::new(),
                     origin_chain,
                 }
@@ -937,20 +1085,19 @@ async fn process_message(
             )
             .await;
 
-            let fee_key_to_remove =
-                matches!(&result, Ok(EventAction::Remove) | Err(_)).then_some(fee_key);
             MessageResult {
                 action: result,
                 needs_evm_nonce_resync: is_evm,
-                fee_key_to_remove,
+                fee_key: Some(fee_key),
                 produced_events: Vec::new(),
                 origin_chain,
             }
         } else {
+            warn!("Unhandled OmniBridgeEvent, dropping: {event}");
             MessageResult {
-                action: Err(anyhow::anyhow!("Unhandled OmniBridgeEvent: {event}")),
+                action: Ok(EventAction::Drop),
                 needs_evm_nonce_resync: false,
-                fee_key_to_remove: None,
+                fee_key: None,
                 produced_events: Vec::new(),
                 origin_chain: None,
             }
@@ -1005,7 +1152,7 @@ async fn process_message(
         MessageResult {
             action: result,
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
             origin_chain,
         }
@@ -1016,7 +1163,9 @@ async fn process_message(
         let result = match deploy_token_event {
             DeployToken::Evm { .. } => {
                 evm::process_deploy_token_event(
+                    jsonrpc_client,
                     omni_connector.clone(),
+                    signer.clone(),
                     deploy_token_event,
                     near_omni_nonce.clone(),
                 )
@@ -1025,7 +1174,9 @@ async fn process_message(
             DeployToken::Solana { .. } => {
                 solana::process_deploy_token_event(
                     config,
+                    jsonrpc_client,
                     omni_connector.clone(),
+                    signer.clone(),
                     deploy_token_event,
                     near_omni_nonce.clone(),
                 )
@@ -1033,7 +1184,9 @@ async fn process_message(
             }
             DeployToken::Starknet { .. } => {
                 starknet::process_deploy_token_event(
+                    jsonrpc_client,
                     omni_connector.clone(),
+                    signer.clone(),
                     deploy_token_event,
                     near_omni_nonce.clone(),
                 )
@@ -1051,7 +1204,7 @@ async fn process_message(
         MessageResult {
             action: result,
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
             origin_chain,
         }
@@ -1076,7 +1229,7 @@ async fn process_message(
         MessageResult {
             action: result,
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
             origin_chain,
         }
@@ -1104,15 +1257,16 @@ async fn process_message(
         MessageResult {
             action: result,
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
             origin_chain,
         }
     } else {
+        warn!("Unknown event type, dropping: {event}");
         MessageResult {
-            action: Err(anyhow::anyhow!("Unknown event type: {event}")),
+            action: Ok(EventAction::Drop),
             needs_evm_nonce_resync: false,
-            fee_key_to_remove: None,
+            fee_key: None,
             produced_events: Vec::new(),
             origin_chain: None,
         }
@@ -1184,5 +1338,241 @@ async fn publish_event(
     let subject = format!("{}.{chain}", nats_config.relayer_subject);
     if let Err(err) = nats_client.publish(subject, &info.key, info.payload).await {
         warn!("Failed to publish produced event to NATS: {err:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn make_decision(
+        result: &Result<EventAction>,
+        age_secs: u64,
+        delivered: u32,
+    ) -> NatsAckDecision {
+        compute_ack_decision(
+            result,
+            Duration::from_secs(age_secs),
+            delivered,
+            Duration::from_hours(1),      // max_backoff = 1h
+            Duration::from_hours(7 * 24), // max_message_age = 7 days
+        )
+    }
+
+    #[test]
+    fn stall_reason_survives_worker_context() {
+        // The workers attach their message with `.context(...)`; the typed SDK
+        // error must still be recoverable here or every retry reads as "other".
+        let err = Err::<(), _>(BridgeSdkError::MpcFinalityNotReached)
+            .context("Failed to finalize transfer (Eth:7)")
+            .unwrap_err();
+        assert_eq!(
+            stall_reason_for(&err, Some(ChainKind::Eth)),
+            (stall_reason::MPC_FINALITY, Some(ChainKind::Eth))
+        );
+    }
+
+    #[test]
+    fn stall_reason_reads_struct_variants() {
+        let err = Err::<(), _>(BridgeSdkError::LightClientNotSynced {
+            current_height: 10,
+            target_height: 42,
+        })
+        .context("Failed to finalize Btc->NEAR transfer")
+        .unwrap_err();
+        assert_eq!(
+            stall_reason_for(&err, Some(ChainKind::Btc)),
+            (stall_reason::LIGHT_CLIENT_NOT_SYNCED, Some(ChainKind::Btc))
+        );
+    }
+
+    #[test]
+    fn stall_reason_defaults_to_other_for_untyped_errors() {
+        let err = anyhow::anyhow!("Near bridge client is not configured");
+        assert_eq!(
+            stall_reason_for(&err, Some(ChainKind::Sol)),
+            (stall_reason::OTHER, Some(ChainKind::Sol))
+        );
+    }
+
+    #[test]
+    fn near_rpc_stalls_are_attributed_to_near_not_the_origin() {
+        // `target_chain` is the unready dependency's chain: a NEAR RPC failure
+        // while relaying an Eth transfer is NEAR being unavailable, not Eth.
+        let err = Err::<(), _>(BridgeSdkError::NearRpcError(
+            near_rpc_client::NearRpcError::NonceError,
+        ))
+        .context("Failed to finalize transfer (Eth:7)")
+        .unwrap_err();
+        assert_eq!(
+            stall_reason_for(&err, Some(ChainKind::Eth)),
+            (stall_reason::NEAR_RPC, Some(ChainKind::Near))
+        );
+    }
+
+    #[test]
+    fn err_within_age_retries() {
+        let result: Result<EventAction> = Err(anyhow::anyhow!("some rpc failure"));
+        assert!(matches!(
+            make_decision(&result, 10, 1),
+            NatsAckDecision::NakWithBackoff(_)
+        ));
+    }
+
+    #[test]
+    fn retry_within_age_naks() {
+        let result: Result<EventAction> = Ok(EventAction::Retry);
+        assert!(matches!(
+            make_decision(&result, 10, 1),
+            NatsAckDecision::NakWithBackoff(_)
+        ));
+    }
+
+    #[test]
+    fn retry_exceeded_age_terminates() {
+        let result: Result<EventAction> = Ok(EventAction::Retry);
+        let over_max = 8 * 24 * 3600; // 8 days > 7 days
+        assert!(matches!(
+            make_decision(&result, over_max, 1),
+            NatsAckDecision::Term
+        ));
+    }
+
+    #[test]
+    fn err_exceeded_age_terminates() {
+        let result: Result<EventAction> = Err(anyhow::anyhow!("old failure"));
+        let over_max = 8 * 24 * 3600;
+        assert!(matches!(
+            make_decision(&result, over_max, 1),
+            NatsAckDecision::Term
+        ));
+    }
+
+    #[test]
+    fn retry_after_uses_explicit_delay() {
+        let delay = Duration::from_secs(30);
+        let result: Result<EventAction> = Ok(EventAction::RetryAfter(delay));
+        match make_decision(&result, 10, 1) {
+            NatsAckDecision::NakWithBackoff(d) => assert_eq!(d, delay),
+            other => panic!("expected NakWithBackoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exponential_backoff_first_delivery() {
+        // delivered=1: 3^(1-1) = 3^0 = 1 second
+        let result: Result<EventAction> = Ok(EventAction::Retry);
+        match make_decision(&result, 10, 1) {
+            NatsAckDecision::NakWithBackoff(d) => assert_eq!(d, Duration::from_secs(1)),
+            other => panic!("expected NakWithBackoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exponential_backoff_second_delivery() {
+        // delivered=2: 3^(2-1) = 3^1 = 3 seconds
+        let result: Result<EventAction> = Ok(EventAction::Retry);
+        match make_decision(&result, 10, 2) {
+            NatsAckDecision::NakWithBackoff(d) => assert_eq!(d, Duration::from_secs(3)),
+            other => panic!("expected NakWithBackoff, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_acks() {
+        // Ok(EventAction::Remove) should always result in Ack, regardless of age or delivery count
+        let result: Result<EventAction> = Ok(EventAction::Remove);
+        assert!(matches!(
+            make_decision(&result, 10, 1),
+            NatsAckDecision::Ack
+        ));
+    }
+
+    #[test]
+    fn exact_max_age_retries() {
+        let result = Ok(EventAction::Retry);
+        let max_age_secs = 7 * 24 * 3600_u64;
+        // Exactly at the limit — should NOT terminate (strict > comparison)
+        assert!(matches!(
+            make_decision(&result, max_age_secs, 1),
+            NatsAckDecision::NakWithBackoff(_)
+        ));
+    }
+
+    #[test]
+    fn retry_after_capped_at_max_backoff() {
+        let two_hours = Duration::from_hours(2);
+        let result = Ok(EventAction::RetryAfter(two_hours));
+        // max_backoff in make_decision is 1h
+        let decision = make_decision(&result, 0, 1);
+        assert!(matches!(
+            decision,
+            NatsAckDecision::NakWithBackoff(d) if d == Duration::from_hours(1)
+        ));
+    }
+
+    #[test]
+    fn exponential_backoff_capped_at_max_backoff() {
+        let result = Ok(EventAction::Retry);
+        // delivered=20 → 3^19 ≈ 3.5 years >> 1h max_backoff
+        let decision = make_decision(&result, 0, 20);
+        assert!(matches!(
+            decision,
+            NatsAckDecision::NakWithBackoff(d) if d == Duration::from_hours(1)
+        ));
+    }
+
+    #[test]
+    fn drop_terminates_immediately() {
+        // A recognised give-up must not be backed off; it is terminal on its own
+        // merits. Fails if `Drop` is left to fall through the backoff match.
+        let result: Result<EventAction> = Ok(EventAction::Drop);
+        assert!(matches!(
+            make_decision(&result, 10, 1),
+            NatsAckDecision::Drop
+        ));
+    }
+
+    #[test]
+    fn drop_ignores_age_and_delivery_count() {
+        // Fails if the `Drop` arm is placed after the max-age check, which would
+        // mislabel an old give-up as DROPPED_MAX_AGE.
+        let result: Result<EventAction> = Ok(EventAction::Drop);
+        let over_max = 8 * 24 * 3600; // 8 days > 7 days
+        assert!(matches!(
+            make_decision(&result, over_max, 20),
+            NatsAckDecision::Drop
+        ));
+    }
+
+    #[test]
+    fn remove_and_drop_are_distinct() {
+        // The point of the split: a give-up must never be acked as a relayed
+        // transfer, and vice versa.
+        assert!(matches!(
+            make_decision(&Ok(EventAction::Remove), 10, 1),
+            NatsAckDecision::Ack
+        ));
+        assert!(matches!(
+            make_decision(&Ok(EventAction::Drop), 10, 1),
+            NatsAckDecision::Drop
+        ));
+    }
+
+    #[test]
+    fn err_retries_and_never_drops() {
+        // An unclassified worker error stays retryable and ages out as
+        // DROPPED_MAX_AGE; only a worker that recognises a condition as
+        // permanent may give up.
+        let result: Result<EventAction> = Err(anyhow::anyhow!("unclassified sdk failure"));
+        assert!(matches!(
+            make_decision(&result, 10, 1),
+            NatsAckDecision::NakWithBackoff(_)
+        ));
+        assert!(matches!(
+            make_decision(&result, 8 * 24 * 3600, 1),
+            NatsAckDecision::Term
+        ));
     }
 }

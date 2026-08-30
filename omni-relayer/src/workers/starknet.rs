@@ -17,7 +17,6 @@ use near_rpc_client::NearRpcError;
 use omni_connector::OmniConnector;
 use omni_types::{ChainKind, Fee, TransferId};
 
-use crate::metrics::{Metrics, stall_reason};
 use crate::{config, utils};
 
 use super::{DeployToken, EventAction, FinTransfer, Transfer};
@@ -43,7 +42,8 @@ pub async fn process_init_transfer_event(
         ..
     } = transfer
     else {
-        anyhow::bail!("Expected StarknetInitTransfer, got: {transfer:?}");
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let transfer_id = TransferId {
@@ -77,7 +77,10 @@ pub async fn process_init_transfer_event(
         .is_transfer_finalised(Some(ChainKind::Strk), ChainKind::Near, origin_nonce)
         .await
     {
-        Ok(true) => anyhow::bail!("Transfer is already finalised: {transfer_id:?}"),
+        Ok(true) => {
+            warn!("Transfer is already finalised, dropping: {transfer_id:?}");
+            return Ok(EventAction::Drop);
+        }
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
@@ -167,48 +170,12 @@ pub async fn process_init_transfer_event(
             )
             .await)
         }
-        Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!(
-                            "Failed to finalize Starknet transfer ({:?}:{}), retrying: {near_rpc_error:?}",
-                            transfer_id.origin_chain, transfer_id.origin_nonce
-                        );
-                        Metrics::global()
-                            .record_stalled_retry(stall_reason::NEAR_RPC, Some(ChainKind::Near));
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!(
-                            "Failed to finalize Starknet transfer ({:?}:{}): {near_rpc_error:?}",
-                            transfer_id.origin_chain,
-                            transfer_id.origin_nonce
-                        );
-                    }
-                };
-            } else if let BridgeSdkError::MpcFinalityNotReached = err {
-                warn!(
-                    "MPC finality not reached yet for Starknet transfer ({:?}:{}), retrying",
-                    transfer_id.origin_chain, transfer_id.origin_nonce
-                );
-                Metrics::global()
-                    .record_stalled_retry(stall_reason::MPC_FINALITY, Some(ChainKind::Strk));
-                return Ok(EventAction::Retry);
-            }
-
-            anyhow::bail!(
-                "Failed to finalize Starknet transfer ({:?}:{}): {err:?}",
-                transfer_id.origin_chain,
-                transfer_id.origin_nonce
-            );
-        }
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "Failed to finalize Starknet transfer ({:?}:{})",
+                transfer_id.origin_chain, transfer_id.origin_nonce
+            )
+        }),
     }
 }
 
@@ -224,7 +191,8 @@ pub async fn process_fin_transfer_event(
         transfer_id,
     } = fin_transfer
     else {
-        anyhow::bail!("Expected Starknet FinTransfer, got: {fin_transfer:?}");
+        warn!("Routing mismatch, dropping: {fin_transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(
@@ -237,12 +205,11 @@ pub async fn process_fin_transfer_event(
             RpcQueryError::ContractExecutionError { vm_error, .. },
         )),
     ))) = omni_connector.near_get_transfer_message(transfer_id).await
+        && (vm_error.contains("The transfer does not exist")
+            || vm_error.contains(&omni_types::errors::BridgeError::TransferNotExist.as_ref()))
     {
-        // TODO: refactor when enum errors will become available on mainnet
-        if vm_error.contains("The transfer does not exist") {
-            info!("No fee to claim for Starknet FinTransfer ({transfer_id:?})");
-            return Ok(EventAction::Remove);
-        }
+        info!("No fee to claim for Starknet FinTransfer ({transfer_id:?})");
+        return Ok(EventAction::Remove);
     }
 
     let nonce = near_nonce
@@ -274,40 +241,20 @@ pub async fn process_fin_transfer_event(
             )
             .await)
         }
-        Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to claim Starknet fee, retrying: {near_rpc_error:?}");
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!("Failed to claim Starknet fee: {near_rpc_error:?}");
-                    }
-                };
-            } else if let BridgeSdkError::MpcFinalityNotReached = err {
-                warn!("MPC finality not reached yet, retrying Starknet claim fee");
-                return Ok(EventAction::Retry);
-            }
-
-            anyhow::bail!("Failed to claim Starknet fee: {err:?}");
-        }
+        Err(err) => Err(err).context("Failed to claim Starknet fee"),
     }
 }
 
 pub async fn process_deploy_token_event(
+    jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
+    signer: AccountId,
     deploy_token_event: DeployToken,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
     let DeployToken::Starknet { tx_hash } = deploy_token_event else {
-        anyhow::bail!("Expected Starknet DeployToken, got: {deploy_token_event:?}");
+        warn!("Routing mismatch, dropping: {deploy_token_event:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(
@@ -335,32 +282,19 @@ pub async fn process_deploy_token_event(
 
     match omni_connector.bind_token(bind_token_args).await {
         Ok(near_tx_hash) => {
-            info!("Bound Starknet token: {near_tx_hash:?}");
-            Ok(EventAction::Remove)
+            info!("Bound Starknet token: {near_tx_hash}");
+            let Ok(crypto_hash) = near_tx_hash.parse() else {
+                warn!("Failed to parse {near_tx_hash} as CryptoHash, removing");
+                return Ok(EventAction::Remove);
+            };
+            Ok(utils::near::resolve_tx_action(
+                jsonrpc_client,
+                crypto_hash,
+                signer,
+                &["Request has timed out."],
+            )
+            .await)
         }
-        Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to bind Starknet token, retrying: {near_rpc_error:?}");
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!("Failed to bind Starknet token: {near_rpc_error:?}");
-                    }
-                };
-            } else if let BridgeSdkError::MpcFinalityNotReached = err {
-                warn!("MPC finality not reached yet, retrying Starknet bind token");
-                return Ok(EventAction::Retry);
-            }
-
-            anyhow::bail!("Failed to bind Starknet token: {err:?}");
-        }
+        Err(err) => Err(err).context("Failed to bind Starknet token"),
     }
 }

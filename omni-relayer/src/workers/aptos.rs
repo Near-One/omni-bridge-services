@@ -43,7 +43,8 @@ pub async fn process_init_transfer_event(
         ..
     } = transfer
     else {
-        anyhow::bail!("Expected AptosInitTransfer, got: {transfer:?}");
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let transfer_id = TransferId {
@@ -77,7 +78,10 @@ pub async fn process_init_transfer_event(
         .is_transfer_finalised(Some(ChainKind::Aptos), ChainKind::Near, origin_nonce)
         .await
     {
-        Ok(true) => anyhow::bail!("Transfer is already finalised: {transfer_id:?}"),
+        Ok(true) => {
+            warn!("Transfer is already finalised, dropping: {transfer_id:?}");
+            return Ok(EventAction::Drop);
+        }
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
@@ -186,11 +190,12 @@ pub async fn process_init_transfer_event(
                         return Ok(EventAction::Retry);
                     }
                     _ => {
-                        anyhow::bail!(
-                            "Failed to finalize Aptos transfer ({:?}:{}): {near_rpc_error:?}",
-                            transfer_id.origin_chain,
-                            transfer_id.origin_nonce
-                        );
+                        return Err(BridgeSdkError::from(near_rpc_error)).with_context(|| {
+                            format!(
+                                "Failed to finalize Aptos transfer ({:?}:{})",
+                                transfer_id.origin_chain, transfer_id.origin_nonce
+                            )
+                        });
                     }
                 };
             } else if let BridgeSdkError::MpcFinalityNotReached = err {
@@ -203,11 +208,12 @@ pub async fn process_init_transfer_event(
                 return Ok(EventAction::Retry);
             }
 
-            anyhow::bail!(
-                "Failed to finalize Aptos transfer ({:?}:{}): {err:?}",
-                transfer_id.origin_chain,
-                transfer_id.origin_nonce
-            );
+            Err(err).with_context(|| {
+                format!(
+                    "Failed to finalize Aptos transfer ({:?}:{})",
+                    transfer_id.origin_chain, transfer_id.origin_nonce
+                )
+            })
         }
     }
 }
@@ -224,7 +230,8 @@ pub async fn process_fin_transfer_event(
         transfer_id,
     } = fin_transfer
     else {
-        anyhow::bail!("Expected Aptos FinTransfer, got: {fin_transfer:?}");
+        warn!("Routing mismatch, dropping: {fin_transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(
@@ -286,7 +293,8 @@ pub async fn process_fin_transfer_event(
                         return Ok(EventAction::Retry);
                     }
                     _ => {
-                        anyhow::bail!("Failed to claim Aptos fee: {near_rpc_error:?}");
+                        return Err(BridgeSdkError::from(near_rpc_error))
+                            .context("Failed to claim Aptos fee");
                     }
                 };
             } else if let BridgeSdkError::MpcFinalityNotReached = err {
@@ -294,7 +302,7 @@ pub async fn process_fin_transfer_event(
                 return Ok(EventAction::Retry);
             }
 
-            anyhow::bail!("Failed to claim Aptos fee: {err:?}");
+            Err(err).context("Failed to claim Aptos fee")
         }
     }
 }
@@ -305,7 +313,8 @@ pub async fn process_deploy_token_event(
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
     let DeployToken::Aptos { tx_hash } = deploy_token_event else {
-        anyhow::bail!("Expected Aptos DeployToken, got: {deploy_token_event:?}");
+        warn!("Routing mismatch, dropping: {deploy_token_event:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(
@@ -350,7 +359,8 @@ pub async fn process_deploy_token_event(
                         return Ok(EventAction::Retry);
                     }
                     _ => {
-                        anyhow::bail!("Failed to bind Aptos token: {near_rpc_error:?}");
+                        return Err(BridgeSdkError::from(near_rpc_error))
+                            .context("Failed to bind Aptos token");
                     }
                 };
             } else if let BridgeSdkError::MpcFinalityNotReached = err {
@@ -358,7 +368,7 @@ pub async fn process_deploy_token_event(
                 return Ok(EventAction::Retry);
             }
 
-            anyhow::bail!("Failed to bind Aptos token: {err:?}");
+            Err(err).context("Failed to bind Aptos token")
         }
     }
 }
