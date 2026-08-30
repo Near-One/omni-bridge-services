@@ -859,12 +859,12 @@ pub async fn initiate_fast_transfer(
         return Ok(EventAction::Drop);
     };
 
-    let Ok(fast_signer) = fast_connector
-        .near_bridge_client()
-        .and_then(near_bridge_client::NearBridgeClient::account_id)
-    else {
-        warn!("Failed to get fast relayer account id, retrying");
-        return Ok(EventAction::Retry);
+    // Same static-configuration failure as the guard above, so it gets the same
+    // disposition: retrying a missing signer account id would spin until the
+    // message ages out. Reuses the client already resolved above.
+    let Ok(fast_signer) = near_bridge_client.account_id() else {
+        warn!("Fast relaying is not configured (no signer account id), dropping fast transfer");
+        return Ok(EventAction::Drop);
     };
 
     let Transfer::Fast {

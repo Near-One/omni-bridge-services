@@ -149,8 +149,9 @@ struct MessageResult {
     /// `FEE_MAPPING` key to clean up once this event leaves the queue (acked on
     /// `Remove`, or terminated by max age) — never on retry, so the fee check
     /// doesn't re-fetch and re-store the entry on every attempt. `None` when the
-    /// event has no fee key, or when its `Remove` is a hand-off to a later stage
-    /// that reads the same key and owns the cleanup instead.
+    /// event has no fee key, or when its `Remove` (or already-finalised `Drop`)
+    /// is a hand-off to a later stage that reads the same key and owns the
+    /// cleanup instead.
     fee_key: Option<String>,
     produced_events: Vec<WorkerEvent>,
     origin_chain: Option<ChainKind>,
@@ -832,7 +833,15 @@ async fn process_message(
                     Err(err) => (Err(err), Vec::new()),
                 };
 
-                let fee_key = (!matches!(action, Ok(EventAction::Remove))).then_some(fee_key);
+                // Only `process_transfer_event` hands off: its `Remove` is followed
+                // by a `SignTransferEvent` stage that re-reads this key and owns the
+                // cleanup. `process_transfer_to_utxo_event` (`is_utxo`) has no such
+                // successor - nothing downstream of it calls `check_fee` - so its
+                // `Remove` must clean up here. A `Drop` cleans up either way: this
+                // stage's already-finalised guard tests the destination chain, so
+                // there is no live successor to hand to.
+                let hands_off = !is_utxo && matches!(action, Ok(EventAction::Remove));
+                let fee_key = (!hands_off).then_some(fee_key);
 
                 MessageResult {
                     action,
@@ -847,13 +856,14 @@ async fn process_message(
                 chain_kind,
                 ..
             } => {
-                // Stage 1 owns the fee key only when the transfer ends on NEAR.
-                // For any other recipient the NEAR contract re-emits the same
+                // A later stage re-reads this key only when the transfer both lands
+                // on NEAR and continues from there: the contract re-emits the same
                 // `TransferMessage`, which the indexer republishes as
-                // `Transfer::Near` under this exact key, so the later stage owns
-                // the cleanup — including after an already-finalised give-up,
-                // where that later stage may already be in flight.
-                let owns_fee_key = log.recipient.get_chain() == ChainKind::Near;
+                // `Transfer::Near` under this exact key. A UTXO recipient is routed
+                // to `process_transfer_to_utxo_event`, which never calls `check_fee`,
+                // so nothing downstream of it would ever clean the key up.
+                let recipient_has_reader = log.recipient.get_chain() != ChainKind::Near
+                    && !log.recipient.is_utxo_chain();
                 let fee_key = serde_json::to_string(&TransferId {
                     origin_nonce: log.origin_nonce,
                     origin_chain: chain_kind,
@@ -871,10 +881,20 @@ async fn process_message(
                 )
                 .await;
 
+                // Hoisted: `action: result` below moves `result` before the
+                // `fee_key` initialiser would run. Only a hand-off defers the
+                // cleanup - and an already-finalised `Drop` is one, because the
+                // init transfer did land on NEAR, so the later stage may be in
+                // flight. Every other outcome keeps ownership here, including the
+                // max-age `Term` after repeated `Retry`s, which is how a
+                // permanently underpriced transfer ends.
+                let hands_off = recipient_has_reader
+                    && matches!(&result, Ok(EventAction::Remove | EventAction::Drop));
+
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key: owns_fee_key.then_some(fee_key),
+                    fee_key: (!hands_off).then_some(fee_key),
                     produced_events: Vec::new(),
                     origin_chain,
                 }
@@ -886,13 +906,14 @@ async fn process_message(
                 ..
             } => {
                 let sender_chain = sender.get_chain();
-                // Stage 1 owns the fee key only when the transfer ends on NEAR.
-                // For any other recipient the NEAR contract re-emits the same
+                // A later stage re-reads this key only when the transfer both lands
+                // on NEAR and continues from there: the contract re-emits the same
                 // `TransferMessage`, which the indexer republishes as
-                // `Transfer::Near` under this exact key, so the later stage owns
-                // the cleanup — including after an already-finalised give-up,
-                // where that later stage may already be in flight.
-                let owns_fee_key = recipient.get_chain() == ChainKind::Near;
+                // `Transfer::Near` under this exact key. A UTXO recipient is routed
+                // to `process_transfer_to_utxo_event`, which never calls `check_fee`,
+                // so nothing downstream of it would ever clean the key up.
+                let recipient_has_reader = recipient.get_chain() != ChainKind::Near
+                    && !recipient.is_utxo_chain();
                 let result = solana::process_init_transfer_event(
                     config,
                     redis,
@@ -910,10 +931,20 @@ async fn process_message(
                 })
                 .unwrap_or_default();
 
+                // Hoisted: `action: result` below moves `result` before the
+                // `fee_key` initialiser would run. Only a hand-off defers the
+                // cleanup - and an already-finalised `Drop` is one, because the
+                // init transfer did land on NEAR, so the later stage may be in
+                // flight. Every other outcome keeps ownership here, including the
+                // max-age `Term` after repeated `Retry`s, which is how a
+                // permanently underpriced transfer ends.
+                let hands_off = recipient_has_reader
+                    && matches!(&result, Ok(EventAction::Remove | EventAction::Drop));
+
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key: owns_fee_key.then_some(fee_key),
+                    fee_key: (!hands_off).then_some(fee_key),
                     produced_events: Vec::new(),
                     origin_chain,
                 }
@@ -960,13 +991,14 @@ async fn process_message(
                 ref recipient,
                 ..
             } => {
-                // Stage 1 owns the fee key only when the transfer ends on NEAR.
-                // For any other recipient the NEAR contract re-emits the same
+                // A later stage re-reads this key only when the transfer both lands
+                // on NEAR and continues from there: the contract re-emits the same
                 // `TransferMessage`, which the indexer republishes as
-                // `Transfer::Near` under this exact key, so the later stage owns
-                // the cleanup — including after an already-finalised give-up,
-                // where that later stage may already be in flight.
-                let owns_fee_key = recipient.get_chain() == ChainKind::Near;
+                // `Transfer::Near` under this exact key. A UTXO recipient is routed
+                // to `process_transfer_to_utxo_event`, which never calls `check_fee`,
+                // so nothing downstream of it would ever clean the key up.
+                let recipient_has_reader = recipient.get_chain() != ChainKind::Near
+                    && !recipient.is_utxo_chain();
                 let result = starknet::process_init_transfer_event(
                     config,
                     redis,
@@ -984,10 +1016,20 @@ async fn process_message(
                 })
                 .unwrap_or_default();
 
+                // Hoisted: `action: result` below moves `result` before the
+                // `fee_key` initialiser would run. Only a hand-off defers the
+                // cleanup - and an already-finalised `Drop` is one, because the
+                // init transfer did land on NEAR, so the later stage may be in
+                // flight. Every other outcome keeps ownership here, including the
+                // max-age `Term` after repeated `Retry`s, which is how a
+                // permanently underpriced transfer ends.
+                let hands_off = recipient_has_reader
+                    && matches!(&result, Ok(EventAction::Remove | EventAction::Drop));
+
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key: owns_fee_key.then_some(fee_key),
+                    fee_key: (!hands_off).then_some(fee_key),
                     produced_events: Vec::new(),
                     origin_chain,
                 }
@@ -997,13 +1039,14 @@ async fn process_message(
                 ref recipient,
                 ..
             } => {
-                // Stage 1 owns the fee key only when the transfer ends on NEAR.
-                // For any other recipient the NEAR contract re-emits the same
+                // A later stage re-reads this key only when the transfer both lands
+                // on NEAR and continues from there: the contract re-emits the same
                 // `TransferMessage`, which the indexer republishes as
-                // `Transfer::Near` under this exact key, so the later stage owns
-                // the cleanup — including after an already-finalised give-up,
-                // where that later stage may already be in flight.
-                let owns_fee_key = recipient.get_chain() == ChainKind::Near;
+                // `Transfer::Near` under this exact key. A UTXO recipient is routed
+                // to `process_transfer_to_utxo_event`, which never calls `check_fee`,
+                // so nothing downstream of it would ever clean the key up.
+                let recipient_has_reader = recipient.get_chain() != ChainKind::Near
+                    && !recipient.is_utxo_chain();
                 let result = aptos::process_init_transfer_event(
                     config,
                     redis,
@@ -1021,10 +1064,20 @@ async fn process_message(
                 })
                 .unwrap_or_default();
 
+                // Hoisted: `action: result` below moves `result` before the
+                // `fee_key` initialiser would run. Only a hand-off defers the
+                // cleanup - and an already-finalised `Drop` is one, because the
+                // init transfer did land on NEAR, so the later stage may be in
+                // flight. Every other outcome keeps ownership here, including the
+                // max-age `Term` after repeated `Retry`s, which is how a
+                // permanently underpriced transfer ends.
+                let hands_off = recipient_has_reader
+                    && matches!(&result, Ok(EventAction::Remove | EventAction::Drop));
+
                 MessageResult {
                     action: result,
                     needs_evm_nonce_resync: false,
-                    fee_key: owns_fee_key.then_some(fee_key),
+                    fee_key: (!hands_off).then_some(fee_key),
                     produced_events: Vec::new(),
                     origin_chain,
                 }
