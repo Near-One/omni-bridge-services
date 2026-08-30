@@ -42,8 +42,8 @@ pub async fn process_init_transfer_event(
         ..
     } = transfer
     else {
-        warn!("Routing mismatch, removing: {transfer:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let transfer_id = TransferId {
@@ -78,8 +78,8 @@ pub async fn process_init_transfer_event(
         .await
     {
         Ok(true) => {
-            warn!("Transfer is already finalised, removing: {transfer_id:?}");
-            return Ok(EventAction::Remove);
+            warn!("Transfer is already finalised, dropping: {transfer_id:?}");
+            return Ok(EventAction::Drop);
         }
         Ok(false) => {}
         Err(err) => {
@@ -191,8 +191,8 @@ pub async fn process_fin_transfer_event(
         transfer_id,
     } = fin_transfer
     else {
-        warn!("Routing mismatch, removing: {fin_transfer:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {fin_transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(
@@ -253,8 +253,8 @@ pub async fn process_deploy_token_event(
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
     let DeployToken::Starknet { tx_hash } = deploy_token_event else {
-        warn!("Routing mismatch, removing: {deploy_token_event:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {deploy_token_event:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(

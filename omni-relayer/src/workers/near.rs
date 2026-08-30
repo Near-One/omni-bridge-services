@@ -49,8 +49,8 @@ pub async fn process_transfer_event(
             ..
         } => {
             let Ok(new_transfer_id) = new_transfer_id.try_into() else {
-                warn!("Failed to build TransferId from {new_transfer_id:?}, removing");
-                return Ok((EventAction::Remove, Vec::new()));
+                warn!("Failed to build TransferId from {new_transfer_id:?}, dropping");
+                return Ok((EventAction::Drop, Vec::new()));
             };
 
             let Ok(transfer_message) = omni_connector
@@ -64,8 +64,8 @@ pub async fn process_transfer_event(
             (transfer_message, 0)
         }
         _ => {
-            warn!("Routing mismatch, removing: {transfer:?}");
-            return Ok((EventAction::Remove, Vec::new()));
+            warn!("Routing mismatch, dropping: {transfer:?}");
+            return Ok((EventAction::Drop, Vec::new()));
         }
     };
 
@@ -107,8 +107,8 @@ pub async fn process_transfer_event(
         .await
     {
         Ok(true) => {
-            warn!("Transfer is already finalised, removing: {transfer_message:?}");
-            return Ok((EventAction::Remove, Vec::new()));
+            warn!("Transfer is already finalised, dropping: {transfer_message:?}");
+            return Ok((EventAction::Drop, Vec::new()));
         }
         Ok(false) => {}
         Err(err) => {
@@ -203,8 +203,8 @@ pub async fn process_transfer_to_utxo_event(
         creation_timestamp,
     } = transfer
     else {
-        warn!("Routing mismatch, removing: {transfer:?}");
-        return Ok((EventAction::Remove, Vec::new()));
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok((EventAction::Drop, Vec::new()));
     };
 
     info!(
@@ -242,18 +242,18 @@ pub async fn process_transfer_to_utxo_event(
 
     let OmniAddress::Near(ref sender) = transfer_message.sender else {
         warn!(
-            "Expected NEAR sender for NEAR to UTXO transfer, got: {:?}, removing",
+            "Expected NEAR sender for NEAR to UTXO transfer, got: {:?}, dropping",
             transfer_message.sender
         );
-        return Ok((EventAction::Remove, Vec::new()));
+        return Ok((EventAction::Drop, Vec::new()));
     };
 
     let Some(recipient) = transfer_message.recipient.get_utxo_address() else {
         warn!(
-            "Expected UTXO recipient address, got: {:?}, removing",
+            "Expected UTXO recipient address, got: {:?}, dropping",
             transfer_message.recipient
         );
-        return Ok((EventAction::Remove, Vec::new()));
+        return Ok((EventAction::Drop, Vec::new()));
     };
 
     let fee_rate = if destination_chain == ChainKind::Btc && config.is_bridge_api_enabled() {
@@ -441,11 +441,11 @@ pub async fn process_transfer_to_utxo_event(
                 && msg == "Amount is smaller than `fee`"
             {
                 warn!(
-                    "Amount below withdraw_fee for {:?} transfer ({}), removing",
+                    "Amount below withdraw_fee for {:?} transfer ({}), dropping",
                     transfer_message.recipient.get_chain(),
                     transfer_message.origin_nonce
                 );
-                return Ok((EventAction::Remove, Vec::new()));
+                return Ok((EventAction::Drop, Vec::new()));
             }
 
             Err(err).with_context(|| {
@@ -472,8 +472,8 @@ pub async fn process_sign_transfer_event(
         message_payload, ..
     } = &omni_bridge_event
     else {
-        warn!("Routing mismatch, removing: {omni_bridge_event:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {omni_bridge_event:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(
@@ -482,8 +482,8 @@ pub async fn process_sign_transfer_event(
     );
 
     if message_payload.fee_recipient != Some(signer) {
-        warn!("Fee recipient mismatch, removing: {omni_bridge_event:?}");
-        return Ok(EventAction::Remove);
+        warn!("Fee recipient mismatch, dropping: {omni_bridge_event:?}");
+        return Ok(EventAction::Drop);
     }
 
     match omni_connector
@@ -496,10 +496,10 @@ pub async fn process_sign_transfer_event(
     {
         Ok(true) => {
             warn!(
-                "Transfer is already finalised, removing: {:?}",
+                "Transfer is already finalised, dropping: {:?}",
                 message_payload.transfer_id
             );
-            return Ok(EventAction::Remove);
+            return Ok(EventAction::Drop);
         }
         Ok(false) => {}
         Err(err) => {
@@ -526,10 +526,10 @@ pub async fn process_sign_transfer_event(
                     || err_str.contains(&omni_types::errors::BridgeError::TransferNotExist.as_ref())
                 {
                     warn!(
-                        "Transfer does not exist (fee=0 or already finalized), removing: {:?}",
+                        "Transfer does not exist (fee=0 or already finalized), dropping: {:?}",
                         message_payload.transfer_id
                     );
-                    return Ok(EventAction::Remove);
+                    return Ok(EventAction::Drop);
                 }
 
                 warn!(
@@ -585,8 +585,8 @@ pub async fn process_sign_transfer_event(
 
     let (fin_transfer_args, evm_nonce) = match chain_kind {
         ChainKind::Near => {
-            warn!("Near-to-Near transfer not supported, removing: {omni_bridge_event:?}");
-            return Ok(EventAction::Remove);
+            warn!("Near-to-Near transfer not supported, dropping: {omni_bridge_event:?}");
+            return Ok(EventAction::Drop);
         }
         ChainKind::Eth
         | ChainKind::Base
@@ -613,10 +613,10 @@ pub async fn process_sign_transfer_event(
                 message_payload.token_address.clone()
             else {
                 warn!(
-                    "SVM token address mismatch, removing: {:?}",
+                    "SVM token address mismatch, dropping: {:?}",
                     message_payload.token_address
                 );
-                return Ok(EventAction::Remove);
+                return Ok(EventAction::Drop);
             };
 
             (
@@ -641,8 +641,8 @@ pub async fn process_sign_transfer_event(
             None,
         ),
         ChainKind::Btc | ChainKind::Zcash => {
-            warn!("BTC/ZEC not supported for fast transfer, removing: {omni_bridge_event:?}");
-            return Ok(EventAction::Remove);
+            warn!("BTC/ZEC not supported for fast transfer, dropping: {omni_bridge_event:?}");
+            return Ok(EventAction::Drop);
         }
     };
 
@@ -687,9 +687,13 @@ pub async fn process_sign_transfer_event(
                     | ChainKind::Aptos
                     | ChainKind::Btc
                     | ChainKind::Zcash => {
-                        anyhow::bail!(
-                            "Failed to finalize deposit (unexpected: failed to get evm config): {err}"
+                        // Only the EVM arm of the `FinTransferArgs` match above can
+                        // reach an `EvmGasEstimateError`, so a non-EVM `chain_kind`
+                        // here is a payload that can never be finalized.
+                        warn!(
+                            "Failed to finalize deposit (unexpected: non-EVM chain in the EVM gas-estimate branch), dropping: {err}"
                         );
+                        return Ok(EventAction::Drop);
                     }
                 }) else {
                     anyhow::bail!(
@@ -703,9 +707,9 @@ pub async fn process_sign_transfer_event(
                     .any(|selector| err.contains(selector))
                 {
                     warn!(
-                        "Failed to finalize deposit (non-retryable selector matched), removing: {err}"
+                        "Failed to finalize deposit (non-retryable selector matched), dropping: {err}"
                     );
-                    return Ok(EventAction::Remove);
+                    return Ok(EventAction::Drop);
                 }
 
                 warn!("Failed to finalize deposit, retrying: {err}");
@@ -717,8 +721,8 @@ pub async fn process_sign_transfer_event(
             if let BridgeSdkError::EthRpcError(ref eth_err) = err {
                 match eth_err {
                     EthRpcError::ContractError(reason) => {
-                        warn!("EVM contract/ABI error (non-retryable), removing: {reason}");
-                        return Ok(EventAction::Remove);
+                        warn!("EVM contract/ABI error (non-retryable), dropping: {reason}");
+                        return Ok(EventAction::Drop);
                     }
                     EthRpcError::RpcError(AlloyRpcError::ErrorResp(payload))
                         if !payload.is_retry_err()
@@ -726,10 +730,10 @@ pub async fn process_sign_transfer_event(
                                 || payload.message.contains("execution reverted")) =>
                     {
                         warn!(
-                            "EVM execution reverted at submission (non-retryable), removing: code={} msg={}",
+                            "EVM execution reverted at submission (non-retryable), dropping: code={} msg={}",
                             payload.code, payload.message
                         );
-                        return Ok(EventAction::Remove);
+                        return Ok(EventAction::Drop);
                     }
                     _ => {
                         warn!("EVM fin_transfer transient error, retrying: {err}");
@@ -814,8 +818,8 @@ pub async fn process_sign_transfer_event(
                         return Ok(EventAction::Retry);
                     }
                     Some(_) => {
-                        warn!("Solana preflight deterministic failure, removing: {result:?}");
-                        return Ok(EventAction::Remove);
+                        warn!("Solana preflight deterministic failure, dropping: {result:?}");
+                        return Ok(EventAction::Drop);
                     }
                 }
             }
@@ -823,13 +827,13 @@ pub async fn process_sign_transfer_event(
             if let BridgeSdkError::StarknetOtherError(ref reason) = err
                 && reason.contains("Transaction reverted:")
             {
-                warn!("Starknet fin_transfer reverted (non-retryable), removing: {reason}");
-                return Ok(EventAction::Remove);
+                warn!("Starknet fin_transfer reverted (non-retryable), dropping: {reason}");
+                return Ok(EventAction::Drop);
             }
 
             if let BridgeSdkError::InvalidArgument(ref reason) = err {
-                warn!("Non-retryable invalid argument, removing: {reason}");
-                return Ok(EventAction::Remove);
+                warn!("Non-retryable invalid argument, dropping: {reason}");
+                return Ok(EventAction::Drop);
             }
 
             warn!("Failed to finalize deposit, retrying: {err}");
@@ -847,7 +851,12 @@ pub async fn initiate_fast_transfer(
     near_fast_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
     let Ok(near_bridge_client) = fast_connector.near_bridge_client() else {
-        anyhow::bail!("Near bridge client is not configured");
+        // The transfer is not lost: the ordinary `Transfer::Evm` message is
+        // published alongside every `Transfer::Fast`, so the slow path still
+        // relays it. Matches the sibling condition in `process_message`, which
+        // already gives up when the fast nonce manager is absent.
+        warn!("Fast relaying is not configured (no NEAR bridge client), dropping fast transfer");
+        return Ok(EventAction::Drop);
     };
 
     let Ok(fast_signer) = fast_connector
@@ -872,8 +881,8 @@ pub async fn initiate_fast_transfer(
         safe_confirmations,
     } = transfer.clone()
     else {
-        warn!("Routing mismatch, removing: {transfer:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     // TODO: Fast transfer to other chain increases origin nonce by one, so regular relayer won't
@@ -882,10 +891,10 @@ pub async fn initiate_fast_transfer(
     // Related PR: https://github.com/Near-One/bridge-indexer-rs/pull/195
     if recipient.get_chain() != ChainKind::Near {
         warn!(
-            "Fast transfer to non-NEAR chain not supported, removing: {:?}",
+            "Fast transfer to non-NEAR chain not supported, dropping: {:?}",
             recipient.get_chain()
         );
-        return Ok(EventAction::Remove);
+        return Ok(EventAction::Drop);
     }
 
     let context = format!(
@@ -918,8 +927,8 @@ pub async fn initiate_fast_transfer(
 
     match fast_connector.near_is_transfer_finalised(transfer_id).await {
         Ok(true) => {
-            warn!("Transfer is already finalised, removing: {transfer:?}");
-            return Ok(EventAction::Remove);
+            warn!("Transfer is already finalised, dropping: {transfer:?}");
+            return Ok(EventAction::Drop);
         }
         Ok(false) => {}
         Err(err) => {
@@ -933,8 +942,8 @@ pub async fn initiate_fast_transfer(
         .await
     {
         Ok(Some(_)) => {
-            warn!("Fast transfer is already finalised, removing: {transfer:?}");
-            return Ok(EventAction::Remove);
+            warn!("Fast transfer is already finalised, dropping: {transfer:?}");
+            return Ok(EventAction::Drop);
         }
         Ok(None) => {}
         Err(err) => {

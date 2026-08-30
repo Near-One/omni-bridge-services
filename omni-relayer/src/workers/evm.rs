@@ -47,8 +47,8 @@ pub async fn process_init_transfer_event(
         expected_finalization_time,
     } = transfer
     else {
-        warn!("Routing mismatch, removing: {transfer:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let current_timestamp = chrono::Utc::now().timestamp();
@@ -72,10 +72,10 @@ pub async fn process_init_transfer_event(
     let Ok(sender) = utils::evm::string_to_evm_omniaddress(chain_kind, &log.sender.to_string())
     else {
         warn!(
-            "Failed to parse sender \"{}\" as `OmniAddress`, removing",
+            "Failed to parse sender \"{}\" as `OmniAddress`, dropping",
             log.sender
         );
-        return Ok(EventAction::Remove);
+        return Ok(EventAction::Drop);
     };
 
     let context = format!("({chain_kind:?}:{})", log.origin_nonce);
@@ -90,8 +90,8 @@ pub async fn process_init_transfer_event(
         .await
     {
         Ok(true) => {
-            warn!("Transfer is already finalised, removing: {transfer_id:?}");
-            return Ok(EventAction::Remove);
+            warn!("Transfer is already finalised, dropping: {transfer_id:?}");
+            return Ok(EventAction::Drop);
         }
         Ok(false) => {}
         Err(err) => {
@@ -105,10 +105,10 @@ pub async fn process_init_transfer_event(
             utils::evm::string_to_evm_omniaddress(chain_kind, &log.token_address.to_string())
         else {
             warn!(
-                "Failed to parse token \"{}\" as `OmniAddress`, removing",
+                "Failed to parse token \"{}\" as `OmniAddress`, dropping",
                 log.token_address
             );
-            return Ok(EventAction::Remove);
+            return Ok(EventAction::Drop);
         };
 
         let Ok(needed_fee) = utils::bridge_api::TransferFee::get_transfer_fee(
@@ -299,8 +299,8 @@ pub async fn process_evm_transfer_event(
         transfer_id,
     } = fin_transfer
     else {
-        warn!("Routing mismatch, removing: {fin_transfer:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {fin_transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let current_timestamp = chrono::Utc::now().timestamp();
@@ -416,8 +416,8 @@ pub async fn process_deploy_token_event(
         expected_finalization_time,
     } = deploy_token_event
     else {
-        warn!("Routing mismatch, removing: {deploy_token_event:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {deploy_token_event:?}");
+        return Ok(EventAction::Drop);
     };
 
     let current_timestamp = chrono::Utc::now().timestamp();

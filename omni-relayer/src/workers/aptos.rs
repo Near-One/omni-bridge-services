@@ -43,7 +43,8 @@ pub async fn process_init_transfer_event(
         ..
     } = transfer
     else {
-        anyhow::bail!("Expected AptosInitTransfer, got: {transfer:?}");
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let transfer_id = TransferId {
@@ -77,7 +78,10 @@ pub async fn process_init_transfer_event(
         .is_transfer_finalised(Some(ChainKind::Aptos), ChainKind::Near, origin_nonce)
         .await
     {
-        Ok(true) => anyhow::bail!("Transfer is already finalised: {transfer_id:?}"),
+        Ok(true) => {
+            warn!("Transfer is already finalised, dropping: {transfer_id:?}");
+            return Ok(EventAction::Drop);
+        }
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
@@ -226,7 +230,8 @@ pub async fn process_fin_transfer_event(
         transfer_id,
     } = fin_transfer
     else {
-        anyhow::bail!("Expected Aptos FinTransfer, got: {fin_transfer:?}");
+        warn!("Routing mismatch, dropping: {fin_transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(
@@ -308,7 +313,8 @@ pub async fn process_deploy_token_event(
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
     let DeployToken::Aptos { tx_hash } = deploy_token_event else {
-        anyhow::bail!("Expected Aptos DeployToken, got: {deploy_token_event:?}");
+        warn!("Routing mismatch, dropping: {deploy_token_event:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(

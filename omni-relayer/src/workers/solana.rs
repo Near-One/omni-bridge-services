@@ -46,8 +46,8 @@ pub async fn process_init_transfer_event(
         ..
     } = transfer
     else {
-        warn!("Routing mismatch, removing: {transfer:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let chain_kind = sender.get_chain();
@@ -66,7 +66,12 @@ pub async fn process_init_transfer_event(
             .solana
             .as_ref()
             .map_or(0, |c| c.expected_finalization_time),
-        _ => unreachable!("SVM worker invoked with non-SVM chain: {chain_kind:?}"),
+        _ => {
+            // Reachable from event data, so it must not panic: a panic in the
+            // spawned task acks nothing and the message is redelivered forever.
+            warn!("SVM worker invoked with non-SVM chain, dropping: {chain_kind:?}");
+            return Ok(EventAction::Drop);
+        }
     };
     let current_timestamp = chrono::Utc::now().timestamp();
     let effective_wait = std::cmp::max(expected_finalization_time, config.kyt.delay_secs);
@@ -95,8 +100,8 @@ pub async fn process_init_transfer_event(
         .await
     {
         Ok(true) => {
-            warn!("Transfer is already finalised, removing: {transfer_id:?}");
-            return Ok(EventAction::Remove);
+            warn!("Transfer is already finalised, dropping: {transfer_id:?}");
+            return Ok(EventAction::Drop);
         }
         Ok(false) => {}
         Err(err) => {
@@ -107,8 +112,8 @@ pub async fn process_init_transfer_event(
 
     if config.is_bridge_api_enabled() {
         let Ok(token) = OmniAddress::new_from_slice(chain_kind, &token.to_bytes()) else {
-            warn!("Failed to parse token \"{token}\" as `OmniAddress`, removing");
-            return Ok(EventAction::Remove);
+            warn!("Failed to parse token \"{token}\" as `OmniAddress`, dropping");
+            return Ok(EventAction::Drop);
         };
 
         let Ok(needed_fee) =
@@ -225,8 +230,8 @@ pub async fn process_fin_transfer_event(
         creation_timestamp,
     } = fin_transfer
     else {
-        warn!("Routing mismatch, removing: {fin_transfer:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {fin_transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let expected_finalization_time = match chain_kind {
@@ -238,7 +243,12 @@ pub async fn process_fin_transfer_event(
             .solana
             .as_ref()
             .map_or(0, |c| c.expected_finalization_time),
-        _ => unreachable!("SVM worker invoked with non-SVM chain: {chain_kind:?}"),
+        _ => {
+            // Reachable from event data, so it must not panic: a panic in the
+            // spawned task acks nothing and the message is redelivered forever.
+            warn!("SVM worker invoked with non-SVM chain, dropping: {chain_kind:?}");
+            return Ok(EventAction::Drop);
+        }
     };
     let current_timestamp = chrono::Utc::now().timestamp();
     if current_timestamp < creation_timestamp + expected_finalization_time {
@@ -276,7 +286,8 @@ pub async fn process_fin_transfer_event(
         proof_kind: ProofKind::FinTransfer,
         vaa,
     }) else {
-        anyhow::bail!("Failed to serialize prover args for {sequence}");
+        warn!("Failed to serialize prover args for {sequence}, dropping");
+        return Ok(EventAction::Drop);
     };
 
     let claim_fee_args = ClaimFeeArgs {
@@ -324,8 +335,8 @@ pub async fn process_deploy_token_event(
         chain_kind,
     } = deploy_token_event
     else {
-        warn!("Routing mismatch, removing: {deploy_token_event:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {deploy_token_event:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!("Processing SVM DeployToken ({chain_kind:?}:{sequence})");
@@ -343,7 +354,8 @@ pub async fn process_deploy_token_event(
         proof_kind: ProofKind::DeployToken,
         vaa,
     }) else {
-        anyhow::bail!("Failed to serialize prover args for {sequence}");
+        warn!("Failed to serialize prover args for {sequence}, dropping");
+        return Ok(EventAction::Drop);
     };
 
     let nonce = match near_nonce.reserve_nonce() {

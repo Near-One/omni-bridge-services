@@ -90,7 +90,7 @@ pub async fn resolve_tx_receipts(
         Err(EventAction::Retry)
     } else if has_any_failure {
         Metrics::global().record_near_tx_receipt(receipt_outcome::REVERTED);
-        Err(EventAction::Remove)
+        Err(EventAction::Drop)
     } else {
         Metrics::global().record_near_tx_receipt(receipt_outcome::OK);
         Ok(outcome.receipts_outcome)

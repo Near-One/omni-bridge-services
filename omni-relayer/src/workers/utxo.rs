@@ -53,15 +53,15 @@ pub async fn process_near_to_utxo_init_transfer_event(
         creation_timestamp,
     } = transfer
     else {
-        warn!("Routing mismatch, removing: {transfer:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     if !config.is_signing_utxo_transaction_enabled(chain) {
         info!(
             "Signing NEAR->{chain:?} disabled by config ({btc_pending_id}:{sign_index}), skipping"
         );
-        return Ok(EventAction::Remove);
+        return Ok(EventAction::Drop);
     }
 
     let current_timestamp = chrono::Utc::now().timestamp();
@@ -95,7 +95,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
             info!(
                 "Skipping sign for {btc_pending_id}:{sign_index} - already handled by another relayer"
             );
-            return Ok(EventAction::Remove);
+            return Ok(EventAction::Drop);
         }
         Some(false) => {}
         None => {
@@ -173,8 +173,8 @@ pub async fn process_utxo_to_near_init_transfer_event(
         ..
     } = transfer.clone()
     else {
-        warn!("Routing mismatch, removing: {transfer:?}");
-        return Ok(EventAction::Remove);
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     if config::Config::is_kyt_enabled() {
@@ -182,8 +182,8 @@ pub async fn process_utxo_to_near_init_transfer_event(
             ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
             ChainKind::Zcash => config.zcash.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
             _ => {
-                warn!("Unsupported chain for UTXO, removing: {chain:?}");
-                return Ok(EventAction::Remove);
+                warn!("Unsupported chain for UTXO, dropping: {chain:?}");
+                return Ok(EventAction::Drop);
             }
         }
         .with_context(|| format!("{chain:?} UTXO config missing for input KYT"))?;
@@ -269,8 +269,8 @@ pub async fn process_utxo_to_near_init_transfer_event(
     }
 
     let Ok(vout_usize) = usize::try_from(vout) else {
-        warn!("Invalid vout {vout} for {chain:?}->NEAR transfer ({btc_tx_hash}), removing");
-        return Ok(EventAction::Remove);
+        warn!("Invalid vout {vout} for {chain:?}->NEAR transfer ({btc_tx_hash}), dropping");
+        return Ok(EventAction::Drop);
     };
 
     let uses_extra_msg_path = deposit_msg.safe_deposit.is_none() && deposit_msg.extra_msg.is_some();
@@ -429,10 +429,10 @@ pub async fn process_sign_transaction_event(
 
     let Ok(near_tx_hash) = CryptoHash::from_str(&sign_utxo_transaction_event.near_tx_hash) else {
         warn!(
-            "Invalid tx hash, removing: NEAR->{chain:?} ({btc_pending_id_log}): {}",
+            "Invalid tx hash, dropping: NEAR->{chain:?} ({btc_pending_id_log}): {}",
             sign_utxo_transaction_event.near_tx_hash
         );
-        return Ok(EventAction::Remove);
+        return Ok(EventAction::Drop);
     };
 
     match omni_connector
@@ -510,11 +510,11 @@ pub async fn process_confirmed_tx_hash(
     {
         Ok(info) => info,
         Err(BridgeSdkError::InvalidArgument(err)) if err == "BTC pending info not found" => {
-            anyhow::bail!(
-                "BTC pending info is not found for {} ({:?})",
-                confirmed_tx_hash.btc_tx_hash,
-                confirmed_tx_hash.chain,
+            warn!(
+                "BTC pending info is not found for {} ({:?}), dropping",
+                confirmed_tx_hash.btc_tx_hash, confirmed_tx_hash.chain,
             );
+            return Ok(EventAction::Drop);
         }
         Err(err) => {
             warn!(
