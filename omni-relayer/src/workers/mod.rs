@@ -129,8 +129,11 @@ pub enum WorkerEvent {
 struct MessageResult {
     action: Result<EventAction>,
     needs_evm_nonce_resync: bool,
-    /// `FEE_MAPPING` key for this event, if it has one. Removed only when the
-    /// event leaves the queue (Remove or max-age Term), not on retry.
+    /// `FEE_MAPPING` key to clean up once this event leaves the queue (acked on
+    /// `Remove`, or terminated by max age) — never on retry, so the fee check
+    /// doesn't re-fetch and re-store the entry on every attempt. `None` when the
+    /// event has no fee key, or when its `Remove` is a hand-off to a later stage
+    /// that reads the same key and owns the cleanup instead.
     fee_key: Option<String>,
     produced_events: Vec<WorkerEvent>,
     origin_chain: Option<ChainKind>,
@@ -794,10 +797,12 @@ async fn process_message(
                     Err(err) => (Err(err), Vec::new()),
                 };
 
+                let fee_key = (!matches!(action, Ok(EventAction::Remove))).then_some(fee_key);
+
                 MessageResult {
                     action,
                     needs_evm_nonce_resync: false,
-                    fee_key: Some(fee_key),
+                    fee_key,
                     produced_events,
                     origin_chain,
                 }
