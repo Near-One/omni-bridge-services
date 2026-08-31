@@ -480,6 +480,15 @@ pub async fn process_sign_transaction_event(
                 return Ok(EventAction::Retry);
             }
 
+            if let BridgeSdkError::UnknownError(msg) = &err
+                && msg == "Failed to find correct receipt"
+            {
+                warn!(
+                    "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}, dropping: {err:?}"
+                );
+                return Ok(EventAction::Drop);
+            }
+
             Err(err).with_context(|| {
                 format!(
                     "Failed to broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}"
