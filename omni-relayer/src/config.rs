@@ -299,6 +299,13 @@ impl Config {
         })
     }
 
+    pub fn is_shield_enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| {
+            std::env::var("SHIELD_API_URL").is_ok() && std::env::var("SHIELD_API_TOKEN").is_ok()
+        })
+    }
+
     pub fn is_fee_bumping_enabled(&self, chain_kind: ChainKind) -> bool {
         match chain_kind {
             ChainKind::Eth => self

@@ -35,6 +35,7 @@ pub async fn process_init_transfer_event(
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
     let Transfer::Solana {
+        amount,
         ref sender,
         ref token,
         ref recipient,
@@ -107,6 +108,23 @@ pub async fn process_init_transfer_event(
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
             return Ok(EventAction::Retry);
+        }
+    }
+
+    if config::Config::is_shield_enabled() {
+        let Ok(token_id) =
+            utils::storage::get_token_id(&omni_connector, chain_kind, &token.to_string()).await
+        else {
+            warn!("Failed to get token id for transfer: {transfer_id:?}");
+            return Ok(EventAction::Retry);
+        };
+
+        if let Some(action) = utils::validation::check_shield_deposit(
+            chain_kind, &token_id, amount.0, sender, &context,
+        )
+        .await
+        {
+            return Ok(action);
         }
     }
 

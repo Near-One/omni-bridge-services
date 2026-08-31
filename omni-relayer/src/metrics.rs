@@ -135,6 +135,22 @@ pub mod rejection_reason {
     /// The transfer id could not be serialized, so the fee check cannot proceed
     /// and the transfer is dropped permanently. Should be identically zero.
     pub const UNPROCESSABLE: &str = "unprocessable";
+    /// SHIELD reported an active incident on the transfer's scope. The transfer
+    /// is held, not dropped, so it resumes once the incident is resolved.
+    pub const SHIELD_BLOCK: &str = "shield_block";
+    /// SHIELD asked for the transfer to be delayed (a security mode, not an
+    /// incident); held for the delay it returned.
+    pub const SHIELD_DELAY: &str = "shield_delay";
+    /// SHIELD wants the transfer approved by a human. The relayer has no
+    /// approval flow, so it is held exactly like a block.
+    pub const SHIELD_APPROVAL: &str = "shield_approval";
+    /// The relayer's SHIELD token lacks the grants for the evaluated scope —
+    /// our own misconfiguration, and the one SHIELD reason that never clears on
+    /// its own. Alert on any nonzero rate.
+    pub const SHIELD_MISCONFIGURED: &str = "shield_misconfigured";
+    /// SHIELD was unreachable or answered with something unparseable. An
+    /// outage, not a decision; retried with the standard backoff.
+    pub const SHIELD_UNAVAILABLE: &str = "shield_unavailable";
 }
 
 /// Disposition of the head-of-line pending EVM transaction each fee-bumping pass.

@@ -6,6 +6,7 @@ pub mod near;
 pub mod nonce;
 pub mod pending_transactions;
 pub mod redis;
+pub mod shield;
 pub mod solana;
 pub mod storage;
 pub mod utxo;

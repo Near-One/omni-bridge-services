@@ -36,7 +36,7 @@ pub async fn process_init_transfer_event(
         ref recipient,
         origin_nonce,
         ref token,
-        amount: _,
+        amount,
         ref fee,
         creation_timestamp,
         ..
@@ -85,6 +85,31 @@ pub async fn process_init_transfer_event(
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
             return Ok(EventAction::Retry);
+        }
+    }
+
+    if config::Config::is_shield_enabled() {
+        let Ok(token_id) = utils::storage::get_token_id(
+            &omni_connector,
+            transfer_id.origin_chain,
+            &token.to_string(),
+        )
+        .await
+        else {
+            warn!("Failed to get token id for transfer: {transfer_id:?}");
+            return Ok(EventAction::Retry);
+        };
+
+        if let Some(action) = utils::validation::check_shield_deposit(
+            transfer_id.origin_chain,
+            &token_id,
+            amount.0,
+            sender,
+            &context,
+        )
+        .await
+        {
+            return Ok(action);
         }
     }
 
