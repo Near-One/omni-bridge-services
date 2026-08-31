@@ -106,6 +106,8 @@ pub mod stall_reason {
     /// this moving across many `target_chain` values at once is the fastest
     /// discriminator between "one chain is broken" and "NEAR is broken".
     pub const NEAR_RPC: &str = "near_rpc";
+    /// No correct receipt in NEAR transaction can be found.
+    pub const NEAR_FAILED_TO_FIND_RECEIPT: &str = "near_failed_to_find_receipt";
     /// Any other retryable error. Every worker error that reaches the NATS ack
     /// path unclassified lands here, so it has a nonzero baseline: a failure
     /// that is permanent but not *recognised* as permanent (a missing config
