@@ -5,6 +5,8 @@ use std::time::Duration;
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose};
 use clap::Parser;
+use opentelemetry::KeyValue;
+use opentelemetry::metrics::Counter;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
@@ -169,6 +171,7 @@ fn spawn_dynamic_config_refresher(
     config_service_url: String,
     config_service_jwt: String,
     routes_handle: RoutesHandle,
+    refresh_outcomes: Counter<u64>,
 ) {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -192,9 +195,11 @@ fn spawn_dynamic_config_refresher(
                 {
                     Ok(config) => {
                         routes_handle.apply(config.routes);
+                        refresh_outcomes.add(1, &[KeyValue::new("outcome", "success")]);
                         info!("dynamic config: route table reloaded");
                     }
                     Err(e) => {
+                        refresh_outcomes.add(1, &[KeyValue::new("outcome", "failure")]);
                         warn!(
                             "dynamic config: refresh failed, keeping last-known-good routes: {e}"
                         );
@@ -262,11 +267,19 @@ fn main() -> Result<()> {
     if args.dynamic_config {
         let config_service_url = config_service_url.expect("validated above");
         let config_service_jwt = config_service_jwt.expect("validated above");
+
+        let meter = opentelemetry::global::meter("omni-proxy");
+        let refresh_outcomes = meter
+            .u64_counter("dynamic_config_refresh_total")
+            .with_description("Dynamic-config refresh attempts by outcome (success/failure)")
+            .build();
+
         spawn_dynamic_config_refresher(
             http_client,
             config_service_url,
             config_service_jwt,
             proxy.routes_handle(),
+            refresh_outcomes,
         );
     }
 
