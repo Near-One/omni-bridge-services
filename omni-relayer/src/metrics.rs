@@ -106,8 +106,6 @@ pub mod stall_reason {
     /// this moving across many `target_chain` values at once is the fastest
     /// discriminator between "one chain is broken" and "NEAR is broken".
     pub const NEAR_RPC: &str = "near_rpc";
-    /// No correct receipt in NEAR transaction can be found.
-    pub const NEAR_FAILED_TO_FIND_RECEIPT: &str = "near_failed_to_find_receipt";
     /// Any other retryable error. Every worker error that reaches the NATS ack
     /// path unclassified lands here, so it has a nonzero baseline: a failure
     /// that is permanent but not *recognised* as permanent (a missing config
@@ -134,6 +132,8 @@ pub mod rejection_reason {
     /// The fee does not cover the relay cost; parked for retry. This is the
     /// dominant source of stuck-transfer backlog.
     pub const INSUFFICIENT_FEE: &str = "insufficient_fee";
+    /// No correct receipt in NEAR transaction can be found.
+    pub const NEAR_FAILED_TO_FIND_RECEIPT: &str = "near_failed_to_find_receipt";
     /// The transfer id could not be serialized, so the fee check cannot proceed
     /// and the transfer is dropped permanently. Should be identically zero.
     pub const UNPROCESSABLE: &str = "unprocessable";
