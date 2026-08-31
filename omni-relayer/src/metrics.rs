@@ -132,8 +132,6 @@ pub mod rejection_reason {
     /// The fee does not cover the relay cost; parked for retry. This is the
     /// dominant source of stuck-transfer backlog.
     pub const INSUFFICIENT_FEE: &str = "insufficient_fee";
-    /// No correct receipt in NEAR transaction can be found.
-    pub const NEAR_FAILED_TO_FIND_RECEIPT: &str = "near_failed_to_find_receipt";
     /// The transfer id could not be serialized, so the fee check cannot proceed
     /// and the transfer is dropped permanently. Should be identically zero.
     pub const UNPROCESSABLE: &str = "unprocessable";
