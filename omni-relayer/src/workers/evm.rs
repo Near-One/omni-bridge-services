@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use bridge_connector_common::result::{BridgeSdkError, EthRpcError};
+use bridge_connector_common::result::BridgeSdkError;
 use near_sdk::AccountId;
 use tracing::{info, warn};
 
@@ -47,7 +47,8 @@ pub async fn process_init_transfer_event(
         expected_finalization_time,
     } = transfer
     else {
-        anyhow::bail!("Expected EvmInitTransferWithTimestamp, got: {transfer:?}");
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let current_timestamp = chrono::Utc::now().timestamp();
@@ -68,14 +69,14 @@ pub async fn process_init_transfer_event(
         origin_nonce: log.origin_nonce,
     };
 
-    let sender = utils::evm::string_to_evm_omniaddress(chain_kind, &log.sender.to_string())
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "Failed to parse \"{}\" as `OmniAddress`: {:?}",
-                log.sender,
-                err
-            )
-        })?;
+    let Ok(sender) = utils::evm::string_to_evm_omniaddress(chain_kind, &log.sender.to_string())
+    else {
+        warn!(
+            "Failed to parse sender \"{}\" as `OmniAddress`, dropping",
+            log.sender
+        );
+        return Ok(EventAction::Drop);
+    };
 
     let context = format!("({chain_kind:?}:{})", log.origin_nonce);
     if let Some(action) =
@@ -88,7 +89,10 @@ pub async fn process_init_transfer_event(
         .is_transfer_finalised(Some(chain_kind), ChainKind::Near, log.origin_nonce)
         .await
     {
-        Ok(true) => anyhow::bail!("Transfer is already finalised: {transfer_id:?}"),
+        Ok(true) => {
+            warn!("Transfer is already finalised, dropping: {transfer_id:?}");
+            return Ok(EventAction::Drop);
+        }
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
@@ -120,15 +124,15 @@ pub async fn process_init_transfer_event(
     }
 
     if config.is_bridge_api_enabled() {
-        let token =
+        let Ok(token) =
             utils::evm::string_to_evm_omniaddress(chain_kind, &log.token_address.to_string())
-                .map_err(|err| {
-                    anyhow::anyhow!(
-                        "Failed to parse \"{}\" as `OmniAddress`: {:?}",
-                        log.token_address,
-                        err
-                    )
-                })?;
+        else {
+            warn!(
+                "Failed to parse token \"{}\" as `OmniAddress`, dropping",
+                log.token_address
+            );
+            return Ok(EventAction::Drop);
+        };
 
         let Ok(needed_fee) = utils::bridge_api::TransferFee::get_transfer_fee(
             config,
@@ -283,61 +287,12 @@ pub async fn process_init_transfer_event(
             )
             .await)
         }
-        Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!(
-                            "Failed to finalize transfer ({chain_kind:?}:{}), retrying: {near_rpc_error:?}",
-                            log.origin_nonce
-                        );
-                        Metrics::global()
-                            .record_stalled_retry(stall_reason::NEAR_RPC, Some(ChainKind::Near));
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!(
-                            "Failed to finalize transfer ({chain_kind:?}:{}): {near_rpc_error:?}",
-                            log.origin_nonce
-                        );
-                    }
-                };
-            } else if let BridgeSdkError::LightClientNotSynced { current_height, .. } = err {
-                warn!(
-                    "Light client is not synced yet for transfer ({chain_kind:?}:{}), block: {}",
-                    log.origin_nonce, current_height
-                );
-                Metrics::global()
-                    .record_stalled_retry(stall_reason::LIGHT_CLIENT_NOT_SYNCED, Some(chain_kind));
-                return Ok(EventAction::Retry);
-            } else if let BridgeSdkError::EthRpcError(EthRpcError::RpcError(err)) = err {
-                warn!(
-                    "Ethereum client error occurred while finalizing transfer ({chain_kind:?}:{}), retrying: {err:?}",
-                    log.origin_nonce
-                );
-                Metrics::global().record_stalled_retry(stall_reason::EVM_RPC, Some(chain_kind));
-                return Ok(EventAction::Retry);
-            } else if let BridgeSdkError::MpcFinalityNotReached = err {
-                warn!(
-                    "MPC finality not reached yet for transfer ({chain_kind:?}:{}), retrying",
-                    log.origin_nonce
-                );
-                Metrics::global()
-                    .record_stalled_retry(stall_reason::MPC_FINALITY, Some(chain_kind));
-                return Ok(EventAction::Retry);
-            }
-
-            anyhow::bail!(
-                "Failed to finalize transfer ({chain_kind:?}:{}): {err:?}",
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "Failed to finalize transfer ({chain_kind:?}:{})",
                 log.origin_nonce
-            );
-        }
+            )
+        }),
     }
 }
 
@@ -356,7 +311,8 @@ pub async fn process_evm_transfer_event(
         transfer_id,
     } = fin_transfer
     else {
-        anyhow::bail!("Expected Evm FinTransfer, got: {fin_transfer:?}");
+        warn!("Routing mismatch, dropping: {fin_transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     let current_timestamp = chrono::Utc::now().timestamp();
@@ -374,12 +330,11 @@ pub async fn process_evm_transfer_event(
             RpcQueryError::ContractExecutionError { vm_error, .. },
         )),
     ))) = omni_connector.near_get_transfer_message(transfer_id).await
+        && (vm_error.contains("The transfer does not exist")
+            || vm_error.contains(&omni_types::errors::BridgeError::TransferNotExist.as_ref()))
     {
-        // TODO: refactor when enum errors will become available on mainnet
-        if vm_error.contains("The transfer does not exist") {
-            info!("No fee to claim for FinTransfer ({transfer_id:?})");
-            return Ok(EventAction::Remove);
-        }
+        info!("No fee to claim for FinTransfer ({transfer_id:?})");
+        return Ok(EventAction::Remove);
     }
 
     let nonce = near_nonce
@@ -455,38 +410,14 @@ pub async fn process_evm_transfer_event(
             )
             .await)
         }
-        Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to claim fee, retrying: {near_rpc_error:?}");
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!("Failed to claim fee: {near_rpc_error:?}");
-                    }
-                };
-            } else if let BridgeSdkError::LightClientNotSynced { current_height, .. } = err {
-                warn!("Light client is not synced yet for block: {current_height}");
-                return Ok(EventAction::Retry);
-            } else if let BridgeSdkError::MpcFinalityNotReached = err {
-                warn!("MPC finality not reached yet, retrying claim fee");
-                return Ok(EventAction::Retry);
-            }
-
-            anyhow::bail!("Failed to claim fee: {err:?}");
-        }
+        Err(err) => Err(err).context("Failed to claim fee"),
     }
 }
 
 pub async fn process_deploy_token_event(
+    jsonrpc_client: &JsonRpcClient,
     omni_connector: Arc<OmniConnector>,
+    signer: AccountId,
     deploy_token_event: DeployToken,
     near_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
@@ -497,7 +428,8 @@ pub async fn process_deploy_token_event(
         expected_finalization_time,
     } = deploy_token_event
     else {
-        anyhow::bail!("Expected Evm DeployToken, got: {deploy_token_event:?}");
+        warn!("Routing mismatch, dropping: {deploy_token_event:?}");
+        return Ok(EventAction::Drop);
     };
 
     let current_timestamp = chrono::Utc::now().timestamp();
@@ -560,35 +492,19 @@ pub async fn process_deploy_token_event(
 
     match omni_connector.bind_token(bind_token_args).await {
         Ok(tx_hash) => {
-            info!("Bound token: {tx_hash:?}");
-            Ok(EventAction::Remove)
+            info!("Bound token: {tx_hash}");
+            let Ok(crypto_hash) = tx_hash.parse() else {
+                warn!("Failed to parse {tx_hash} as CryptoHash, removing");
+                return Ok(EventAction::Remove);
+            };
+            Ok(utils::near::resolve_tx_action(
+                jsonrpc_client,
+                crypto_hash,
+                signer,
+                &["Request has timed out."],
+            )
+            .await)
         }
-        Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to bind token, retrying: {near_rpc_error:?}");
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!("Failed to bind token: {near_rpc_error:?}");
-                    }
-                };
-            } else if let BridgeSdkError::LightClientNotSynced { current_height, .. } = err {
-                warn!("Light client is not synced yet for block: {current_height}");
-                return Ok(EventAction::Retry);
-            } else if let BridgeSdkError::MpcFinalityNotReached = err {
-                warn!("MPC finality not reached yet, retrying bind token");
-                return Ok(EventAction::Retry);
-            }
-
-            anyhow::bail!("Failed to bind token: {err:?}");
-        }
+        Err(err) => Err(err).context("Failed to bind token"),
     }
 }

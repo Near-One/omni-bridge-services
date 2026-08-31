@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
+use alloy::transports::RpcError as AlloyRpcError;
 use anyhow::{Context, Result};
-use bridge_connector_common::result::BridgeSdkError;
+use bridge_connector_common::result::{BridgeSdkError, EthRpcError};
 use near_sdk::json_types::U64;
 use tracing::{info, warn};
 
 use near_bridge_client::TransactionOptions;
-use near_jsonrpc_client::{JsonRpcClient, errors::JsonRpcError};
+use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
-use near_rpc_client::NearRpcError;
 use solana_rpc_client_api::{
     client_error::ErrorKind,
     request::{RpcError, RpcResponseErrorData},
@@ -49,8 +49,8 @@ pub async fn process_transfer_event(
             ..
         } => {
             let Ok(new_transfer_id) = new_transfer_id.try_into() else {
-                warn!("Failed to build TransferId from: {new_transfer_id:?}");
-                return Ok((EventAction::Retry, Vec::new()));
+                warn!("Failed to build TransferId from {new_transfer_id:?}, dropping");
+                return Ok((EventAction::Drop, Vec::new()));
             };
 
             let Ok(transfer_message) = omni_connector
@@ -64,7 +64,8 @@ pub async fn process_transfer_event(
             (transfer_message, 0)
         }
         _ => {
-            anyhow::bail!("Expected Transfer::Near or Transfer::Utxo variant, got: {transfer:?}");
+            warn!("Routing mismatch, dropping: {transfer:?}");
+            return Ok((EventAction::Drop, Vec::new()));
         }
     };
 
@@ -112,7 +113,10 @@ pub async fn process_transfer_event(
         )
         .await
     {
-        Ok(true) => anyhow::bail!("Transfer is already finalised: {transfer_message:?}"),
+        Ok(true) => {
+            warn!("Transfer is already finalised, dropping: {transfer_message:?}");
+            return Ok((EventAction::Drop, Vec::new()));
+        }
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
@@ -189,32 +193,8 @@ pub async fn process_transfer_event(
                 Err(action) => (action, Vec::new()),
             },
         ),
-        Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!(
-                            "Failed to sign transfer ({origin_chain:?}:{origin_nonce}), retrying: {near_rpc_error:?}"
-                        );
-                        Metrics::global()
-                            .record_stalled_retry(stall_reason::NEAR_RPC, Some(ChainKind::Near));
-                        return Ok((EventAction::Retry, Vec::new()));
-                    }
-                    _ => {
-                        anyhow::bail!(
-                            "Failed to sign transfer ({origin_chain:?}:{origin_nonce}): {near_rpc_error:?}"
-                        );
-                    }
-                };
-            }
-            anyhow::bail!("Failed to sign transfer ({origin_chain:?}:{origin_nonce}): {err:?}");
-        }
+        Err(err) => Err(err)
+            .with_context(|| format!("Failed to sign transfer ({origin_chain:?}:{origin_nonce})")),
     }
 }
 
@@ -230,7 +210,8 @@ pub async fn process_transfer_to_utxo_event(
         creation_timestamp,
     } = transfer
     else {
-        anyhow::bail!("Expected NearTransferWithTimestamp, got: {transfer:?}");
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok((EventAction::Drop, Vec::new()));
     };
 
     info!(
@@ -267,17 +248,19 @@ pub async fn process_transfer_to_utxo_event(
     }
 
     let OmniAddress::Near(ref sender) = transfer_message.sender else {
-        anyhow::bail!(
-            "Expected NEAR sender for NEAR to UTXO transfer, got: {:?}",
+        warn!(
+            "Expected NEAR sender for NEAR to UTXO transfer, got: {:?}, dropping",
             transfer_message.sender
         );
+        return Ok((EventAction::Drop, Vec::new()));
     };
 
     let Some(recipient) = transfer_message.recipient.get_utxo_address() else {
-        anyhow::bail!(
-            "Expected UTXO recipient address, got: {:?}",
+        warn!(
+            "Expected UTXO recipient address, got: {:?}, dropping",
             transfer_message.recipient
         );
+        return Ok((EventAction::Drop, Vec::new()));
     };
 
     if let Some(action) =
@@ -427,33 +410,11 @@ pub async fn process_transfer_to_utxo_event(
             )
         }
         Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
+            if matches!(err, BridgeSdkError::NearRpcError(_)) {
                 utxo_set.mark_dirty(destination_chain);
+            }
 
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!(
-                            "Failed to submit {:?} transfer ({}), retrying: {near_rpc_error:?}",
-                            transfer_message.recipient.get_chain(),
-                            transfer_message.origin_nonce
-                        );
-                        return Ok((EventAction::Retry, Vec::new()));
-                    }
-                    _ => {
-                        anyhow::bail!(
-                            "Failed to submit {:?} transfer ({}): {near_rpc_error:?}",
-                            transfer_message.recipient.get_chain(),
-                            transfer_message.origin_nonce
-                        );
-                    }
-                };
-            } else if let BridgeSdkError::InsufficientUTXOBalance = err {
+            if let BridgeSdkError::InsufficientUTXOBalance = err {
                 warn!(
                     "Insufficient UTXO balance for {:?} transfer ({}), retrying",
                     transfer_message.recipient.get_chain(),
@@ -475,8 +436,8 @@ pub async fn process_transfer_to_utxo_event(
                     Some(transfer_message.recipient.get_chain()),
                 );
                 return Ok((EventAction::Retry, Vec::new()));
-            } else if let BridgeSdkError::UtxoClientError(ref msg) = err
-                && msg == "Failed to estimate fee_rate"
+            } else if let BridgeSdkError::UtxoRpcError(ref msg) = err
+                && msg.starts_with("Failed to estimate fee_rate")
             {
                 warn!(
                     "Failed to estimate fee_rate for {:?} transfer ({}), retrying",
@@ -490,15 +451,29 @@ pub async fn process_transfer_to_utxo_event(
                 return Ok((EventAction::Retry, Vec::new()));
             }
 
-            anyhow::bail!(
-                "Failed to submit {:?} transfer ({}): {err:?}",
-                transfer_message.recipient.get_chain(),
-                transfer_message.origin_nonce
-            );
+            if let BridgeSdkError::InvalidArgument(ref msg) = err
+                && msg == "Amount is smaller than `fee`"
+            {
+                warn!(
+                    "Amount below withdraw_fee for {:?} transfer ({}), dropping",
+                    transfer_message.recipient.get_chain(),
+                    transfer_message.origin_nonce
+                );
+                return Ok((EventAction::Drop, Vec::new()));
+            }
+
+            Err(err).with_context(|| {
+                format!(
+                    "Failed to submit {:?} transfer ({})",
+                    transfer_message.recipient.get_chain(),
+                    transfer_message.origin_nonce
+                )
+            })
         }
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn process_sign_transfer_event(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
@@ -511,7 +486,8 @@ pub async fn process_sign_transfer_event(
         message_payload, ..
     } = &omni_bridge_event
     else {
-        anyhow::bail!("Expected SignTransferEvent, got: {omni_bridge_event:?}");
+        warn!("Routing mismatch, dropping: {omni_bridge_event:?}");
+        return Ok(EventAction::Drop);
     };
 
     info!(
@@ -520,7 +496,8 @@ pub async fn process_sign_transfer_event(
     );
 
     if message_payload.fee_recipient != Some(signer) {
-        anyhow::bail!("Fee recipient mismatch");
+        warn!("Fee recipient mismatch, dropping: {omni_bridge_event:?}");
+        return Ok(EventAction::Drop);
     }
 
     match omni_connector
@@ -531,10 +508,13 @@ pub async fn process_sign_transfer_event(
         )
         .await
     {
-        Ok(true) => anyhow::bail!(
-            "Transfer is already finalised: {:?}",
-            message_payload.transfer_id
-        ),
+        Ok(true) => {
+            warn!(
+                "Transfer is already finalised, dropping: {:?}",
+                message_payload.transfer_id
+            );
+            return Ok(EventAction::Drop);
+        }
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
@@ -555,11 +535,15 @@ pub async fn process_sign_transfer_event(
         {
             Ok(transfer_message) => transfer_message,
             Err(err) => {
-                if err.to_string().contains("The transfer does not exist") {
-                    anyhow::bail!(
-                        "Transfer does not exist: {:?} (probably fee is 0 or transfer was already finalized)",
+                let err_str = err.to_string();
+                if err_str.contains("The transfer does not exist")
+                    || err_str.contains(&omni_types::errors::BridgeError::TransferNotExist.as_ref())
+                {
+                    warn!(
+                        "Transfer does not exist (fee=0 or already finalized), dropping: {:?}",
                         message_payload.transfer_id
                     );
+                    return Ok(EventAction::Drop);
                 }
 
                 warn!(
@@ -624,7 +608,8 @@ pub async fn process_sign_transfer_event(
 
     let (fin_transfer_args, evm_nonce) = match chain_kind {
         ChainKind::Near => {
-            anyhow::bail!("Near to Near transfers are not supported");
+            warn!("Near-to-Near transfer not supported, dropping: {omni_bridge_event:?}");
+            return Ok(EventAction::Drop);
         }
         ChainKind::Eth
         | ChainKind::Base
@@ -650,10 +635,11 @@ pub async fn process_sign_transfer_event(
             let (OmniAddress::Sol(token) | OmniAddress::Fogo(token)) =
                 message_payload.token_address.clone()
             else {
-                anyhow::bail!(
-                    "Expected SVM token address, got: {:?}",
+                warn!(
+                    "SVM token address mismatch, dropping: {:?}",
                     message_payload.token_address
                 );
+                return Ok(EventAction::Drop);
             };
 
             (
@@ -678,7 +664,8 @@ pub async fn process_sign_transfer_event(
             None,
         ),
         ChainKind::Btc | ChainKind::Zcash => {
-            anyhow::bail!("Finishing BTC/ZEC transfers is not supported");
+            warn!("BTC/ZEC not supported for fast transfer, dropping: {omni_bridge_event:?}");
+            return Ok(EventAction::Drop);
         }
     };
 
@@ -723,9 +710,13 @@ pub async fn process_sign_transfer_event(
                     | ChainKind::Aptos
                     | ChainKind::Btc
                     | ChainKind::Zcash => {
-                        anyhow::bail!(
-                            "Failed to finalize deposit (unexpected: failed to get evm config): {err}"
+                        // Only the EVM arm of the `FinTransferArgs` match above can
+                        // reach an `EvmGasEstimateError`, so a non-EVM `chain_kind`
+                        // here is a payload that can never be finalized.
+                        warn!(
+                            "Failed to finalize deposit (unexpected: non-EVM chain in the EVM gas-estimate branch), dropping: {err}"
                         );
+                        return Ok(EventAction::Drop);
                     }
                 }) else {
                     anyhow::bail!(
@@ -738,9 +729,10 @@ pub async fn process_sign_transfer_event(
                     .iter()
                     .any(|selector| err.contains(selector))
                 {
-                    anyhow::bail!(
-                        "Failed to finalize deposit: {err}. Found selector from the list of non-retryable errors in the config"
+                    warn!(
+                        "Failed to finalize deposit (non-retryable selector matched), dropping: {err}"
                     );
+                    return Ok(EventAction::Drop);
                 }
 
                 warn!("Failed to finalize deposit, retrying: {err}");
@@ -749,24 +741,122 @@ pub async fn process_sign_transfer_event(
                 return Ok(EventAction::Retry);
             }
 
+            if let BridgeSdkError::EthRpcError(ref eth_err) = err {
+                match eth_err {
+                    EthRpcError::ContractError(reason) => {
+                        warn!("EVM contract/ABI error (non-retryable), dropping: {reason}");
+                        return Ok(EventAction::Drop);
+                    }
+                    EthRpcError::RpcError(AlloyRpcError::ErrorResp(payload))
+                        if !payload.is_retry_err()
+                            && (payload.code == 3
+                                || payload.message.contains("execution reverted")) =>
+                    {
+                        warn!(
+                            "EVM execution reverted at submission (non-retryable), dropping: code={} msg={}",
+                            payload.code, payload.message
+                        );
+                        return Ok(EventAction::Drop);
+                    }
+                    _ => {
+                        warn!("EVM fin_transfer transient error, retrying: {err}");
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::EVM_RPC, Some(chain_kind));
+                        return Ok(EventAction::Retry);
+                    }
+                }
+            }
+
             if let BridgeSdkError::SolanaRpcError(ref client_error) = err
                 && let ErrorKind::RpcError(RpcError::RpcResponseError {
                     data: RpcResponseErrorData::SendTransactionPreflightFailure(result),
                     ..
                 }) = &*client_error.kind
-                && let Some(TransactionError::InstructionError(
-                    _,
-                    InstructionError::Custom(error_code),
-                )) = result.err.clone().map(TransactionError::from)
             {
-                if error_code == PAUSED_ERROR {
-                    warn!("Solana bridge is paused");
-                    Metrics::global()
-                        .record_stalled_retry(stall_reason::SOLANA_PAUSED, Some(chain_kind));
-                    return Ok(EventAction::Retry);
+                match result.err.clone().map(TransactionError::from) {
+                    // Program-level (Anchor / SPL / System-CPI) custom errors show
+                    // up at preflight but reflect MUTABLE on-chain state — fee-payer
+                    // or vault funding (System 0x1 = insufficient lamports), account
+                    // / sysvar state (Anchor 3015 = AccountSysvarMismatch), the
+                    // paused flag, or CPI races — which can clear on a later attempt.
+                    // Retry rather than drop a recoverable transfer.
+                    Some(TransactionError::InstructionError(
+                        _,
+                        InstructionError::Custom(error_code),
+                    )) => {
+                        if error_code == PAUSED_ERROR {
+                            warn!("Solana bridge is paused, retrying");
+                            Metrics::global().record_stalled_retry(
+                                stall_reason::SOLANA_PAUSED,
+                                Some(chain_kind),
+                            );
+                        } else {
+                            warn!(
+                                "Solana program custom error at preflight (retryable): {result:?}"
+                            );
+                            Metrics::global().record_stalled_retry(
+                                stall_reason::SOLANA_PROGRAM_ERROR,
+                                Some(chain_kind),
+                            );
+                        }
+                        return Ok(EventAction::Retry);
+                    }
+                    Some(
+                        TransactionError::BlockhashNotFound
+                        | TransactionError::AccountInUse
+                        | TransactionError::WouldExceedMaxBlockCostLimit
+                        | TransactionError::WouldExceedMaxAccountCostLimit
+                        | TransactionError::WouldExceedAccountDataBlockLimit
+                        | TransactionError::WouldExceedMaxVoteCostLimit
+                        | TransactionError::WouldExceedAccountDataTotalLimit
+                        | TransactionError::MaxLoadedAccountsDataSizeExceeded
+                        | TransactionError::ClusterMaintenance
+                        | TransactionError::ProgramCacheHitMaxLimit
+                        | TransactionError::ProgramExecutionTemporarilyRestricted { .. }
+                        | TransactionError::AccountBorrowOutstanding
+                        | TransactionError::CommitCancelled
+                        | TransactionError::ResanitizationNeeded,
+                    ) => {
+                        warn!("Solana preflight transient failure, retrying: {result:?}");
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::SOLANA_PREFLIGHT, Some(chain_kind));
+                        return Ok(EventAction::Retry);
+                    }
+                    Some(
+                        TransactionError::InsufficientFundsForFee
+                        | TransactionError::InsufficientFundsForRent { .. }
+                        | TransactionError::AccountNotFound,
+                    ) => {
+                        warn!("Solana fee-payer funding issue, retrying: {result:?}");
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::SOLANA_FUNDING, Some(chain_kind));
+                        return Ok(EventAction::Retry);
+                    }
+                    None => {
+                        warn!(
+                            "Solana preflight failure without structured error, retrying: {result:?}"
+                        );
+                        Metrics::global()
+                            .record_stalled_retry(stall_reason::OTHER, Some(chain_kind));
+                        return Ok(EventAction::Retry);
+                    }
+                    Some(_) => {
+                        warn!("Solana preflight deterministic failure, dropping: {result:?}");
+                        return Ok(EventAction::Drop);
+                    }
                 }
+            }
 
-                anyhow::bail!("Failed to finalize deposit: {err}");
+            if let BridgeSdkError::StarknetOtherError(ref reason) = err
+                && reason.contains("Transaction reverted:")
+            {
+                warn!("Starknet fin_transfer reverted (non-retryable), dropping: {reason}");
+                return Ok(EventAction::Drop);
+            }
+
+            if let BridgeSdkError::InvalidArgument(ref reason) = err {
+                warn!("Non-retryable invalid argument, dropping: {reason}");
+                return Ok(EventAction::Drop);
             }
 
             warn!("Failed to finalize deposit, retrying: {err}");
@@ -778,12 +868,26 @@ pub async fn process_sign_transfer_event(
 
 pub async fn initiate_fast_transfer(
     config: &config::Config,
+    jsonrpc_client: &JsonRpcClient,
     fast_connector: Arc<OmniConnector>,
     transfer: Transfer,
     near_fast_nonce: Arc<utils::nonce::NonceManager>,
 ) -> Result<EventAction> {
     let Ok(near_bridge_client) = fast_connector.near_bridge_client() else {
-        anyhow::bail!("Near bridge client is not configured");
+        // The transfer is not lost: the ordinary `Transfer::Evm` message is
+        // published alongside every `Transfer::Fast`, so the slow path still
+        // relays it. Matches the sibling condition in `process_message`, which
+        // already gives up when the fast nonce manager is absent.
+        warn!("Fast relaying is not configured (no NEAR bridge client), dropping fast transfer");
+        return Ok(EventAction::Drop);
+    };
+
+    let Ok(fast_signer) = fast_connector
+        .near_bridge_client()
+        .and_then(near_bridge_client::NearBridgeClient::account_id)
+    else {
+        warn!("Failed to get fast relayer account id, retrying");
+        return Ok(EventAction::Retry);
     };
 
     let Transfer::Fast {
@@ -800,7 +904,8 @@ pub async fn initiate_fast_transfer(
         safe_confirmations,
     } = transfer.clone()
     else {
-        anyhow::bail!("Expected FastTransferEvent, got: {transfer:?}");
+        warn!("Routing mismatch, dropping: {transfer:?}");
+        return Ok(EventAction::Drop);
     };
 
     // TODO: Fast transfer to other chain increases origin nonce by one, so regular relayer won't
@@ -808,10 +913,11 @@ pub async fn initiate_fast_transfer(
     // `FastTransferEvent`. This will be possible once bridge-indexer will track these events
     // Related PR: https://github.com/Near-One/bridge-indexer-rs/pull/195
     if recipient.get_chain() != ChainKind::Near {
-        anyhow::bail!(
-            "Fast transfer is supported only for transfers to NEAR for now, got: {:?}",
+        warn!(
+            "Fast transfer to non-NEAR chain not supported, dropping: {:?}",
             recipient.get_chain()
         );
+        return Ok(EventAction::Drop);
     }
 
     let context = format!(
@@ -855,7 +961,10 @@ pub async fn initiate_fast_transfer(
     };
 
     match fast_connector.near_is_transfer_finalised(transfer_id).await {
-        Ok(true) => anyhow::bail!("Transfer is already finalised: {transfer:?}"),
+        Ok(true) => {
+            warn!("Transfer is already finalised, dropping: {transfer:?}");
+            return Ok(EventAction::Drop);
+        }
         Ok(false) => {}
         Err(err) => {
             warn!("Failed to check if transfer is finalised: {err:?}");
@@ -867,7 +976,10 @@ pub async fn initiate_fast_transfer(
         .near_get_fast_transfer_status(fast_transfer.id())
         .await
     {
-        Ok(Some(_)) => anyhow::bail!("Fast transfer is already finalised: {transfer:?}"),
+        Ok(Some(_)) => {
+            warn!("Fast transfer is already finalised, dropping: {transfer:?}");
+            return Ok(EventAction::Drop);
+        }
         Ok(None) => {}
         Err(err) => {
             warn!("Failed to check if fast transfer is finalised: {err:?}");
@@ -945,29 +1057,16 @@ pub async fn initiate_fast_transfer(
         .await
     {
         Ok(tx_hash) => {
-            info!("Fast transfer initiated successfully: {tx_hash:?}");
-            Ok(EventAction::Remove)
+            info!("Fast transfer initiated successfully: {tx_hash}");
+            Ok(utils::near::resolve_tx_action(
+                jsonrpc_client,
+                tx_hash,
+                fast_signer,
+                &["Request has timed out."],
+            )
+            .await)
         }
-        Err(err) => {
-            if let BridgeSdkError::NearRpcError(near_rpc_error) = err {
-                match near_rpc_error {
-                    NearRpcError::NonceError
-                    | NearRpcError::FinalizationError
-                    | NearRpcError::RpcBroadcastTxAsyncError(_)
-                    | NearRpcError::RpcQueryError(
-                        JsonRpcError::TransportError(_) | JsonRpcError::ServerError(_),
-                    )
-                    | NearRpcError::RpcTransactionError(_) => {
-                        warn!("Failed to initiate fast transfer, retrying: {near_rpc_error:?}");
-                        return Ok(EventAction::Retry);
-                    }
-                    _ => {
-                        anyhow::bail!("Failed to initiate fast transfer: {near_rpc_error:?}");
-                    }
-                };
-            }
-            anyhow::bail!("Failed to initiate fast transfer: {err:?}");
-        }
+        Err(err) => Err(err).context("Failed to initiate fast transfer"),
     }
 }
 

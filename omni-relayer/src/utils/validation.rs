@@ -40,7 +40,7 @@ pub(crate) async fn check_kyt_senders(
                 "KYT suggested STOP_RELAYING for senders {senders:?}, rejecting transfer {context}"
             );
             Metrics::global().record_preflight_rejection(rejection_reason::KYT_STOP, origin_chain);
-            Some(EventAction::Remove)
+            Some(EventAction::Drop)
         }
         Ok(kyt::SuggestedAction::None) => None,
         Err(err) => {
@@ -174,7 +174,7 @@ fn map_shield_decision(
 }
 
 /// Enforces the configured sender allowlist for `destination_chain`. Returns
-/// `Some(EventAction::Remove)` (and logs) if `sender` is not allowed to bridge
+/// `Some(EventAction::Drop)` (and logs) if `sender` is not allowed to bridge
 /// to `destination_chain`, otherwise `None`.
 pub(crate) fn enforce_sender_allowlist(
     config: &config::Config,
@@ -191,7 +191,7 @@ pub(crate) fn enforce_sender_allowlist(
     );
     Metrics::global()
         .record_preflight_rejection(rejection_reason::ALLOWLIST_DENIED, Some(sender.get_chain()));
-    Some(EventAction::Remove)
+    Some(EventAction::Drop)
 }
 
 /// Validates a transfer's sender before relaying: first the configured sender
