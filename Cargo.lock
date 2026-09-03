@@ -7036,6 +7036,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nats-replay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "clap",
+ "futures",
+ "serde_json",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "ndk-context"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

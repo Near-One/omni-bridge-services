@@ -4,6 +4,7 @@ members = [
     "omni-relayer",
     "omni-proxy",
     "wormhole-vaa-api",
+    "nats-replay",
 ]
 resolver = "2"
 
