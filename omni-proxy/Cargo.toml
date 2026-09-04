@@ -20,7 +20,7 @@ url = { version = "2.5.8", features = ["serde"] }
 pingora = { version = "0.8.1", features = ["proxy", "openssl"] }
 
 opentelemetry = { version = "0.27", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.27", features = ["metrics", "rt-tokio"] }
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["metrics", "http-proto", "reqwest-client"] }
 
 tracing = "0.1"
