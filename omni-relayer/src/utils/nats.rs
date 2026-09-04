@@ -30,7 +30,7 @@ impl NatsClient {
     #[cfg(feature = "nats-ingestion")]
     pub async fn omni_consumer(&self, config: &config::Nats) -> Result<consumer::PullConsumer> {
         self.jetstream
-            .create_consumer_strict_on_stream(
+            .create_consumer_on_stream(
                 consumer::pull::Config {
                     durable_name: Some(config.omni_consumer.name.clone()),
                     ack_policy: consumer::AckPolicy::Explicit,
