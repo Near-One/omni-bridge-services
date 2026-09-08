@@ -766,7 +766,7 @@ pub(super) async fn handle_transaction_event(
                             chain: destination_chain,
                             btc_pending_id: utxo_id.tx_hash.clone(),
                             sign_index,
-                            sender: sender.clone(),
+                            sender: OmniAddress::Near(sender.clone()),
                             creation_timestamp,
                         },
                     )

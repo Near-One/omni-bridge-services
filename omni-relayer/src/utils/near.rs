@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use near_crypto::{InMemorySigner, Signer};
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{hash::CryptoHash, types::AccountId};
-use omni_types::{ChainKind, near_events::OmniBridgeEvent};
+use omni_types::{ChainKind, OmniAddress, near_events::OmniBridgeEvent};
 
 use crate::{
     config,
@@ -183,7 +183,7 @@ pub fn extract_sign_transfer_event(
 pub fn extract_near_to_utxo(
     receipts: &[near_primitives::views::ExecutionOutcomeWithIdView],
     destination_chain: ChainKind,
-    sender: &AccountId,
+    sender: &OmniAddress,
 ) -> Vec<WorkerEvent> {
     const EVENT_JSON_PREFIX: &str = "EVENT_JSON:";
     const GENERATE_BTC_PENDING_INFO_EVENT: &str = "generate_btc_pending_info";

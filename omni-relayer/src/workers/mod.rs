@@ -216,7 +216,7 @@ pub enum Transfer {
         chain: ChainKind,
         btc_pending_id: String,
         sign_index: u64,
-        sender: AccountId,
+        sender: OmniAddress,
         #[serde(default)]
         creation_timestamp: i64,
     },
