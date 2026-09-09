@@ -310,6 +310,13 @@ impl Config {
         }
     }
 
+    pub fn fee_recipient(&self, signer: &AccountId) -> AccountId {
+        self.near
+            .fee_recipient
+            .clone()
+            .unwrap_or_else(|| signer.clone())
+    }
+
     pub fn is_sender_allowed(&self, sender: &OmniAddress, destination_chain: ChainKind) -> bool {
         sender_allowed(&self.allowlisted_senders, sender, destination_chain)
     }
@@ -445,6 +452,7 @@ pub struct Near {
     pub zcash: Option<AccountId>,
     pub omni_credentials_path: Option<String>,
     pub fast_credentials_path: Option<String>,
+    pub fee_recipient: Option<AccountId>,
     pub sign_without_checking_fee: Option<Vec<OmniAddress>>,
     #[serde(default)]
     pub fast_relayer_enabled: bool,

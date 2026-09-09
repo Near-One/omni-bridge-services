@@ -160,7 +160,7 @@ pub async fn process_transfer_event(
                 origin_chain: transfer_message.sender.get_chain(),
                 origin_nonce: transfer_message.origin_nonce,
             },
-            Some(signer.clone()),
+            Some(config.fee_recipient(&signer)),
             Some(transfer_message.fee.clone()),
             TransactionOptions {
                 nonce: Some(nonce),
@@ -464,7 +464,7 @@ pub async fn process_sign_transfer_event(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
     omni_connector: Arc<OmniConnector>,
-    signer: AccountId,
+    signer: &AccountId,
     omni_bridge_event: OmniBridgeEvent,
     evm_nonces: Arc<utils::nonce::EvmNonceManagers>,
 ) -> Result<EventAction> {
@@ -481,7 +481,7 @@ pub async fn process_sign_transfer_event(
         message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
     );
 
-    if message_payload.fee_recipient != Some(signer) {
+    if message_payload.fee_recipient != Some(config.fee_recipient(signer)) {
         warn!("Fee recipient mismatch, dropping: {omni_bridge_event:?}");
         return Ok(EventAction::Drop);
     }
