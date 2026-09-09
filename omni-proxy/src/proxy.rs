@@ -54,16 +54,6 @@ impl UpstreamHealth {
     fn is_degraded(&self, threshold: usize, window: Duration) -> bool {
         self.recent_failures(window) >= threshold
     }
-
-    fn snapshot_failures(&self) -> VecDeque<Instant> {
-        self.failures.lock().unwrap().clone()
-    }
-
-    fn from_failures(failures: VecDeque<Instant>) -> Self {
-        Self {
-            failures: Mutex::new(failures),
-        }
-    }
 }
 
 fn same_endpoint(a: &Upstream, b: &Upstream) -> bool {
@@ -76,11 +66,10 @@ fn same_endpoint(a: &Upstream, b: &Upstream) -> bool {
 struct RouteState {
     route: Route,
     route_label: Arc<str>,
-    health: Vec<UpstreamHealth>,
+    health: Vec<Arc<UpstreamHealth>>,
 }
 
 impl RouteState {
-    /// Carry over failure history for unchanged upstreams
     fn merge(route: Route, previous: Option<&RouteState>) -> Self {
         let route_label: Arc<str> = route.prefix().as_str().trim_start_matches('/').into();
         let health = route
@@ -94,9 +83,9 @@ impl RouteState {
                             .iter()
                             .zip(p.health.iter())
                             .find(|(old_up, _)| same_endpoint(old_up, new_up))
-                            .map(|(_, h)| h.snapshot_failures())
+                            .map(|(_, h)| Arc::clone(h))
                     })
-                    .map_or_else(UpstreamHealth::new, UpstreamHealth::from_failures)
+                    .unwrap_or_else(|| Arc::new(UpstreamHealth::new()))
             })
             .collect();
         Self {
@@ -863,6 +852,30 @@ upstreams = [{ url = "http://primary.example.com" }]
         );
         let merged = RouteState::merge(same_route, Some(&original));
         assert_eq!(merged.health[0].recent_failures(Duration::from_mins(1)), 2);
+    }
+
+    #[test]
+    fn test_merge_shares_health_object_for_unchanged_upstream() {
+        let route = route_from_toml(
+            r#"
+[[routes]]
+prefix = "/test"
+upstreams = [{ url = "http://primary.example.com" }]
+"#,
+        );
+        let original = RouteState::merge(route, None);
+
+        let same_route = route_from_toml(
+            r#"
+[[routes]]
+prefix = "/test"
+upstreams = [{ url = "http://primary.example.com" }]
+"#,
+        );
+        let merged = RouteState::merge(same_route, Some(&original));
+
+        original.health[0].record_failure();
+        assert_eq!(merged.health[0].recent_failures(Duration::from_mins(1)), 1);
     }
 
     #[test]
