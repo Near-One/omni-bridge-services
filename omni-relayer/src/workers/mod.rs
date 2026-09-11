@@ -1079,7 +1079,7 @@ async fn process_message(
                 config,
                 redis,
                 omni_connector.clone(),
-                signer.clone(),
+                &signer,
                 omni_bridge_event,
                 evm_nonces.clone(),
             )
@@ -1106,47 +1106,58 @@ async fn process_message(
         fin_transfer_event.log_context().record();
         let origin_chain = fin_transfer_event.origin_chain();
 
-        let result = match fin_transfer_event {
-            FinTransfer::Evm { .. } => {
-                evm::process_evm_transfer_event(
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce.clone(),
-                )
-                .await
-            }
-            FinTransfer::Solana { .. } => {
-                solana::process_fin_transfer_event(
-                    config,
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce.clone(),
-                )
-                .await
-            }
-            FinTransfer::Starknet { .. } => {
-                starknet::process_fin_transfer_event(
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce,
-                )
-                .await
-            }
-            FinTransfer::Aptos { .. } => {
-                aptos::process_fin_transfer_event(
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce,
-                )
-                .await
+        // `claim_fee` on the omni bridge can only be called by the fee
+        // recipient itself, so when fees go to a configured account other
+        // than the signer, claiming is left to that account.
+        let fee_recipient = config.fee_recipient(&signer);
+        let result = if fee_recipient != signer {
+            warn!(
+                "Skipping fee claim (fees go to {fee_recipient} instead of the signer), dropping: {fin_transfer_event:?}"
+            );
+            Ok(EventAction::Drop)
+        } else {
+            match fin_transfer_event {
+                FinTransfer::Evm { .. } => {
+                    evm::process_evm_transfer_event(
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce.clone(),
+                    )
+                    .await
+                }
+                FinTransfer::Solana { .. } => {
+                    solana::process_fin_transfer_event(
+                        config,
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce.clone(),
+                    )
+                    .await
+                }
+                FinTransfer::Starknet { .. } => {
+                    starknet::process_fin_transfer_event(
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce,
+                    )
+                    .await
+                }
+                FinTransfer::Aptos { .. } => {
+                    aptos::process_fin_transfer_event(
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce,
+                    )
+                    .await
+                }
             }
         };
         MessageResult {
