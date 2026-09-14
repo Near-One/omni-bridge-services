@@ -159,15 +159,6 @@ error_selectors_to_remove = [
 	"696e76616c696420666565" # Wormhole's "invalid fee"
 ]
 
-# Alerts on HyperCore transfers committed on the bridge that nobody submitted.
-# Uncomment only once HyperEVM runs `HlOmniBridgeWormhole`: on the current
-# contract these views do not exist and every poll reverts.
-# [hyperevm.pre_init_watchdog]
-# polling_interval_secs = 60
-# stale_after_secs = 900
-# Nonces re-checked on start, since the cursor is in memory [default: 100]
-# initial_lookback = 100
-
 # Optional
 # [hypercore]
 # api_url = "https://api.hyperliquid.xyz"

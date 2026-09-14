@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -380,18 +379,6 @@ pub fn register_workers_in_flight(semaphore: &Arc<Semaphore>, worker_count: usiz
             let in_flight = worker_count.saturating_sub(semaphore.available_permits());
             observer.observe(u64::try_from(in_flight).unwrap_or(u64::MAX), &[]);
         })
-        .build();
-}
-
-/// Registers the gauge for committed-but-unsubmitted `HyperCore` transfers.
-/// Above zero means funds are already debited with no `InitTransfer` behind
-/// them — most likely `PreInitTransfer` stopped reaching the relayer.
-pub fn register_hl_stale_pre_init_transfers(stale: &Arc<AtomicU64>) {
-    let stale = Arc::clone(stale);
-    opentelemetry::global::meter(SERVICE_NAME)
-        .u64_observable_gauge("relayer_hl_stale_pre_init_transfers")
-        .with_description("Committed HyperCore transfers pending past the watchdog threshold")
-        .with_callback(move |observer| observer.observe(stale.load(Ordering::Relaxed), &[]))
         .build();
 }
 
