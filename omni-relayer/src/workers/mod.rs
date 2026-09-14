@@ -172,8 +172,6 @@ pub enum Transfer {
         creation_timestamp: i64,
         expected_finalization_time: i64,
     },
-    /// The `PreInitTransfer` payload verbatim: the bridge re-hashes it, so
-    /// re-encoding any field turns into a `PayloadMismatch` revert.
     HyperEvmPreInit {
         origin_nonce: u64,
         token_address: Address,
