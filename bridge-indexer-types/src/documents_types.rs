@@ -39,7 +39,6 @@ pub enum OmniTransferStatus {
     Finalised,
     /// The transfer fee was claimed.
     Claimed,
-    Settled,
 }
 
 #[skip_serializing_none]
