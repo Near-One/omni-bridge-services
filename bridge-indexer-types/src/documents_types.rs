@@ -21,7 +21,8 @@ fn default_sol_chain_kind() -> ChainKind {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OmniTransferStatus {
-    /// Ordered first: it strictly precedes `Initialized` for the same transfer.
+    /// The transfer was initialized on `HyperCore`; its `InitTransfer` on
+    /// `HyperEVM` follows in a separate transaction.
     PreInitialized,
     /// The transfer was initialized on the sender's chain.
     Initialized,
