@@ -108,6 +108,9 @@ fn is_whitelisted_transaction_event(
         OmniTransferMessage::EvmInitTransferMessage(init_transfer) => config
             .bridge_indexer
             .is_token_whitelisted(&init_transfer.token),
+        OmniTransferMessage::HyperEvmPreInitTransfer(pre_init_transfer) => config
+            .bridge_indexer
+            .is_token_whitelisted(&pre_init_transfer.token),
         OmniTransferMessage::SolanaInitTransfer(init_transfer) => config
             .bridge_indexer
             .is_token_whitelisted(&init_transfer.token),
@@ -136,6 +139,8 @@ fn is_whitelisted_transaction_event(
         }
         OmniTransferMessage::NearClaimFeeEvent(_)
         | OmniTransferMessage::EvmFinTransferMessage(_)
+        | OmniTransferMessage::HyperCoreInitTransferMessage {}
+        | OmniTransferMessage::HyperCoreFinTransferMessage {}
         | OmniTransferMessage::SolanaFinTransfer(_)
         | OmniTransferMessage::StarknetFinTransfer(_)
         | OmniTransferMessage::AptosFinTransfer(_)
@@ -391,6 +396,66 @@ pub(super) async fn handle_transaction_event(
                 )
                 .await;
             }
+        }
+        OmniTransferMessage::HyperEvmPreInitTransfer(pre_init_transfer) => {
+            let OmniTransactionOrigin::EVMLog {
+                block_timestamp,
+                chain_kind,
+                log_index,
+                ..
+            } = origin
+            else {
+                anyhow::bail!("Expected EVMLog for HyperEvmPreInitTransfer: {pre_init_transfer:?}");
+            };
+
+            if chain_kind != ChainKind::HyperEvm {
+                anyhow::bail!("Unexpected chain for HyperEvmPreInitTransfer: {chain_kind:?}");
+            }
+
+            info!(
+                "Received HyperEvmPreInitTransfer ({chain_kind:?}:{}): {origin_transaction_id}",
+                pre_init_transfer.origin_nonce
+            );
+
+            let redis_key = evm_event_key(&origin_transaction_id, log_index);
+
+            let Ok(tx_hash) = TxHash::from_str(&origin_transaction_id) else {
+                anyhow::bail!("Failed to parse transaction_id as H256: {origin_transaction_id:?}");
+            };
+
+            let OmniAddress::HyperEvm(token) = pre_init_transfer.token else {
+                anyhow::bail!("Unexpected token address: {}", pre_init_transfer.token);
+            };
+
+            let OmniAddress::HyperEvm(sender) = pre_init_transfer.sender else {
+                anyhow::bail!("Unexpected sender address: {}", pre_init_transfer.sender);
+            };
+
+            let Ok(creation_timestamp) = i64::try_from(block_timestamp) else {
+                anyhow::bail!("Failed to parse block_timestamp as i64: {block_timestamp}");
+            };
+
+            add_event(
+                config,
+                redis_connection_manager,
+                nats,
+                &redis_key,
+                // The work this schedules runs on HyperEVM, not on NEAR.
+                ChainKind::HyperEvm,
+                workers::Transfer::HyperEvmPreInit {
+                    origin_nonce: pre_init_transfer.origin_nonce,
+                    token_address: Address(token.0.into()),
+                    sender: Address(sender.0.into()),
+                    core_nonce: pre_init_transfer.core_nonce,
+                    amount: near_sdk::json_types::U128(pre_init_transfer.amount.0),
+                    fee: near_sdk::json_types::U128(pre_init_transfer.fee.0),
+                    recipient: pre_init_transfer.recipient,
+                    message: pre_init_transfer.msg,
+                    tx_hash,
+                    creation_timestamp,
+                },
+            )
+            .await;
         }
         OmniTransferMessage::EvmFinTransferMessage(fin_transfer) => {
             let OmniTransactionOrigin::EVMLog {
@@ -943,7 +1008,10 @@ pub(super) async fn handle_transaction_event(
                 }
             }
         }
-        OmniTransferMessage::NearClaimFeeEvent(_)
+        // The HyperCore legs are indexer-side companions with no payload.
+        OmniTransferMessage::HyperCoreInitTransferMessage {}
+        | OmniTransferMessage::HyperCoreFinTransferMessage {}
+        | OmniTransferMessage::NearClaimFeeEvent(_)
         | OmniTransferMessage::NearFastTransferMessage { .. }
         | OmniTransferMessage::NearFailedTransferMessage { .. }
         | OmniTransferMessage::UtxoVerifyDeposit { .. }

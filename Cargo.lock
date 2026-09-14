@@ -1060,7 +1060,7 @@ dependencies = [
 [[package]]
 name = "aptos-bridge-client"
 version = "0.1.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "bcs",
  "ed25519-dalek 2.2.0",
@@ -2761,8 +2761,8 @@ dependencies = [
  "alloy",
  "aptos-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6425aee3e6bfa453722497410bb9ecfccf717f12)",
  "eth-proof 0.2.2 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6425aee3e6bfa453722497410bb9ecfccf717f12)",
- "evm-bridge-client 0.3.7 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6425aee3e6bfa453722497410bb9ecfccf717f12)",
- "hypercore-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6425aee3e6bfa453722497410bb9ecfccf717f12)",
+ "evm-bridge-client 0.3.7",
+ "hypercore-bridge-client 0.1.0",
  "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6425aee3e6bfa453722497410bb9ecfccf717f12)",
  "serde_json",
  "solana-bridge-client 0.3.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6425aee3e6bfa453722497410bb9ecfccf717f12)",
@@ -2775,20 +2775,20 @@ dependencies = [
 [[package]]
 name = "bridge-connector-common"
 version = "0.3.6"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "alloy",
- "aptos-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
- "eth-proof 0.2.2 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
- "evm-bridge-client 0.3.7 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
- "hypercore-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
- "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "aptos-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
+ "eth-proof 0.2.2 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
+ "evm-bridge-client 0.3.8",
+ "hypercore-bridge-client 0.2.0",
+ "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "serde_json",
- "solana-bridge-client 0.3.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "solana-bridge-client 0.3.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "solana-rpc-client-api 4.1.2",
- "starknet-bridge-client 0.1.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "starknet-bridge-client 0.1.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "thiserror 2.0.19",
- "utxo-bridge-client 0.2.8 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "utxo-bridge-client 0.2.8 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
 ]
 
 [[package]]
@@ -3799,7 +3799,7 @@ dependencies = [
 [[package]]
 name = "crypto-utils"
 version = "0.2.2"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "crypto-shared 0.1.0 (git+https://github.com/near-one/mpc?rev=463172481597ee09b12020b72c61d6b01da7b167)",
  "k256",
@@ -4542,7 +4542,7 @@ dependencies = [
 [[package]]
 name = "eth-proof"
 version = "0.2.2"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "borsh 1.8.0",
  "cita_trie",
@@ -4665,20 +4665,20 @@ dependencies = [
 
 [[package]]
 name = "evm-bridge-client"
-version = "0.3.7"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+version = "0.3.8"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "alloy",
  "borsh 1.8.0",
  "derive_builder",
- "eth-proof 0.2.2 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "eth-proof 0.2.2 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "ethereum-types 0.14.1",
  "hex",
  "near-crypto 0.34.7",
  "near-jsonrpc-client",
  "near-mpc-contract-interface",
  "near-primitives 0.34.7",
- "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "near-token",
  "omni-types",
  "serde_json",
@@ -5866,8 +5866,8 @@ dependencies = [
 
 [[package]]
 name = "hypercore-bridge-client"
-version = "0.1.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+version = "0.2.0"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "alloy",
  "hex",
@@ -6604,13 +6604,13 @@ dependencies = [
 [[package]]
 name = "light-client"
 version = "0.2.2"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "borsh 1.8.0",
- "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "derive_builder",
  "near-primitives 0.34.7",
- "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "near-token",
  "omni-types",
  "serde",
@@ -7060,13 +7060,13 @@ dependencies = [
 
 [[package]]
 name = "near-bridge-client"
-version = "0.2.31"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+version = "0.2.32"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "base64 0.21.7",
  "bitcoin",
  "borsh 1.8.0",
- "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "crypto-shared 0.1.0 (git+https://github.com/near/mpc_old?rev=0afee9004a1b1c3386940e60c28cff7cf1b5978c)",
  "derive_builder",
  "futures",
@@ -7075,7 +7075,7 @@ dependencies = [
  "near-crypto 0.34.7",
  "near-jsonrpc-client",
  "near-primitives 0.34.7",
- "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "near-sdk",
  "near-token",
  "omni-types",
@@ -7633,7 +7633,7 @@ dependencies = [
 [[package]]
 name = "near-rpc-client"
 version = "0.2.3"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "base64 0.22.1",
  "borsh 1.8.0",
@@ -8227,21 +8227,21 @@ dependencies = [
 
 [[package]]
 name = "omni-connector"
-version = "0.5.7"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+version = "0.5.8"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "alloy",
- "aptos-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "aptos-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "bitcoin",
  "borsh 1.8.0",
- "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "crypto-utils",
  "derive_builder",
- "eth-proof 0.2.2 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
- "evm-bridge-client 0.3.7 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "eth-proof 0.2.2 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
+ "evm-bridge-client 0.3.8",
  "futures",
  "hex",
- "hypercore-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "hypercore-bridge-client 0.2.0",
  "light-client",
  "near-bridge-client",
  "near-contract-standards",
@@ -8249,7 +8249,7 @@ dependencies = [
  "near-jsonrpc-client",
  "near-mpc-contract-interface",
  "near-primitives 0.34.7",
- "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "near-sdk",
  "near-token",
  "omni-types",
@@ -8260,14 +8260,14 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sha3 0.10.9",
- "solana-bridge-client 0.3.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "solana-bridge-client 0.3.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "solana-sdk",
  "starknet",
- "starknet-bridge-client 0.1.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "starknet-bridge-client 0.1.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "tracing",
- "utxo-bridge-client 0.2.8 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "utxo-bridge-client 0.2.8 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "utxo-utils",
- "wormhole-bridge-client 0.2.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "wormhole-bridge-client 0.2.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "zcash_address",
  "zcash_primitives",
  "zcash_protocol",
@@ -8308,19 +8308,19 @@ version = "0.6.40"
 dependencies = [
  "alloy",
  "anyhow",
- "aptos-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "aptos-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "async-nats",
  "base64 0.22.1",
  "borsh 1.8.0",
- "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "bridge-indexer-types",
  "chrono",
  "clap",
  "dotenv",
- "evm-bridge-client 0.3.7 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "evm-bridge-client 0.3.8",
  "futures",
  "hex",
- "hypercore-bridge-client 0.1.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "hypercore-bridge-client 0.2.0",
  "light-client",
  "mongodb",
  "near-bridge-client",
@@ -8329,7 +8329,7 @@ dependencies = [
  "near-jsonrpc-primitives",
  "near-lake-framework",
  "near-primitives 0.34.7",
- "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "near-sdk",
  "omni-connector",
  "omni-types",
@@ -8343,22 +8343,22 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "solana-bridge-client 0.3.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "solana-bridge-client 0.3.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "solana-client",
  "solana-rpc-client 4.1.2",
  "solana-rpc-client-api 4.1.2",
  "solana-sdk",
  "solana-transaction-status",
- "starknet-bridge-client 0.1.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "starknet-bridge-client 0.1.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "tokio",
  "tokio-stream",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "utxo-bridge-client 0.2.8 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "utxo-bridge-client 0.2.8 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "utxo-utils",
  "uuid 1.24.0",
- "wormhole-bridge-client 0.2.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "wormhole-bridge-client 0.2.0 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
 ]
 
 [[package]]
@@ -11791,7 +11791,7 @@ dependencies = [
 [[package]]
 name = "solana-bridge-client"
 version = "0.3.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "base64 0.22.1",
  "bincode",
@@ -15411,7 +15411,7 @@ dependencies = [
 [[package]]
 name = "starknet-bridge-client"
 version = "0.1.3"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "async-trait",
  "hex",
@@ -16802,7 +16802,7 @@ dependencies = [
 [[package]]
 name = "utxo-bridge-client"
 version = "0.2.8"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "bitcoin",
  "bitcoincore-rpc",
@@ -16811,7 +16811,7 @@ dependencies = [
  "minreq",
  "near-crypto 0.34.7",
  "near-primitives 0.34.7",
- "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "near-rpc-client 0.2.3 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -16825,7 +16825,7 @@ dependencies = [
 [[package]]
 name = "utxo-utils"
 version = "0.4.4"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
  "bitcoin",
  "k256",
@@ -17685,9 +17685,9 @@ dependencies = [
 [[package]]
 name = "wormhole-bridge-client"
 version = "0.2.0"
-source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896#f1f029841179d31165cfc1c55cb78854bedab896"
+source = "git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd#6cbf14216c88f13a6912fb983d9f8154bca014cd"
 dependencies = [
- "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=f1f029841179d31165cfc1c55cb78854bedab896)",
+ "bridge-connector-common 0.3.6 (git+https://github.com/Near-One/bridge-sdk-rs?rev=6cbf14216c88f13a6912fb983d9f8154bca014cd)",
  "derive_builder",
  "hex",
  "near-primitives 0.34.7",

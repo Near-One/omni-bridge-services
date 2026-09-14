@@ -310,6 +310,10 @@ impl Config {
         }
     }
 
+    pub fn hyperevm_pre_init_watchdog(&self) -> Option<&PreInitWatchdog> {
+        self.hyperevm.as_ref()?.pre_init_watchdog.as_ref()
+    }
+
     pub fn is_sender_allowed(&self, sender: &OmniAddress, destination_chain: ChainKind) -> bool {
         sender_allowed(&self.allowlisted_senders, sender, destination_chain)
     }
@@ -474,6 +478,24 @@ pub struct Evm {
     #[serde(default)]
     pub error_selectors_to_remove: Vec<String>,
     pub fee_bumping: Option<FeeBumping>,
+    /// `HyperEVM` only; see [`PreInitWatchdog`].
+    pub pre_init_watchdog: Option<PreInitWatchdog>,
+}
+
+/// Watches the bridge's commitment cursor on `HyperEVM`: an indexer pointed at a
+/// bloom-gated RPC stops delivering `PreInitTransfer` with no error anywhere,
+/// and contract state is what still shows those queued transfers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PreInitWatchdog {
+    pub polling_interval_secs: u64,
+    pub stale_after_secs: i64,
+    /// The scan cursor is in memory, so a restart rescans this many nonces.
+    #[serde(default = "default_pre_init_lookback")]
+    pub initial_lookback: u64,
+}
+
+const fn default_pre_init_lookback() -> u64 {
+    100
 }
 
 #[derive(Debug, Clone, Deserialize)]

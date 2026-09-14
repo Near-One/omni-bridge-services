@@ -412,6 +412,18 @@ async fn main() -> Result<()> {
         }));
     }
 
+    if config.hyperevm_pre_init_watchdog().is_some() {
+        let config = config.clone();
+        let omni_connector = omni_connector.clone();
+        handles.push(tokio::spawn(async move {
+            startup::hyperevm_pre_init_watchdog::start_hyperevm_pre_init_watchdog(
+                config,
+                omni_connector,
+            )
+            .await
+        }));
+    }
+
     for chain in [ChainKind::Btc, ChainKind::Zcash] {
         let Some(active_utxo_management) = config.active_utxo_management(chain).cloned() else {
             continue;

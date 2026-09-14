@@ -14,6 +14,7 @@ use omni_types::{
 use alloy::{
     primitives::{Address, TxHash},
     sol,
+    sol_types::SolError,
 };
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -60,6 +61,10 @@ sol!(
         uint8 decimals,
         uint8 originDecimals
     );
+
+    /// `triggerPendingInitTransfer` reverts that no retry can clear.
+    error NothingPending(uint64 originNonce);
+    error PayloadMismatch(uint64 originNonce);
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     event LogMessagePublished(
@@ -109,4 +114,33 @@ pub fn string_to_evm_omniaddress(chain_kind: ChainKind, address: &str) -> Result
             .map_err(|err| anyhow::anyhow!("Failed to parse as H160 address: {err:?}"))?,
     )
     .map_err(|err| anyhow::anyhow!("Failed to parse as EvmOmniAddress address: {err:?}"))
+}
+
+pub fn is_terminal_hl_revert(error: &str) -> bool {
+    [NothingPending::SELECTOR, PayloadMismatch::SELECTOR]
+        .iter()
+        .any(|selector| error.contains(&hex::encode(selector)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Drift against the Solidity sources is silent: the revert stops being
+    /// recognised and a doomed transfer retries until it ages out.
+    #[test]
+    fn hl_revert_signatures_match_the_contracts() {
+        assert_eq!(NothingPending::SIGNATURE, "NothingPending(uint64)");
+        assert_eq!(PayloadMismatch::SIGNATURE, "PayloadMismatch(uint64)");
+    }
+
+    #[test]
+    fn terminal_revert_is_matched_by_selector() {
+        let error = format!(
+            "execution reverted: 0x{}",
+            hex::encode(PayloadMismatch::SELECTOR)
+        );
+        assert!(is_terminal_hl_revert(&error));
+        assert!(!is_terminal_hl_revert("execution reverted: 0x8baa579f"));
+    }
 }

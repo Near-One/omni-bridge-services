@@ -24,6 +24,7 @@ pub mod active_utxo_manager;
 #[cfg(any(feature = "nats-ingestion", feature = "mongo-ingestion"))]
 mod event_handlers;
 pub mod evm_fee_bumping;
+pub mod hyperevm_pre_init_watchdog;
 #[cfg(feature = "mongo-ingestion")]
 pub mod mongo_ingestion;
 #[cfg(feature = "native-indexers")]
