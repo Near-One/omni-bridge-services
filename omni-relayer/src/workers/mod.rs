@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::types::DepositMsg;
-use alloy::primitives::TxHash;
+use alloy::primitives::{Address, TxHash};
 use anyhow::{Context, Result};
 use bridge_connector_common::result::BridgeSdkError;
 use near_jsonrpc_client::JsonRpcClient;
@@ -30,6 +30,7 @@ use crate::{config, utils};
 
 mod aptos;
 mod evm;
+mod hyperevm;
 mod near;
 mod solana;
 mod starknet;
@@ -171,6 +172,18 @@ pub enum Transfer {
         creation_timestamp: i64,
         expected_finalization_time: i64,
     },
+    HyperEvmPreInit {
+        origin_nonce: u64,
+        token_address: Address,
+        sender: Address,
+        core_nonce: u64,
+        amount: U128,
+        fee: U128,
+        recipient: String,
+        message: String,
+        tx_hash: TxHash,
+        creation_timestamp: i64,
+    },
     Solana {
         amount: U128,
         token: Pubkey,
@@ -262,6 +275,11 @@ impl Transfer {
                 origin_nonce: log.origin_nonce,
             }
             .into(),
+            Transfer::HyperEvmPreInit { origin_nonce, .. } => TransferId {
+                origin_chain: ChainKind::HyperEvm,
+                origin_nonce: *origin_nonce,
+            }
+            .into(),
             Transfer::Solana {
                 sender, sequence, ..
             } => TransferId {
@@ -302,6 +320,7 @@ impl Transfer {
                 transfer_message, ..
             } => transfer_message.get_transfer_id().origin_chain,
             Transfer::Evm { chain_kind, .. } => *chain_kind,
+            Transfer::HyperEvmPreInit { .. } => ChainKind::HyperEvm,
             Transfer::Solana { sender, .. } => sender.get_chain(),
             Transfer::Starknet { .. } => ChainKind::Strk,
             Transfer::Aptos { .. } => ChainKind::Aptos,
@@ -318,6 +337,9 @@ impl Transfer {
         let (kind, tx) = match self {
             Transfer::Near { .. } => ("Transfer::Near", None),
             Transfer::Evm { tx_hash, .. } => ("Transfer::Evm", Some(tx_hash.to_string())),
+            Transfer::HyperEvmPreInit { tx_hash, .. } => {
+                ("Transfer::HyperEvmPreInit", Some(tx_hash.to_string()))
+            }
             Transfer::Solana { .. } => ("Transfer::Solana", None),
             Transfer::Starknet { tx_hash, .. } => ("Transfer::Starknet", Some(tx_hash.clone())),
             Transfer::Aptos { tx_hash, .. } => ("Transfer::Aptos", Some(tx_hash.clone())),
@@ -875,6 +897,26 @@ async fn process_message(
                     action: result,
                     needs_evm_nonce_resync: false,
                     fee_key: owns_fee_key.then_some(fee_key),
+                    produced_events: Vec::new(),
+                    origin_chain,
+                }
+            }
+            Transfer::HyperEvmPreInit { .. } => {
+                // No fee key: the `InitTransfer` this submits comes back as
+                // `Transfer::Evm`, and that stage runs the fee check.
+                let result = hyperevm::process_pre_init_transfer_event(
+                    config,
+                    redis,
+                    omni_connector.clone(),
+                    transfer,
+                    evm_nonces.clone(),
+                )
+                .await;
+
+                MessageResult {
+                    action: result,
+                    needs_evm_nonce_resync: true,
+                    fee_key: None,
                     produced_events: Vec::new(),
                     origin_chain,
                 }
