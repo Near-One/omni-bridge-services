@@ -117,6 +117,8 @@ pub fn string_to_evm_omniaddress(chain_kind: ChainKind, address: &str) -> Result
 }
 
 pub fn is_terminal_hl_revert(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+
     [NothingPending::SELECTOR, PayloadMismatch::SELECTOR]
         .iter()
         .any(|selector| error.contains(&hex::encode(selector)))
@@ -141,6 +143,7 @@ mod tests {
             hex::encode(PayloadMismatch::SELECTOR)
         );
         assert!(is_terminal_hl_revert(&error));
+        assert!(is_terminal_hl_revert(&error.to_uppercase()));
         assert!(!is_terminal_hl_revert("execution reverted: 0x8baa579f"));
     }
 }
