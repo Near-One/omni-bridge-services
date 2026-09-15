@@ -21,9 +21,6 @@ fn default_sol_chain_kind() -> ChainKind {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OmniTransferStatus {
-    /// The transfer was initialized on `HyperCore`; its `InitTransfer` on
-    /// `HyperEVM` follows in a separate transaction.
-    PreInitialized,
     /// The transfer was initialized on the sender's chain.
     Initialized,
     /// The transfer was signed on NEAR using MPC.
@@ -176,7 +173,7 @@ pub struct NearSignTransferEvent {
 #[skip_serializing_none]
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct HyperEvmPreInitTransferMessage {
-    pub origin_nonce: u64,
+    pub origin_nonce: Nonce,
     pub token: OmniAddress,
     /// The actual user, unlike `InitTransfer`'s `sender` — the token contract.
     pub sender: OmniAddress,
