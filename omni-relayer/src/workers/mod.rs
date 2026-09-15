@@ -906,6 +906,7 @@ async fn process_message(
                 // `Transfer::Evm`, and that stage runs the fee check.
                 let result = hyperevm::process_pre_init_transfer_event(
                     config,
+                    redis,
                     omni_connector.clone(),
                     transfer,
                     evm_nonces.clone(),

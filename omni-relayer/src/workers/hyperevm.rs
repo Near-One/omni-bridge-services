@@ -5,8 +5,9 @@ use anyhow::{Context, Result};
 use bridge_connector_common::result::{BridgeSdkError, EthRpcError};
 use tracing::{info, warn};
 
+use near_sdk::json_types::U128;
 use omni_connector::{OmniConnector, PreInitTransferFilter};
-use omni_types::ChainKind;
+use omni_types::{ChainKind, Fee, OmniAddress, TransferId};
 
 use crate::{
     config,
@@ -20,6 +21,7 @@ use super::{EventAction, Transfer};
 /// re-enters the pipeline through the indexer as a `Transfer::Evm`.
 pub async fn process_pre_init_transfer_event(
     config: &config::Config,
+    redis_connection_manager: &mut redis::aio::ConnectionManager,
     omni_connector: Arc<OmniConnector>,
     transfer: Transfer,
     evm_nonces: Arc<utils::nonce::EvmNonceManagers>,
@@ -63,6 +65,57 @@ pub async fn process_pre_init_transfer_event(
             Metrics::global()
                 .record_stalled_retry(stall_reason::EVM_RPC, Some(ChainKind::HyperEvm));
             return Ok(EventAction::Retry);
+        }
+    }
+
+    if config.is_bridge_api_enabled() {
+        let Ok(sender) =
+            utils::evm::string_to_evm_omniaddress(ChainKind::HyperEvm, &sender.to_string())
+        else {
+            warn!("Failed to parse sender \"{sender}\" as `OmniAddress`, dropping");
+            return Ok(EventAction::Drop);
+        };
+
+        let Ok(token) =
+            utils::evm::string_to_evm_omniaddress(ChainKind::HyperEvm, &token_address.to_string())
+        else {
+            warn!("Failed to parse token \"{token_address}\" as `OmniAddress`, dropping");
+            return Ok(EventAction::Drop);
+        };
+
+        let Ok(recipient) = recipient.parse::<OmniAddress>() else {
+            warn!("Failed to parse recipient \"{recipient}\" as `OmniAddress`, dropping");
+            return Ok(EventAction::Drop);
+        };
+
+        let Ok(needed_fee) =
+            utils::bridge_api::TransferFee::get_transfer_fee(config, &sender, &recipient, &token)
+                .await
+        else {
+            warn!("Failed to get transfer fee for transfer: {transfer:?}");
+            return Ok(EventAction::Retry);
+        };
+
+        // The HyperCore callback has no value to pass, so `nativeFee` is always 0.
+        let provided_fee = Fee {
+            fee,
+            native_fee: U128(0),
+        };
+
+        if let Some(event_action) = needed_fee
+            .check_fee(
+                config,
+                redis_connection_manager,
+                &transfer,
+                TransferId {
+                    origin_chain: ChainKind::HyperEvm,
+                    origin_nonce,
+                },
+                &provided_fee,
+            )
+            .await
+        {
+            return Ok(event_action);
         }
     }
 
