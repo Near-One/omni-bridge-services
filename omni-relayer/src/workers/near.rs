@@ -285,10 +285,6 @@ pub async fn process_transfer_to_utxo_event(
         None
     };
 
-    let nonce = near_nonce
-        .reserve_nonce()
-        .context("Failed to reserve nonce for near transaction")?;
-
     let utxo_cfg = match destination_chain {
         ChainKind::Btc => config.btc.as_ref(),
         ChainKind::Zcash => config.zcash.as_ref(),
@@ -336,6 +332,10 @@ pub async fn process_transfer_to_utxo_event(
         Ok(selection) => {
             removed = utils::utxo::UtxoSet::take_outpoints(utxos_guard.as_mut(), &selection);
             drop(utxos_guard);
+
+            let nonce = near_nonce
+                .reserve_nonce()
+                .context("Failed to reserve nonce for near transaction")?;
 
             omni_connector
                 .near_submit_prepared_btc_transfer(

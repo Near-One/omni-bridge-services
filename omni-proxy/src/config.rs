@@ -206,6 +206,12 @@ impl Config {
         Ok(config)
     }
 
+    pub(crate) fn from_dynamic_value(value: serde_json::Value) -> Result<Self, ConfigError> {
+        let config: Self = serde_json::from_value(value)?;
+        config.validate()?;
+        Ok(config)
+    }
+
     fn validate(&self) -> Result<(), ConfigError> {
         let mut seen = HashSet::new();
         for route in &self.routes {
@@ -334,6 +340,73 @@ upstreams = [{ url = "https://b.example" }]
         assert!(matches!(
             config.validate(),
             Err(ConfigError::DuplicatePrefix(_))
+        ));
+    }
+
+    #[test]
+    fn test_from_dynamic_value_parses_like_toml() {
+        // Safe: tests run single-threaded; unique var for this test.
+        unsafe {
+            std::env::set_var("OP_DYNAMIC_TEST_KEY", "secret456");
+        }
+        let value = serde_json::json!({
+            "routes": [{
+                "prefix": "/x",
+                "upstreams": [{ "url": "https://host.example/${OP_DYNAMIC_TEST_KEY}", "timeout_ms": 500 }],
+                "failover": { "status_codes": [500], "rpc_codes": [-32000], "failure_threshold": 2, "window_secs": 30 },
+            }]
+        });
+        let config = Config::from_dynamic_value(value).expect("should parse and validate");
+        assert_eq!(config.routes.len(), 1);
+        let route = &config.routes[0];
+        assert!(route.upstreams()[0].url_path().ends_with("/secret456"));
+        assert_eq!(
+            route.upstreams()[0].timeout(),
+            Some(Duration::from_millis(500))
+        );
+        assert!(route.failover().is_failure_status(500));
+        assert!(route.failover().is_failure_rpc_code(-32000));
+    }
+
+    #[test]
+    fn test_from_dynamic_value_rejects_empty_upstreams() {
+        let value = serde_json::json!({
+            "routes": [{ "prefix": "/x", "upstreams": [] }]
+        });
+        assert!(matches!(
+            Config::from_dynamic_value(value),
+            Err(ConfigError::EmptyUpstreams(_))
+        ));
+    }
+
+    #[test]
+    fn test_from_dynamic_value_rejects_duplicate_prefix() {
+        let value = serde_json::json!({
+            "routes": [
+                { "prefix": "/x", "upstreams": [{ "url": "https://a.example" }] },
+                { "prefix": "/x", "upstreams": [{ "url": "https://b.example" }] },
+            ]
+        });
+        assert!(matches!(
+            Config::from_dynamic_value(value),
+            Err(ConfigError::DuplicatePrefix(_))
+        ));
+    }
+
+    #[test]
+    fn test_from_dynamic_value_rejects_invalid_prefix() {
+        let value = serde_json::json!({
+            "routes": [{ "prefix": "not-slash-prefixed", "upstreams": [{ "url": "https://a.example" }] }]
+        });
+        assert!(Config::from_dynamic_value(value).is_err());
+    }
+
+    #[test]
+    fn test_from_dynamic_value_rejects_malformed_shape() {
+        let value = serde_json::json!({ "routes": "not-an-array" });
+        assert!(matches!(
+            Config::from_dynamic_value(value),
+            Err(ConfigError::FailedToParseDynamicConfig(_))
         ));
     }
 

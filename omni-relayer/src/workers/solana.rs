@@ -51,6 +51,11 @@ pub async fn process_init_transfer_event(
         return Ok(EventAction::Drop);
     };
 
+    if token.to_string() == "6UtY9iTZMQQ5QZVrbzFnNaJntV7oySm9k97mvwnuZcxr" {
+        warn!("NEARKAT token is disabled due to fee-on-transfer mehanism: {transfer:?}");
+        return Ok(EventAction::Drop);
+    }
+
     let chain_kind = sender.get_chain();
 
     let transfer_id = TransferId {
