@@ -1106,14 +1106,9 @@ async fn process_message(
         fin_transfer_event.log_context().record();
         let origin_chain = fin_transfer_event.origin_chain();
 
-        // `claim_fee` on the omni bridge can only be called by the fee
-        // recipient itself (`OnlyFeeRecipientCanClaim`), so when fees go to a
-        // configured account other than the signer, the claim is handed to that
-        // account: `Remove`, not `Drop`, since the relayer did its part and a
-        // steady-state condition must not move the `dropped_terminal` baseline.
-        // Precondition (recipient is a trusted relayer) is validated at startup
-        // in `startup::validate_fee_recipient`, which also logs this once.
-        let result = if config.signer_claims_fees(&signer) {
+        // Only the fee recipient can call `claim_fee`; a different recipient
+        // claims on its own, so this is `Remove` (handed off), not `Drop`.
+        let result = if config.is_signer_claims_fees(&signer) {
             match fin_transfer_event {
                 FinTransfer::Evm { .. } => {
                     evm::process_evm_transfer_event(

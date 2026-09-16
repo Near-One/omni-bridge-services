@@ -333,19 +333,15 @@ fn build_light_client(config: &config::Config, chain: ChainKind) -> Result<Optio
         .transpose()
 }
 
-/// Refuses to boot when `near.fee_recipient` points at an account that could
-/// never claim the fees it is paid. `claim_fee` on the omni bridge requires the
-/// caller to be both the fee recipient (`OnlyFeeRecipientCanClaim`) and a
-/// trusted relayer (`#[trusted_relayer]`). With a plain treasury account as
-/// recipient the signer is blocked by the first check and the recipient by the
-/// second, so the fee sits in the contract and `locked_tokens` never settles.
+/// `claim_fee` requires the caller to be the fee recipient and a trusted
+/// relayer, so a non-trusted `near.fee_recipient` would leave fees unclaimable.
 pub async fn validate_fee_recipient(
     config: &config::Config,
     omni_connector: &OmniConnector,
 ) -> Result<()> {
     let near_bridge_client = omni_connector.near_bridge_client()?;
     let signer = near_bridge_client.account_id()?;
-    if config.signer_claims_fees(&signer) {
+    if config.is_signer_claims_fees(&signer) {
         return Ok(());
     }
 

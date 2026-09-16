@@ -316,11 +316,8 @@ impl Config {
         self.near.fee_recipient.as_ref().unwrap_or(signer)
     }
 
-    /// Whether this relayer's signer is allowed to call `claim_fee` for the
-    /// transfers it signs. The omni bridge only lets the fee recipient claim
-    /// (`OnlyFeeRecipientCanClaim`), so a different `near.fee_recipient` moves
-    /// claiming to that account.
-    pub fn signer_claims_fees(&self, signer: &AccountId) -> bool {
+    /// Only the fee recipient may call `claim_fee` (`OnlyFeeRecipientCanClaim`).
+    pub fn is_signer_claims_fees(&self, signer: &AccountId) -> bool {
         self.fee_recipient(signer) == signer
     }
 
