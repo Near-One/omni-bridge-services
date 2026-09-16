@@ -168,7 +168,12 @@ async fn screen_utxo_deposit(
     let rpc_url = match chain {
         ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
         ChainKind::Zcash => config.zcash.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
-        _ => anyhow::bail!("UtxoToNear transfer for unsupported chain {chain:?}"),
+        _ => {
+            // Reachable from event data, so it must not error: an `Err` is
+            // NAKed with backoff and redelivered until `max_message_age`.
+            warn!("Unsupported chain for UTXO, dropping: {chain:?}");
+            return Ok(Some(EventAction::Drop));
+        }
     }
     .with_context(|| format!("{chain:?} UTXO config missing for input screening"))?;
 
