@@ -160,7 +160,7 @@ pub async fn process_transfer_event(
                 origin_chain: transfer_message.sender.get_chain(),
                 origin_nonce: transfer_message.origin_nonce,
             },
-            Some(config.fee_recipient(&signer)),
+            Some(config.fee_recipient(&signer).clone()),
             Some(transfer_message.fee.clone()),
             TransactionOptions {
                 nonce: Some(nonce),
@@ -481,7 +481,17 @@ pub async fn process_sign_transfer_event(
         message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
     );
 
-    if message_payload.fee_recipient != Some(config.fee_recipient(signer)) {
+    // Both the signer and the configured `near.fee_recipient` are ours, so
+    // accept either: a transfer signed before `fee_recipient` was changed
+    // still carries the previous recipient and must still be finalized.
+    let is_our_fee_recipient = |fee_recipient: &AccountId| {
+        fee_recipient == signer || fee_recipient == config.fee_recipient(signer)
+    };
+    if !message_payload
+        .fee_recipient
+        .as_ref()
+        .is_some_and(is_our_fee_recipient)
+    {
         warn!("Fee recipient mismatch, dropping: {omni_bridge_event:?}");
         return Ok(EventAction::Drop);
     }

@@ -310,11 +310,18 @@ impl Config {
         }
     }
 
-    pub fn fee_recipient(&self, signer: &AccountId) -> AccountId {
-        self.near
-            .fee_recipient
-            .clone()
-            .unwrap_or_else(|| signer.clone())
+    /// Account that receives the fee for NEAR->foreign transfers signed by
+    /// this relayer: `near.fee_recipient` when set, otherwise the signer.
+    pub fn fee_recipient<'a>(&'a self, signer: &'a AccountId) -> &'a AccountId {
+        self.near.fee_recipient.as_ref().unwrap_or(signer)
+    }
+
+    /// Whether this relayer's signer is allowed to call `claim_fee` for the
+    /// transfers it signs. The omni bridge only lets the fee recipient claim
+    /// (`OnlyFeeRecipientCanClaim`), so a different `near.fee_recipient` moves
+    /// claiming to that account.
+    pub fn signer_claims_fees(&self, signer: &AccountId) -> bool {
+        self.fee_recipient(signer) == signer
     }
 
     pub fn is_sender_allowed(&self, sender: &OmniAddress, destination_chain: ChainKind) -> bool {

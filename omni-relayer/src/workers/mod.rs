@@ -13,7 +13,7 @@ use bridge_connector_common::result::BridgeSdkError;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;
-use tracing::{Instrument, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use near_sdk::json_types::U128;
 use sha2::{Digest, Sha256};
@@ -607,6 +607,15 @@ pub async fn process_events(
         .near_bridge_client()
         .and_then(near_bridge_client::NearBridgeClient::account_id)?;
 
+    if !config.signer_claims_fees(&signer) {
+        warn!(
+            "near.fee_recipient is set to {}: fees for signed NEAR->foreign transfers go there, \
+             and this relayer ({signer}) skips `claim_fee`; that account must claim fees itself \
+             and be storage-registered on the fee tokens",
+            config.fee_recipient(&signer)
+        );
+    }
+
     near_omni_nonce
         .resync_nonce()
         .await
@@ -1107,15 +1116,11 @@ async fn process_message(
         let origin_chain = fin_transfer_event.origin_chain();
 
         // `claim_fee` on the omni bridge can only be called by the fee
-        // recipient itself, so when fees go to a configured account other
-        // than the signer, claiming is left to that account.
-        let fee_recipient = config.fee_recipient(&signer);
-        let result = if fee_recipient != signer {
-            warn!(
-                "Skipping fee claim (fees go to {fee_recipient} instead of the signer), dropping: {fin_transfer_event:?}"
-            );
-            Ok(EventAction::Drop)
-        } else {
+        // recipient itself (`OnlyFeeRecipientCanClaim`), so when fees go to a
+        // configured account other than the signer, claiming is left to that
+        // account. Logged once at startup in `process_events`; per message this
+        // is a steady-state condition, hence `debug!`.
+        let result = if config.signer_claims_fees(&signer) {
             match fin_transfer_event {
                 FinTransfer::Evm { .. } => {
                     evm::process_evm_transfer_event(
@@ -1159,6 +1164,12 @@ async fn process_message(
                     .await
                 }
             }
+        } else {
+            debug!(
+                "Skipping fee claim (fees go to {} instead of the signer), dropping: {fin_transfer_event:?}",
+                config.fee_recipient(&signer)
+            );
+            Ok(EventAction::Drop)
         };
         MessageResult {
             action: result,
