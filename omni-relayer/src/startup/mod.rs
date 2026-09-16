@@ -341,7 +341,7 @@ pub async fn validate_fee_recipient(
 ) -> Result<()> {
     let near_bridge_client = omni_connector.near_bridge_client()?;
     let signer = near_bridge_client.account_id()?;
-    if config.is_signer_claims_fees(&signer) {
+    if config.is_signer_fee_recipient(&signer) {
         return Ok(());
     }
 

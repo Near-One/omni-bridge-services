@@ -1108,7 +1108,7 @@ async fn process_message(
 
         // Only the fee recipient can call `claim_fee`; a different recipient
         // claims on its own, so this is `Remove` (handed off), not `Drop`.
-        let result = if config.is_signer_claims_fees(&signer) {
+        let result = if config.is_signer_fee_recipient(&signer) {
             match fin_transfer_event {
                 FinTransfer::Evm { .. } => {
                     evm::process_evm_transfer_event(

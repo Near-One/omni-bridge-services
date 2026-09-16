@@ -317,7 +317,7 @@ impl Config {
     }
 
     /// Only the fee recipient may call `claim_fee` (`OnlyFeeRecipientCanClaim`).
-    pub fn is_signer_claims_fees(&self, signer: &AccountId) -> bool {
+    pub fn is_signer_fee_recipient(&self, signer: &AccountId) -> bool {
         self.fee_recipient(signer) == signer
     }
 
