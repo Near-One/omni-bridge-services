@@ -607,15 +607,6 @@ pub async fn process_events(
         .near_bridge_client()
         .and_then(near_bridge_client::NearBridgeClient::account_id)?;
 
-    if !config.signer_claims_fees(&signer) {
-        warn!(
-            "near.fee_recipient is set to {}: fees for signed NEAR->foreign transfers go there, \
-             and this relayer ({signer}) skips `claim_fee`; that account must claim fees itself \
-             and be storage-registered on the fee tokens",
-            config.fee_recipient(&signer)
-        );
-    }
-
     near_omni_nonce
         .resync_nonce()
         .await
@@ -1117,9 +1108,11 @@ async fn process_message(
 
         // `claim_fee` on the omni bridge can only be called by the fee
         // recipient itself (`OnlyFeeRecipientCanClaim`), so when fees go to a
-        // configured account other than the signer, claiming is left to that
-        // account. Logged once at startup in `process_events`; per message this
-        // is a steady-state condition, hence `debug!`.
+        // configured account other than the signer, the claim is handed to that
+        // account: `Remove`, not `Drop`, since the relayer did its part and a
+        // steady-state condition must not move the `dropped_terminal` baseline.
+        // Precondition (recipient is a trusted relayer) is validated at startup
+        // in `startup::validate_fee_recipient`, which also logs this once.
         let result = if config.signer_claims_fees(&signer) {
             match fin_transfer_event {
                 FinTransfer::Evm { .. } => {
@@ -1166,10 +1159,10 @@ async fn process_message(
             }
         } else {
             debug!(
-                "Skipping fee claim (fees go to {} instead of the signer), dropping: {fin_transfer_event:?}",
+                "Skipping fee claim (fees go to {} instead of the signer): {fin_transfer_event:?}",
                 config.fee_recipient(&signer)
             );
-            Ok(EventAction::Drop)
+            Ok(EventAction::Remove)
         };
         MessageResult {
             action: result,

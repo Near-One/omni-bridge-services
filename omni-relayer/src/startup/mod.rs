@@ -9,6 +9,7 @@ use hypercore_bridge_client::{
 use light_client::{LightClient, LightClientBuilder};
 use near_bridge_client::{NearBridgeClientBuilder, UTXOChainAccounts};
 use near_crypto::InMemorySigner;
+use near_rpc_client::ViewRequest;
 use omni_connector::{OmniConnector, OmniConnectorBuilder};
 use omni_types::{ChainKind, mpc_types::MpcFinality};
 use solana_bridge_client::{SolanaBridgeClient, SolanaBridgeClientBuilder, SvmSigner};
@@ -330,6 +331,56 @@ fn build_light_client(config: &config::Config, chain: ChainKind) -> Result<Optio
                 .context("Failed to build EthLightClient")
         })
         .transpose()
+}
+
+/// Refuses to boot when `near.fee_recipient` points at an account that could
+/// never claim the fees it is paid. `claim_fee` on the omni bridge requires the
+/// caller to be both the fee recipient (`OnlyFeeRecipientCanClaim`) and a
+/// trusted relayer (`#[trusted_relayer]`). With a plain treasury account as
+/// recipient the signer is blocked by the first check and the recipient by the
+/// second, so the fee sits in the contract and `locked_tokens` never settles.
+pub async fn validate_fee_recipient(
+    config: &config::Config,
+    omni_connector: &OmniConnector,
+) -> Result<()> {
+    let near_bridge_client = omni_connector.near_bridge_client()?;
+    let signer = near_bridge_client.account_id()?;
+    if config.signer_claims_fees(&signer) {
+        return Ok(());
+    }
+
+    let fee_recipient = config.fee_recipient(&signer);
+    let omni_bridge_id = near_bridge_client.omni_bridge_id()?;
+    let response = near_rpc_client::view(
+        near_bridge_client.endpoint()?,
+        ViewRequest {
+            contract_account_id: omni_bridge_id.clone(),
+            method_name: "is_trusted_relayer".to_string(),
+            args: serde_json::json!({ "account_id": fee_recipient }),
+        },
+    )
+    .await
+    .with_context(|| {
+        format!("Failed to check whether near.fee_recipient ({fee_recipient}) is a trusted relayer")
+    })?;
+    let is_trusted_relayer: bool = serde_json::from_slice(&response)
+        .context("Failed to parse `is_trusted_relayer` response")?;
+
+    anyhow::ensure!(
+        is_trusted_relayer,
+        "near.fee_recipient ({fee_recipient}) is not a trusted relayer on {omni_bridge_id}: \
+         only the fee recipient can call `claim_fee` and only trusted relayers may call it, \
+         so nobody could claim the fees and they would stay locked in the bridge contract"
+    );
+
+    warn!(
+        "near.fee_recipient is set to {fee_recipient} (verified trusted relayer): fees for \
+         NEAR->EVM/Solana/Starknet/Aptos transfers signed by {signer} go there, and this relayer \
+         skips `claim_fee`; {fee_recipient} must claim fees itself and be storage-registered on \
+         every token it receives fees in"
+    );
+
+    Ok(())
 }
 
 pub async fn build_omni_connector(

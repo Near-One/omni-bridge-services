@@ -459,6 +459,10 @@ pub struct Near {
     pub zcash: Option<AccountId>,
     pub omni_credentials_path: Option<String>,
     pub fast_credentials_path: Option<String>,
+    /// Fee recipient for NEAR->EVM/Solana/Starknet/Aptos transfers signed by
+    /// this relayer; defaults to the signer. Must be a trusted relayer on the
+    /// omni bridge (validated at startup) and storage-registered on the fee
+    /// tokens. Does not apply to NEAR->BTC/Zcash or foreign->NEAR fees.
     pub fee_recipient: Option<AccountId>,
     pub sign_without_checking_fee: Option<Vec<OmniAddress>>,
     #[serde(default)]
