@@ -8279,6 +8279,7 @@ name = "omni-proxy"
 version = "0.1.2"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
  "base64 0.22.1",
  "bytes",
@@ -8304,7 +8305,7 @@ dependencies = [
 
 [[package]]
 name = "omni-relayer"
-version = "0.6.40"
+version = "0.6.41"
 dependencies = [
  "alloy",
  "anyhow",

@@ -13,7 +13,7 @@ use bridge_connector_common::result::BridgeSdkError;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;
-use tracing::{Instrument, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use near_sdk::json_types::U128;
 use sha2::{Digest, Sha256};
@@ -1121,7 +1121,7 @@ async fn process_message(
                 config,
                 redis,
                 omni_connector.clone(),
-                signer.clone(),
+                &signer,
                 omni_bridge_event,
                 evm_nonces.clone(),
             )
@@ -1148,48 +1148,58 @@ async fn process_message(
         fin_transfer_event.log_context().record();
         let origin_chain = fin_transfer_event.origin_chain();
 
-        let result = match fin_transfer_event {
-            FinTransfer::Evm { .. } => {
-                evm::process_evm_transfer_event(
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce.clone(),
-                )
-                .await
+        // Only the fee recipient can call `claim_fee`; a different recipient
+        // claims on its own, so this is `Remove` (handed off), not `Drop`.
+        let result = if config.is_signer_fee_recipient(&signer) {
+            match fin_transfer_event {
+                FinTransfer::Evm { .. } => {
+                    evm::process_evm_transfer_event(
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce.clone(),
+                    )
+                    .await
+                }
+                FinTransfer::Solana { .. } => {
+                    solana::process_fin_transfer_event(
+                        config,
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce.clone(),
+                    )
+                    .await
+                }
+                FinTransfer::Starknet { .. } => {
+                    starknet::process_fin_transfer_event(
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce,
+                    )
+                    .await
+                }
+                FinTransfer::Aptos { .. } => {
+                    aptos::process_fin_transfer_event(
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce,
+                    )
+                    .await
+                }
             }
-            FinTransfer::Solana { .. } => {
-                solana::process_fin_transfer_event(
-                    config,
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce.clone(),
-                )
-                .await
-            }
-            FinTransfer::Starknet { .. } => {
-                starknet::process_fin_transfer_event(
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce,
-                )
-                .await
-            }
-            FinTransfer::Aptos { .. } => {
-                aptos::process_fin_transfer_event(
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce,
-                )
-                .await
-            }
+        } else {
+            debug!(
+                "Skipping fee claim (fees go to {} instead of the signer): {fin_transfer_event:?}",
+                config.fee_recipient(&signer)
+            );
+            Ok(EventAction::Remove)
         };
         MessageResult {
             action: result,
