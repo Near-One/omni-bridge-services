@@ -410,6 +410,50 @@ pub async fn process_utxo_to_near_init_transfer_event(
     }
 }
 
+const DUPLICATE_BROADCAST_MARKERS: [&str; 6] = [
+    "already in state",
+    "already in block chain",
+    "already in mempool",
+    "txn-already-in-mempool",
+    "txn-already-known",
+    "transaction already exists",
+];
+
+fn duplicate_broadcast_marker(err: &BridgeSdkError) -> Option<&'static str> {
+    let (BridgeSdkError::UtxoRpcError(msg) | BridgeSdkError::UtxoClientError(msg)) = err else {
+        return None;
+    };
+    let msg = msg.to_lowercase();
+    DUPLICATE_BROADCAST_MARKERS
+        .into_iter()
+        .find(|marker| msg.contains(marker))
+}
+
+async fn mark_near_to_utxo_signed(
+    config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
+    chain: ChainKind,
+    btc_pending_id: Option<&str>,
+) {
+    if config.utxo_sign_delay_secs(chain) == 0 {
+        return;
+    }
+    let Some(btc_pending_id) = btc_pending_id else {
+        return;
+    };
+
+    let signed_key = utils::redis::near_to_utxo_signed_key(btc_pending_id);
+    let now = chrono::Utc::now().timestamp().to_string();
+    utils::redis::set_with_ttl(
+        config,
+        redis,
+        &signed_key,
+        &now,
+        utils::redis::NEAR_TO_UTXO_SIGNED_TTL_SECS,
+    )
+    .await;
+}
+
 pub async fn process_sign_transaction_event(
     config: &config::Config,
     redis: &mut redis::aio::ConnectionManager,
@@ -448,24 +492,34 @@ pub async fn process_sign_transaction_event(
                 "Broadcast NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log}: btc_tx_hash={tx_hash}"
             );
 
-            if config.utxo_sign_delay_secs(chain) > 0
-                && let Some(btc_pending_id) = sign_utxo_transaction_event.btc_pending_id.as_deref()
-            {
-                let signed_key = utils::redis::near_to_utxo_signed_key(btc_pending_id);
-                let now = chrono::Utc::now().timestamp().to_string();
-                utils::redis::set_with_ttl(
-                    config,
-                    redis,
-                    &signed_key,
-                    &now,
-                    utils::redis::NEAR_TO_UTXO_SIGNED_TTL_SECS,
-                )
-                .await;
-            }
+            mark_near_to_utxo_signed(
+                config,
+                redis,
+                chain,
+                sign_utxo_transaction_event.btc_pending_id.as_deref(),
+            )
+            .await;
 
             Ok(EventAction::Remove)
         }
         Err(err) => {
+            // The node already has this transaction: an earlier broadcast of the
+            // same signed transaction landed. Retrying re-sends the same bytes
+            // and gets the same rejection forever, so treat it as relayed.
+            if let Some(marker) = duplicate_broadcast_marker(&err) {
+                info!(
+                    "NEAR->{chain:?} transfer ({btc_pending_id_log}) via near_sign_tx_hash={near_sign_tx_hash_log} was already broadcast (node reported \"{marker}\"), removing: {err:?}"
+                );
+                mark_near_to_utxo_signed(
+                    config,
+                    redis,
+                    chain,
+                    sign_utxo_transaction_event.btc_pending_id.as_deref(),
+                )
+                .await;
+                return Ok(EventAction::Remove);
+            }
+
             // The one stall whose `target_chain` the central classifier cannot
             // recover: this message's origin chain is NEAR, but what rejected
             // the broadcast is the BTC/Zcash node. Classify it here, as main did.
@@ -641,5 +695,70 @@ where
             warn!("Failed to defer {key} to LC poller, retrying: {err:?}");
             EventAction::Retry
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The exact text seen in production from Zebra when the NEAR->Zcash
+    /// transfer had already been broadcast.
+    const ZEBRA_ALREADY_IN_STATE: &str = "Failed to parse sendrawtransaction result: invalid type: null, expected a string. Response: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-25,\"message\":\"failed to validate tx: WtxId(\\\"private\\\"), error: transaction is already in state\"}}";
+
+    #[test]
+    fn zebra_already_in_state_is_a_duplicate() {
+        let err = BridgeSdkError::UtxoRpcError(ZEBRA_ALREADY_IN_STATE.to_string());
+        assert_eq!(duplicate_broadcast_marker(&err), Some("already in state"));
+    }
+
+    #[test]
+    fn bitcoin_core_duplicate_rejections_are_duplicates() {
+        for (msg, expected) in [
+            (
+                "Failed to parse sendrawtransaction result. Response: {\"error\":{\"code\":-27,\"message\":\"Transaction already in block chain\"}}",
+                "already in block chain",
+            ),
+            (
+                "sendrawtransaction failed: txn-already-in-mempool",
+                "txn-already-in-mempool",
+            ),
+            (
+                "sendrawtransaction failed: transaction already in mempool",
+                "already in mempool",
+            ),
+            (
+                "sendrawtransaction failed: txn-already-known",
+                "txn-already-known",
+            ),
+        ] {
+            let err = BridgeSdkError::UtxoRpcError(msg.to_string());
+            assert_eq!(duplicate_broadcast_marker(&err), Some(expected), "{msg}");
+        }
+    }
+
+    #[test]
+    fn client_error_variant_is_also_matched() {
+        let err = BridgeSdkError::UtxoClientError("transaction is already in state".to_string());
+        assert_eq!(duplicate_broadcast_marker(&err), Some("already in state"));
+    }
+
+    #[test]
+    fn transient_utxo_rpc_errors_are_not_duplicates() {
+        for msg in [
+            "Failed to send transaction: error sending request for url (http://node:8232/)",
+            "Failed to read sendrawtransaction response: operation timed out",
+            "Failed to parse sendrawtransaction result: invalid type: null, expected a string. Response: {\"error\":{\"code\":-26,\"message\":\"bad-txns-inputs-missingorspent\"}}",
+            "Failed to estimate fee_rate: None",
+        ] {
+            let err = BridgeSdkError::UtxoRpcError(msg.to_string());
+            assert_eq!(duplicate_broadcast_marker(&err), None, "{msg}");
+        }
+    }
+
+    #[test]
+    fn non_utxo_errors_are_not_duplicates() {
+        let err = BridgeSdkError::UnknownError("transaction is already in state".to_string());
+        assert_eq!(duplicate_broadcast_marker(&err), None);
     }
 }
