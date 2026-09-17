@@ -420,9 +420,8 @@ const DUPLICATE_BROADCAST_MARKERS: [&str; 6] = [
 ];
 
 fn duplicate_broadcast_marker(err: &BridgeSdkError) -> Option<&'static str> {
-    let msg = match err {
-        BridgeSdkError::UtxoRpcError(msg) | BridgeSdkError::UtxoClientError(msg) => msg,
-        _ => return None,
+    let (BridgeSdkError::UtxoRpcError(msg) | BridgeSdkError::UtxoClientError(msg)) = err else {
+        return None;
     };
     let msg = msg.to_lowercase();
     DUPLICATE_BROADCAST_MARKERS
