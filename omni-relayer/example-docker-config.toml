@@ -53,6 +53,10 @@ zcash = "nzcash.n-bridge.testnet"
 # Note: the path must be absolute
 # omni_credentials_path = "/Users/username/.near-credentials/testnet/omni-relayer.testnet.json"
 # fast_credentials_path = "/Users/username/.near-credentials/testnet/fast-relayer.testnet.json"
+# Account that receives fees for NEAR->foreign transfers; defaults to the signer account.
+# Note: fees for foreign->NEAR transfers always go to the signer, and when this is set
+# to another account the relayer skips `claim_fee` (only the fee recipient can claim).
+# fee_recipient = "fees.testnet"
 # We won't check fee before signing transfer if account id matches on in array
 sign_without_checking_fee = ["near:aurora"]
 # To enable fast relayer, uncomment the line below
