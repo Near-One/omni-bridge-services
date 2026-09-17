@@ -63,8 +63,9 @@ sol!(
     );
 
     /// `triggerPendingInitTransfer` reverts that no retry can clear.
-    error NothingPending(uint64 originNonce);
+    error NoPendingInitTransfer(uint64 originNonce);
     error PayloadMismatch(uint64 originNonce);
+    error InvalidFee();
 
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     event LogMessagePublished(
@@ -119,9 +120,13 @@ pub fn string_to_evm_omniaddress(chain_kind: ChainKind, address: &str) -> Result
 pub fn is_terminal_hl_revert(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
 
-    [NothingPending::SELECTOR, PayloadMismatch::SELECTOR]
-        .iter()
-        .any(|selector| error.contains(&hex::encode(selector)))
+    [
+        NoPendingInitTransfer::SELECTOR,
+        PayloadMismatch::SELECTOR,
+        InvalidFee::SELECTOR,
+    ]
+    .iter()
+    .any(|selector| error.contains(&hex::encode(selector)))
 }
 
 #[cfg(test)]
@@ -132,8 +137,12 @@ mod tests {
     /// recognised and a doomed transfer retries until it ages out.
     #[test]
     fn hl_revert_signatures_match_the_contracts() {
-        assert_eq!(NothingPending::SIGNATURE, "NothingPending(uint64)");
+        assert_eq!(
+            NoPendingInitTransfer::SIGNATURE,
+            "NoPendingInitTransfer(uint64)"
+        );
         assert_eq!(PayloadMismatch::SIGNATURE, "PayloadMismatch(uint64)");
+        assert_eq!(InvalidFee::SIGNATURE, "InvalidFee()");
     }
 
     #[test]
