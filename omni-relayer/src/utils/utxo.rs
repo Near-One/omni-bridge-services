@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use omni_connector::{BtcTransferSelection, BtcTxType, OmniConnector};
+use omni_connector::{BtcTransferDraft, BtcTxType, OmniConnector};
 use omni_types::{ChainKind, OmniAddress};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ impl ChainSlot {
 /// separate mutex per chain. Each chain also tracks a `dirty` flag: the
 /// LC poller marks it on tip advance, and the next `lock` caller pays
 /// for the contract RPC before being handed the guard. Submitters hold
-/// the lock only across selection (see `lock`), drain the selected
+/// the lock only across input selection (see `lock`), drain the selected
 /// outpoints with `take_outpoints`, drop the lock, and restore via
 /// `restore_outpoints` if the downstream submit fails.
 pub struct UtxoSet {
@@ -79,8 +79,9 @@ impl UtxoSet {
     /// hands back the guard with whatever was cached — the next caller
     /// retries.
     ///
-    /// Hold the guard across `near_select_btc_utxos` only; drop it
-    /// before the (slow) submit call.
+    /// Hold the guard across `near_select_btc_utxos_draft` only; drop it
+    /// before building the chain-specific data and submitting, both of
+    /// which are slow and need no access to the pool.
     pub async fn lock(
         &self,
         omni_connector: &OmniConnector,
@@ -117,7 +118,7 @@ impl UtxoSet {
             .with_context(|| format!("Failed to fetch UTXOs for {chain:?}"))
     }
 
-    /// Remove every outpoint in `selection` from the locked chain cache,
+    /// Remove every outpoint in `draft` from the locked chain cache,
     /// returning the removed entries so the caller can restore them via
     /// `restore_outpoints` if the downstream submit fails. A `None` guard
     /// or entries missing from the cache are silently skipped — the SDK
@@ -125,12 +126,12 @@ impl UtxoSet {
     /// query when our cache snapshot was empty.
     pub fn take_outpoints(
         guard: Option<&mut MutexGuard<'_, HashMap<String, UTXO>>>,
-        selection: &BtcTransferSelection,
+        draft: &BtcTransferDraft,
     ) -> Vec<(String, UTXO)> {
         let Some(guard) = guard else {
             return Vec::new();
         };
-        selection
+        draft
             .out_points
             .iter()
             .filter_map(|op| {
