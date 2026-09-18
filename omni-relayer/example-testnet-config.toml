@@ -67,6 +67,12 @@ sign_without_checking_fee = ["near:aurora"]
 # sender = "near:frolik.near"
 # destination_chain = "HlEvm"
 
+# Kill switch: transfers matching any of these are dropped instead of relayed.
+# [disabled_transfers]
+# source_chains = ["Sol"]
+# destination_chains = ["HlEvm"]
+# tokens = ["near:usdc.near"]
+
 [eth]
 rpc_http_url = "https://sepolia.infura.io/v3/INFURA_API_KEY"
 rpc_ws_url = "wss://sepolia.infura.io/ws/v3/INFURA_API_KEY"

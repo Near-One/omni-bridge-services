@@ -90,12 +90,18 @@ pub async fn process_init_transfer_event(
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
 
+    let Ok(token) = OmniAddress::new_from_slice(chain_kind, &token.to_bytes()) else {
+        warn!("Failed to parse token \"{token}\" as `OmniAddress`, dropping");
+        return Ok(EventAction::Drop);
+    };
+
     let context = format!(
         "({:?}:{})",
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
     if let Some(action) =
-        utils::validation::validate_sender(config, sender, ChainKind::Near, &context).await
+        utils::validation::validate_sender(config, sender, ChainKind::Near, Some(&token), &context)
+            .await
     {
         return Ok(action);
     }
@@ -116,11 +122,6 @@ pub async fn process_init_transfer_event(
     }
 
     if config.is_bridge_api_enabled() {
-        let Ok(token) = OmniAddress::new_from_slice(chain_kind, &token.to_bytes()) else {
-            warn!("Failed to parse token \"{token}\" as `OmniAddress`, dropping");
-            return Ok(EventAction::Drop);
-        };
-
         let Ok(needed_fee) =
             utils::bridge_api::TransferFee::get_transfer_fee(config, sender, recipient, &token)
                 .await

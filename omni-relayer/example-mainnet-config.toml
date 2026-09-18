@@ -67,6 +67,12 @@ sign_without_checking_fee = ["near:aurora"]
 # sender = "near:frolik.near"
 # destination_chain = "HlEvm"
 
+# Kill switch: transfers matching any of these are dropped instead of relayed.
+# [disabled_transfers]
+# source_chains = ["Sol"]
+# destination_chains = ["HlEvm"]
+# tokens = ["near:usdc.near"]
+
 # KYT (Know Your Transaction) checks are enabled by setting KYT_API_URL and
 # KYT_API_KEY environment variables.
 [kyt]

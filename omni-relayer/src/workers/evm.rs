@@ -78,9 +78,20 @@ pub async fn process_init_transfer_event(
         return Ok(EventAction::Drop);
     };
 
+    let Ok(token) =
+        utils::evm::string_to_evm_omniaddress(chain_kind, &log.token_address.to_string())
+    else {
+        warn!(
+            "Failed to parse token \"{}\" as `OmniAddress`, dropping",
+            log.token_address
+        );
+        return Ok(EventAction::Drop);
+    };
+
     let context = format!("({chain_kind:?}:{})", log.origin_nonce);
     if let Some(action) =
-        utils::validation::validate_sender(config, &sender, ChainKind::Near, &context).await
+        utils::validation::validate_sender(config, &sender, ChainKind::Near, Some(&token), &context)
+            .await
     {
         return Ok(action);
     }
@@ -101,16 +112,6 @@ pub async fn process_init_transfer_event(
     }
 
     if config.is_bridge_api_enabled() {
-        let Ok(token) =
-            utils::evm::string_to_evm_omniaddress(chain_kind, &log.token_address.to_string())
-        else {
-            warn!(
-                "Failed to parse token \"{}\" as `OmniAddress`, dropping",
-                log.token_address
-            );
-            return Ok(EventAction::Drop);
-        };
-
         let Ok(needed_fee) = utils::bridge_api::TransferFee::get_transfer_fee(
             config,
             &sender,

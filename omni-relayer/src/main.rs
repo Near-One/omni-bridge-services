@@ -123,6 +123,17 @@ async fn main() -> Result<()> {
         }
     }
 
+    if config.disabled_transfers.is_empty() {
+        info!("No transfers disabled by config");
+    } else {
+        warn!(
+            "Transfers disabled by config: source chains {:?}, destination chains {:?}, tokens {:?}",
+            config.disabled_transfers.source_chains,
+            config.disabled_transfers.destination_chains,
+            config.disabled_transfers.tokens
+        );
+    }
+
     let restricted_destinations = config.restricted_destination_chains();
     if restricted_destinations.is_empty() {
         info!("Sender allowlist inactive (all senders allowed)");

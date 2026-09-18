@@ -140,6 +140,66 @@ pub struct Config {
     /// to that chain; destination chains with no entry stay unrestricted.
     #[serde(default)]
     pub allowlisted_senders: Vec<AllowlistedSender>,
+    /// Kill switch: transfers matching any of these are not relayed.
+    #[serde(default)]
+    pub disabled_transfers: DisabledTransfers,
+}
+
+/// Transfers to drop instead of relaying, matched on origin chain, destination
+/// chain, or token. Everything empty (the default) disables nothing.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DisabledTransfers {
+    /// Origin chains whose outgoing transfers are dropped.
+    #[serde(default)]
+    pub source_chains: Vec<ChainKind>,
+    /// Destination chains whose incoming transfers are dropped.
+    #[serde(default)]
+    pub destination_chains: Vec<ChainKind>,
+    /// Tokens dropped in either direction, as the token address on its own
+    /// chain (e.g. `near:usdc.near`, `eth:0x...`, `sol:6UtY...`).
+    #[serde(default)]
+    pub tokens: Vec<OmniAddress>,
+}
+
+/// Why a transfer is disabled, for logs and metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisabledReason {
+    SourceChain,
+    DestinationChain,
+    Token,
+}
+
+impl DisabledTransfers {
+    pub fn is_empty(&self) -> bool {
+        self.source_chains.is_empty()
+            && self.destination_chains.is_empty()
+            && self.tokens.is_empty()
+    }
+
+    pub fn has_disabled_tokens(&self) -> bool {
+        !self.tokens.is_empty()
+    }
+
+    /// `None` if the transfer may be relayed, otherwise the matched rule.
+    /// `token` may be `None` when the caller cannot resolve it (only the chain
+    /// rules are then applied).
+    pub fn check(
+        &self,
+        source_chain: ChainKind,
+        destination_chain: ChainKind,
+        token: Option<&OmniAddress>,
+    ) -> Option<DisabledReason> {
+        if self.source_chains.contains(&source_chain) {
+            return Some(DisabledReason::SourceChain);
+        }
+        if self.destination_chains.contains(&destination_chain) {
+            return Some(DisabledReason::DestinationChain);
+        }
+        if token.is_some_and(|token| self.tokens.contains(token)) {
+            return Some(DisabledReason::Token);
+        }
+        None
+    }
 }
 
 /// A single allowlist entry: `sender` is permitted to bridge to
@@ -327,6 +387,17 @@ impl Config {
 
     pub fn is_destination_restricted(&self, destination_chain: ChainKind) -> bool {
         destination_is_restricted(&self.allowlisted_senders, destination_chain)
+    }
+
+    /// `None` if the transfer may be relayed, otherwise the rule disabling it.
+    pub fn check_transfer_disabled(
+        &self,
+        source_chain: ChainKind,
+        destination_chain: ChainKind,
+        token: Option<&OmniAddress>,
+    ) -> Option<DisabledReason> {
+        self.disabled_transfers
+            .check(source_chain, destination_chain, token)
     }
 
     pub fn restricted_destination_chains(&self) -> BTreeSet<ChainKind> {
@@ -736,6 +807,81 @@ mod tests {
         assert!(destination_is_restricted(&allowlist, ChainKind::HyperEvm));
         assert!(!destination_is_restricted(&allowlist, ChainKind::Near));
         assert!(!destination_is_restricted(&[], ChainKind::HyperEvm));
+    }
+
+    #[test]
+    fn empty_disabled_transfers_disables_nothing() {
+        let disabled = DisabledTransfers::default();
+        assert!(disabled.is_empty());
+        assert!(
+            disabled
+                .check(ChainKind::Eth, ChainKind::Near, Some(&eth_sender(1)))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn disabled_source_destination_and_token_are_matched() {
+        let disabled = DisabledTransfers {
+            source_chains: vec![ChainKind::Sol],
+            destination_chains: vec![ChainKind::HyperEvm],
+            tokens: vec![eth_sender(7)],
+        };
+
+        assert_eq!(
+            disabled.check(ChainKind::Sol, ChainKind::Near, None),
+            Some(DisabledReason::SourceChain)
+        );
+        assert_eq!(
+            disabled.check(ChainKind::Near, ChainKind::HyperEvm, None),
+            Some(DisabledReason::DestinationChain)
+        );
+        assert_eq!(
+            disabled.check(ChainKind::Eth, ChainKind::Near, Some(&eth_sender(7))),
+            Some(DisabledReason::Token)
+        );
+        // Unrelated route and token stay enabled, and an unknown token only
+        // skips the token rule.
+        assert!(
+            disabled
+                .check(ChainKind::Eth, ChainKind::Near, Some(&eth_sender(8)))
+                .is_none()
+        );
+        assert!(
+            disabled
+                .check(ChainKind::Eth, ChainKind::Near, None)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn disabled_transfers_deserializes_from_toml() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default)]
+            disabled_transfers: DisabledTransfers,
+        }
+
+        let parsed: Wrapper = toml::from_str(
+            "[disabled_transfers]\nsource_chains = [\"Sol\"]\ndestination_chains = [\"HlEvm\"]\ntokens = [\"near:usdc.near\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.disabled_transfers.source_chains,
+            vec![ChainKind::Sol]
+        );
+        assert_eq!(
+            parsed.disabled_transfers.destination_chains,
+            vec![ChainKind::HyperEvm]
+        );
+        assert_eq!(
+            parsed.disabled_transfers.tokens,
+            vec![near_sender("usdc.near")]
+        );
+
+        // Omitted section => nothing disabled.
+        let empty: Wrapper = toml::from_str("").unwrap();
+        assert!(empty.disabled_transfers.is_empty());
     }
 
     #[test]

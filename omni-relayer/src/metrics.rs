@@ -127,6 +127,12 @@ pub mod rejection_reason {
     pub const KYT_UNAVAILABLE: &str = "kyt_unavailable";
     /// The sender is not on the allowlist for this destination chain.
     pub const ALLOWLIST_DENIED: &str = "allowlist_denied";
+    /// The transfer's origin chain is disabled in config.
+    pub const DISABLED_SOURCE_CHAIN: &str = "disabled_source_chain";
+    /// The transfer's destination chain is disabled in config.
+    pub const DISABLED_DESTINATION_CHAIN: &str = "disabled_destination_chain";
+    /// The transfer's token is disabled in config.
+    pub const DISABLED_TOKEN: &str = "disabled_token";
     /// The transfer carried no fee at all; dropped.
     pub const NO_FEE: &str = "no_fee";
     /// The fee does not cover the relay cost; parked for retry. This is the
