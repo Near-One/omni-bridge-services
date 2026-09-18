@@ -13,12 +13,25 @@ pub const NEAR_TO_UTXO_SIGNED_PREFIX: &str = "near_to_utxo_signed";
 
 pub const NEAR_TO_UTXO_SIGNED_TTL_SECS: u64 = 86_400;
 
+/// Per-input progress marker for a batched NEAR->UTXO sign. Set once the
+/// receipt for that input resolves, so a redelivered batch resumes instead of
+/// re-signing inputs the contract has already handled.
+pub const NEAR_TO_UTXO_SIGN_INDEX_PREFIX: &str = "near_to_utxo_sign_index";
+
 pub fn composite_key(parts: &[&str]) -> String {
     parts.join(":")
 }
 
 pub fn near_to_utxo_signed_key(btc_pending_id: &str) -> String {
     composite_key(&[NEAR_TO_UTXO_SIGNED_PREFIX, btc_pending_id])
+}
+
+pub fn near_to_utxo_sign_index_key(btc_pending_id: &str, sign_index: u64) -> String {
+    composite_key(&[
+        NEAR_TO_UTXO_SIGN_INDEX_PREFIX,
+        btc_pending_id,
+        &sign_index.to_string(),
+    ])
 }
 
 pub async fn get_fee(

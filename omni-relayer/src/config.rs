@@ -247,6 +247,28 @@ impl Config {
         config.map_or(0, |utxo| utxo.sign_delay_secs)
     }
 
+    pub fn utxo_batch_sign(&self, chain: ChainKind) -> bool {
+        let config = match chain {
+            ChainKind::Btc => self.btc.as_ref(),
+            ChainKind::Zcash => self.zcash.as_ref(),
+            ChainKind::Near
+            | ChainKind::Eth
+            | ChainKind::Base
+            | ChainKind::Arb
+            | ChainKind::Bnb
+            | ChainKind::Pol
+            | ChainKind::HyperEvm
+            | ChainKind::Abs
+            | ChainKind::Sol
+            | ChainKind::Fogo
+            | ChainKind::Strk
+            | ChainKind::Aptos => {
+                panic!("Batched signing is not applicable for {chain:?}")
+            }
+        };
+        config.is_some_and(|utxo| utxo.batch_sign)
+    }
+
     pub fn active_utxo_management(&self, chain: ChainKind) -> Option<&ActiveUtxoManagement> {
         let config = match chain {
             ChainKind::Btc => self.btc.as_ref(),
@@ -560,6 +582,11 @@ pub struct Utxo {
     pub lc_polling_interval_secs: u64,
     #[serde(default)]
     pub sign_delay_secs: u64,
+    /// Emit one work item per pending UTXO transaction instead of one per
+    /// selected input. Every relayer instance consuming the same stream must
+    /// run a build that understands batched items before this is enabled.
+    #[serde(default)]
+    pub batch_sign: bool,
     #[serde(default)]
     pub active_utxo_management: Option<ActiveUtxoManagement>,
     /// Percent of the user's `max_gas_fee` actually offered to the UTXO

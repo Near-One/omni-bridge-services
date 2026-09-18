@@ -36,6 +36,29 @@ pub struct ConfirmedTxHash {
     pub btc_tx_hash: String,
 }
 
+/// Contract failures that a later attempt on the same input can clear.
+const SIGN_RETRYABLE_ERRORS: [&str; 4] = [
+    "Request has timed out.",
+    // Matches `UTXO <key> not exist`, which a later attempt can clear.
+    // `BTC pending info not exist` is excluded by `TERMINAL_FAILURE_OVERRIDES`
+    // in `utils::near` and drops instead.
+    "not exist",
+    "Previous btc tx has not been signed",
+    "Too many pending sign transactions",
+];
+
+/// Signs the inputs of one pending NEAR->UTXO transaction.
+///
+/// A batched work item (`sign_count = Some(n)`) walks inputs
+/// `sign_index..sign_index + n` in order inside this one task, so a transfer
+/// that consumes twenty inputs holds one worker permit instead of twenty, and
+/// its inputs no longer race each other into the contract's sign ordering
+/// check. A legacy item (`sign_count = None`) signs exactly one input, so items
+/// already on the stream keep working.
+///
+/// Progress is recorded per input in Redis. A redelivery resumes at the first
+/// unsigned input rather than re-signing the whole transaction.
+#[allow(clippy::too_many_lines)]
 pub async fn process_near_to_utxo_init_transfer_event(
     config: &config::Config,
     redis: &mut redis::aio::ConnectionManager,
@@ -49,6 +72,7 @@ pub async fn process_near_to_utxo_init_transfer_event(
         chain,
         btc_pending_id,
         sign_index,
+        sign_count,
         sender,
         creation_timestamp,
     } = transfer
@@ -57,10 +81,15 @@ pub async fn process_near_to_utxo_init_transfer_event(
         return Ok(EventAction::Drop);
     };
 
+    let sign_indices = sign_index_range(sign_index, sign_count);
+    let context = format!(
+        "({btc_pending_id}:{}..={})",
+        sign_indices.start,
+        sign_indices.end - 1
+    );
+
     if !config.is_signing_utxo_transaction_enabled(chain) {
-        info!(
-            "Signing NEAR->{chain:?} disabled by config ({btc_pending_id}:{sign_index}), skipping"
-        );
+        info!("Signing NEAR->{chain:?} disabled by config {context}, skipping");
         return Ok(EventAction::Drop);
     }
 
@@ -73,7 +102,6 @@ pub async fn process_near_to_utxo_init_transfer_event(
         )));
     }
 
-    let context = format!("({btc_pending_id}:{sign_index})");
     let sender = OmniAddress::Near(sender);
     if let Some(action) = utils::validation::validate_sender(config, &sender, chain, &context).await
     {
@@ -90,66 +118,103 @@ pub async fn process_near_to_utxo_init_transfer_event(
 
     let signed_key = utils::redis::near_to_utxo_signed_key(&btc_pending_id);
 
-    match utils::redis::exists(config, redis, &signed_key).await {
-        Some(true) => {
-            info!(
-                "Skipping sign for {btc_pending_id}:{sign_index} - already handled by another relayer"
-            );
-            return Ok(EventAction::Drop);
+    for index in sign_indices {
+        // Re-read on every input: another relayer can broadcast the pending
+        // transaction while this batch is still walking its inputs, and every
+        // further sign call would then be wasted contract traffic.
+        match utils::redis::exists(config, redis, &signed_key).await {
+            Some(true) => {
+                info!(
+                    "Skipping sign for {btc_pending_id}:{index} - already handled by another relayer"
+                );
+                return Ok(EventAction::Drop);
+            }
+            Some(false) => {}
+            None => {
+                warn!(
+                    "Redis exists failed for {btc_pending_id}:{index}; proceeding to sign and letting the contract dedupe"
+                );
+            }
         }
-        Some(false) => {}
-        None => {
-            warn!(
-                "Redis exists failed for {btc_pending_id}:{sign_index}; proceeding to sign and letting the contract dedupe"
-            );
-        }
-    }
 
-    let nonce = match near_nonce.reserve_nonce() {
-        Ok(nonce) => Some(nonce),
-        Err(err) => {
-            warn!(
-                "Failed to reserve nonce for NEAR->{chain:?} sign ({btc_pending_id}:{sign_index}): {err:?}"
-            );
-            return Ok(EventAction::Retry);
+        let index_key = utils::redis::near_to_utxo_sign_index_key(&btc_pending_id, index);
+        if utils::redis::exists(config, redis, &index_key).await == Some(true) {
+            info!("Input {btc_pending_id}:{index} already signed, skipping");
+            continue;
         }
-    };
 
-    let btc_pending_id_log = btc_pending_id.clone();
-    match omni_connector
-        .near_sign_btc_transaction(
-            chain,
-            btc_pending_id,
-            sign_index,
-            TransactionOptions {
-                nonce,
-                wait_until: near_primitives::views::TxExecutionStatus::Final,
-                wait_final_outcome_timeout_sec: None,
-            },
-        )
-        .await
-    {
-        Ok(tx_hash) => {
-            info!(
-                "Signed NEAR->{chain:?} input ({btc_pending_id_log}:{sign_index}): near_sign_tx_hash={tx_hash}"
-            );
-            Ok(utils::near::resolve_tx_action(
-                jsonrpc_client,
-                tx_hash,
-                signer,
-                &[
-                    "Request has timed out.",
-                    "not exist",
-                    "Previous btc tx has not been signed",
-                    "Too many pending sign transactions",
-                ],
+        let nonce = match near_nonce.reserve_nonce() {
+            Ok(nonce) => Some(nonce),
+            Err(err) => {
+                warn!(
+                    "Failed to reserve nonce for NEAR->{chain:?} sign ({btc_pending_id}:{index}): {err:?}"
+                );
+                return Ok(EventAction::Retry);
+            }
+        };
+
+        let action = match omni_connector
+            .near_sign_btc_transaction(
+                chain,
+                btc_pending_id.clone(),
+                index,
+                TransactionOptions {
+                    nonce,
+                    wait_until: near_primitives::views::TxExecutionStatus::Final,
+                    wait_final_outcome_timeout_sec: None,
+                },
             )
-            .await)
+            .await
+        {
+            Ok(tx_hash) => {
+                info!(
+                    "Signed NEAR->{chain:?} input ({btc_pending_id}:{index}): near_sign_tx_hash={tx_hash}"
+                );
+                utils::near::resolve_tx_action(
+                    jsonrpc_client,
+                    tx_hash,
+                    signer.clone(),
+                    &SIGN_RETRYABLE_ERRORS,
+                )
+                .await
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("Failed to sign NEAR->{chain:?} input ({btc_pending_id}:{index})")
+                });
+            }
+        };
+
+        match action {
+            EventAction::Remove => {
+                utils::redis::set_with_ttl(
+                    config,
+                    redis,
+                    &index_key,
+                    &index.to_string(),
+                    utils::redis::NEAR_TO_UTXO_SIGNED_TTL_SECS,
+                )
+                .await;
+            }
+            // Retrying or giving up applies to the whole item. The inputs
+            // already marked above are skipped on the next delivery, so the
+            // work is not repeated.
+            other => {
+                info!("Stopping NEAR->{chain:?} sign batch {context} at input {index}: {other:?}");
+                return Ok(other);
+            }
         }
-        Err(err) => Err(err).with_context(|| {
-            format!("Failed to sign NEAR->{chain:?} input ({btc_pending_id_log}:{sign_index})")
-        }),
     }
+
+    Ok(EventAction::Remove)
+}
+
+/// The inputs one work item covers. A legacy item carries no count and signs
+/// exactly one input; a zero count is treated the same way, so a malformed item
+/// still makes progress instead of silently doing nothing.
+fn sign_index_range(sign_index: u64, sign_count: Option<u64>) -> std::ops::Range<u64> {
+    let count = sign_count.unwrap_or(1).max(1);
+    sign_index..sign_index.saturating_add(count)
 }
 
 pub async fn process_utxo_to_near_init_transfer_event(
@@ -705,6 +770,32 @@ mod tests {
     /// The exact text seen in production from Zebra when the NEAR->Zcash
     /// transfer had already been broadcast.
     const ZEBRA_ALREADY_IN_STATE: &str = "Failed to parse sendrawtransaction result: invalid type: null, expected a string. Response: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-25,\"message\":\"failed to validate tx: WtxId(\\\"private\\\"), error: transaction is already in state\"}}";
+
+    #[test]
+    fn batched_item_covers_every_input() {
+        assert_eq!(sign_index_range(0, Some(20)), 0..20);
+    }
+
+    #[test]
+    fn legacy_item_covers_exactly_one_input() {
+        assert_eq!(sign_index_range(7, None), 7..8);
+    }
+
+    #[test]
+    fn zero_or_missing_count_still_signs_one_input() {
+        assert_eq!(sign_index_range(3, Some(0)), 3..4);
+    }
+
+    #[test]
+    fn resumed_item_starts_at_its_own_index() {
+        // A redelivered batch that resumes mid-transaction keeps its span.
+        assert_eq!(sign_index_range(5, Some(4)), 5..9);
+    }
+
+    #[test]
+    fn overflowing_count_does_not_panic() {
+        assert_eq!(sign_index_range(u64::MAX, Some(4)), u64::MAX..u64::MAX);
+    }
 
     #[test]
     fn zebra_already_in_state_is_a_duplicate() {

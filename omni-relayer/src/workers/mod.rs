@@ -88,6 +88,7 @@ impl<E> RetryableEvent<E> {
     }
 }
 
+#[derive(Debug)]
 pub enum EventAction {
     Retry,
     RetryAfter(Duration),
@@ -228,7 +229,14 @@ pub enum Transfer {
     NearToUtxo {
         chain: ChainKind,
         btc_pending_id: String,
+        /// First input this work item signs.
         sign_index: u64,
+        /// How many consecutive inputs this work item covers, starting at
+        /// `sign_index`. `None` is a legacy single-input item, still produced
+        /// while `batch_sign` is off and still present in the stream after the
+        /// switch, so it must keep working.
+        #[serde(default)]
+        sign_count: Option<u64>,
         sender: AccountId,
         #[serde(default)]
         creation_timestamp: i64,
@@ -480,6 +488,13 @@ impl DeployToken {
     }
 }
 
+/// How often an in-flight handler renews its `ack_wait` lease. A third of the
+/// window leaves room for two missed renewals before NATS redelivers, and the
+/// floor keeps a tiny `ack_wait` from turning into a renewal storm.
+fn ack_progress_interval(ack_wait_secs: u64) -> Duration {
+    Duration::from_secs((ack_wait_secs / 3).max(5))
+}
+
 /// The `reason` and `target_chain` labels for a retry caused by a worker error.
 fn stall_reason_for(
     err: &anyhow::Error,
@@ -721,19 +736,39 @@ pub async fn process_events(
                     .await
                     .ok();
 
-                let message_result = process_message(
-                    event,
-                    &config,
-                    &mut redis,
-                    &jsonrpc_client,
-                    omni_connector,
-                    fast_connector,
-                    signer,
-                    near_omni_nonce,
-                    near_fast_nonce,
-                    evm_nonces,
-                )
-                .await;
+                // Scoped so the handler future, which holds `&mut redis`, is
+                // dropped before the cleanup below borrows it again.
+                let message_result = {
+                    let processing = process_message(
+                        event,
+                        &config,
+                        &mut redis,
+                        &jsonrpc_client,
+                        omni_connector,
+                        fast_connector,
+                        signer,
+                        near_omni_nonce,
+                        near_fast_nonce,
+                        evm_nonces,
+                    );
+                    tokio::pin!(processing);
+
+                    // A handler that outlives `ack_wait` would otherwise be
+                    // redelivered while it is still running, and the redelivery
+                    // would repeat work the original is doing. Keep renewing the
+                    // lease until the handler returns.
+                    let heartbeat = ack_progress_interval(consumer_config.ack_wait);
+                    loop {
+                        tokio::select! {
+                            result = &mut processing => break result,
+                            () = tokio::time::sleep(heartbeat) => {
+                                msg.ack_with(async_nats::jetstream::AckKind::Progress)
+                                    .await
+                                    .ok();
+                            }
+                        }
+                    }
+                };
 
                 if let Err(ref err) = message_result.action {
                     warn!("{err:?}");
@@ -1356,6 +1391,7 @@ impl WorkerEvent {
                 let Transfer::NearToUtxo {
                     btc_pending_id,
                     sign_index,
+                    sign_count,
                     ..
                 } = transfer.as_ref()
                 else {
@@ -1363,9 +1399,17 @@ impl WorkerEvent {
                 };
                 let payload = serde_json::to_vec(transfer.as_ref())
                     .expect("NearToUtxo transfer serialization cannot fail");
+                // A batched item covers every input, so it gets its own
+                // deduplication key. Reusing `{id}:0` would let NATS suppress it
+                // as a duplicate of a legacy single-input item for input 0.
+                let key = if sign_count.is_some() {
+                    format!("{btc_pending_id}:batch")
+                } else {
+                    format!("{btc_pending_id}:{sign_index}")
+                };
                 Some(PublishInfo {
                     subject_chain: ChainKind::Near,
-                    key: format!("{btc_pending_id}:{sign_index}"),
+                    key,
                     payload,
                 })
             }
@@ -1626,5 +1670,17 @@ mod tests {
             make_decision(&result, 8 * 24 * 3600, 1),
             NatsAckDecision::Term
         ));
+    }
+
+    #[test]
+    fn ack_progress_renews_well_inside_the_ack_window() {
+        assert_eq!(ack_progress_interval(300), Duration::from_secs(100));
+        assert_eq!(ack_progress_interval(60), Duration::from_secs(20));
+    }
+
+    #[test]
+    fn ack_progress_never_renews_faster_than_five_seconds() {
+        assert_eq!(ack_progress_interval(9), Duration::from_secs(5));
+        assert_eq!(ack_progress_interval(0), Duration::from_secs(5));
     }
 }

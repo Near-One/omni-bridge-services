@@ -254,6 +254,12 @@ lc_polling_interval_secs = 10
 # guard from when a co-relayer signed first to avoid racing on MPC; the
 # omni-relayer now owns the full withdrawal lifecycle, so keep at 0 (sign ASAP).
 sign_delay_secs = 0
+# Sign every input of a pending UTXO transaction in one work item instead of
+# one per input. Keeps one worker permit per transfer and removes the retry
+# churn from inputs racing each other into the contract sign order check.
+# Roll out the new binary to every relayer instance consuming this stream
+# before enabling it.
+batch_sign = false
 
 # Uncomment to periodically consolidate UTXOs. The service polls
 # `get_metadata.current_utxos_num` on the connector and calls
@@ -275,6 +281,12 @@ verifying_withdraw_enabled = true
 lc_polling_interval_secs = 10
 # No co-relayer exists for Zcash today; keep at 0 unless one is introduced.
 sign_delay_secs = 0
+# Sign every input of a pending UTXO transaction in one work item instead of
+# one per input. Keeps one worker permit per transfer and removes the retry
+# churn from inputs racing each other into the contract sign order check.
+# Roll out the new binary to every relayer instance consuming this stream
+# before enabling it.
+batch_sign = false
 
 [orchard]
 enabled = false

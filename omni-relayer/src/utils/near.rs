@@ -193,10 +193,18 @@ pub fn extract_sign_transfer_event(
         .collect()
 }
 
+/// Builds the sign work items for a submitted NEAR->UTXO transfer.
+///
+/// With `batch` set, the whole pending transaction becomes one work item
+/// covering every input. That keeps one worker permit per transfer instead of
+/// one per input, and it stops the inputs of a single transfer from racing each
+/// other into the contract's sign ordering check. With `batch` clear, each
+/// input gets its own work item, which is the legacy shape.
 pub fn extract_near_to_utxo(
     receipts: &[near_primitives::views::ExecutionOutcomeWithIdView],
     destination_chain: ChainKind,
     sender: &AccountId,
+    batch: bool,
 ) -> Vec<WorkerEvent> {
     const EVENT_JSON_PREFIX: &str = "EVENT_JSON:";
     const GENERATE_BTC_PENDING_INFO_EVENT: &str = "generate_btc_pending_info";
@@ -229,22 +237,41 @@ pub fn extract_near_to_utxo(
         }
     }
 
-    btc_pending_id
-        .zip(utxo_count)
-        .map(|(btc_pending_id, utxo_count)| {
-            (0..u64::from(utxo_count))
-                .map(|sign_index| {
-                    WorkerEvent::NearToUtxo(Box::new(Transfer::NearToUtxo {
-                        chain: destination_chain,
-                        btc_pending_id: btc_pending_id.clone(),
-                        sign_index,
-                        sender: sender.clone(),
-                        creation_timestamp: chrono::Utc::now().timestamp(),
-                    }))
-                })
-                .collect()
+    let Some((btc_pending_id, utxo_count)) = btc_pending_id.zip(utxo_count) else {
+        return Vec::new();
+    };
+
+    let creation_timestamp = chrono::Utc::now().timestamp();
+
+    sign_event_plan(u64::from(utxo_count), batch)
+        .into_iter()
+        .map(|(sign_index, sign_count)| {
+            WorkerEvent::NearToUtxo(Box::new(Transfer::NearToUtxo {
+                chain: destination_chain,
+                btc_pending_id: btc_pending_id.clone(),
+                sign_index,
+                sign_count,
+                sender: sender.clone(),
+                creation_timestamp,
+            }))
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+/// The `(sign_index, sign_count)` pairs to publish for a pending transaction
+/// with `utxo_count` inputs: one batched pair, or one pair per input. A
+/// transaction with no inputs produces nothing, so a malformed event never
+/// becomes a work item that signs an input the contract does not have.
+fn sign_event_plan(utxo_count: u64, batch: bool) -> Vec<(u64, Option<u64>)> {
+    if utxo_count == 0 {
+        return Vec::new();
+    }
+
+    if batch {
+        return vec![(0, Some(utxo_count))];
+    }
+
+    (0..utxo_count).map(|index| (index, None)).collect()
 }
 
 #[cfg(test)]
@@ -301,5 +328,25 @@ mod tests {
     #[test]
     fn empty_pattern_list_never_retries() {
         assert!(!is_retryable_failure("UTXO abc:0 not exist", &[]));
+    }
+
+    #[test]
+    fn batched_plan_is_one_item_covering_every_input() {
+        assert_eq!(sign_event_plan(20, true), vec![(0, Some(20))]);
+        assert_eq!(sign_event_plan(1, true), vec![(0, Some(1))]);
+    }
+
+    #[test]
+    fn legacy_plan_is_one_item_per_input() {
+        assert_eq!(
+            sign_event_plan(3, false),
+            vec![(0, None), (1, None), (2, None)]
+        );
+    }
+
+    #[test]
+    fn no_inputs_produces_no_work_items() {
+        assert!(sign_event_plan(0, true).is_empty());
+        assert!(sign_event_plan(0, false).is_empty());
     }
 }

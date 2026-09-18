@@ -365,8 +365,12 @@ pub async fn process_transfer_to_utxo_event(
                 .await
                 {
                     Ok(receipts) => {
-                        let events =
-                            utils::near::extract_near_to_utxo(&receipts, destination_chain, sender);
+                        let events = utils::near::extract_near_to_utxo(
+                            &receipts,
+                            destination_chain,
+                            sender,
+                            config.utxo_batch_sign(destination_chain),
+                        );
                         if let Some(WorkerEvent::NearToUtxo(transfer)) = events.first()
                             && let Transfer::NearToUtxo { btc_pending_id, .. } = transfer.as_ref()
                         {

@@ -813,13 +813,13 @@ pub(super) async fn handle_transaction_event(
                     utxo_id.tx_hash
                 );
 
-                for sign_index in 0..utxo_count {
+                if config.utxo_batch_sign(destination_chain) {
                     info!(
-                        "Received sign index {sign_index} for BTC pending ID: {}",
+                        "Received {utxo_count} sign indices for BTC pending ID: {}",
                         utxo_id.tx_hash
                     );
 
-                    let key = format!("{}:{sign_index}", utxo_id.tx_hash);
+                    let key = format!("{}:batch", utxo_id.tx_hash);
 
                     add_event(
                         config,
@@ -830,12 +830,39 @@ pub(super) async fn handle_transaction_event(
                         workers::Transfer::NearToUtxo {
                             chain: destination_chain,
                             btc_pending_id: utxo_id.tx_hash.clone(),
-                            sign_index,
+                            sign_index: 0,
+                            sign_count: Some(utxo_count),
                             sender: sender.clone(),
                             creation_timestamp,
                         },
                     )
                     .await;
+                } else {
+                    for sign_index in 0..utxo_count {
+                        info!(
+                            "Received sign index {sign_index} for BTC pending ID: {}",
+                            utxo_id.tx_hash
+                        );
+
+                        let key = format!("{}:{sign_index}", utxo_id.tx_hash);
+
+                        add_event(
+                            config,
+                            redis_connection_manager,
+                            nats,
+                            &key,
+                            ChainKind::Near,
+                            workers::Transfer::NearToUtxo {
+                                chain: destination_chain,
+                                btc_pending_id: utxo_id.tx_hash.clone(),
+                                sign_index,
+                                sign_count: None,
+                                sender: sender.clone(),
+                                creation_timestamp,
+                            },
+                        )
+                        .await;
+                    }
                 }
             }
         }
