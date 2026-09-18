@@ -15,7 +15,7 @@ use solana_rpc_client_api::{
 };
 use solana_sdk::{instruction::InstructionError, pubkey::Pubkey, transaction::TransactionError};
 
-use omni_connector::OmniConnector;
+use omni_connector::{BtcTransferDraft, OmniConnector};
 use omni_types::{ChainKind, FastTransfer, OmniAddress, TransferId, near_events::OmniBridgeEvent};
 
 use crate::metrics::{Metrics, stall_reason};
@@ -160,7 +160,7 @@ pub async fn process_transfer_event(
                 origin_chain: transfer_message.sender.get_chain(),
                 origin_nonce: transfer_message.origin_nonce,
             },
-            Some(signer.clone()),
+            Some(config.fee_recipient(&signer).clone()),
             Some(transfer_message.fee.clone()),
             TransactionOptions {
                 nonce: Some(nonce),
@@ -292,10 +292,6 @@ pub async fn process_transfer_to_utxo_event(
         u64::try_from(scaled).unwrap_or(m)
     });
 
-    // The lock is held only across selection: pick UTXOs, then remove them
-    // from the cache so concurrent submitters can't pick the same inputs.
-    // The (slow) submit runs without the lock; on failure we put the
-    // removed UTXOs back.
     let utxo_set = utils::utxo::UtxoSet::global();
     let mut utxos_guard = utxo_set.lock(&omni_connector, destination_chain).await;
     let utxos_snapshot = utxos_guard.as_ref().map(|g| (**g).clone());
@@ -303,7 +299,7 @@ pub async fn process_transfer_to_utxo_event(
     let mut removed: Vec<(String, utxo_utils::UTXO)> = Vec::new();
 
     let submit_result = match omni_connector
-        .near_select_btc_utxos(
+        .near_select_btc_utxos_draft(
             destination_chain,
             recipient.clone(),
             transfer_message.amount.0 - transfer_message.fee.fee.0,
@@ -315,30 +311,22 @@ pub async fn process_transfer_to_utxo_event(
         )
         .await
     {
-        Ok(selection) => {
-            removed = utils::utxo::UtxoSet::take_outpoints(utxos_guard.as_mut(), &selection);
+        Ok(draft) => {
+            removed = utils::utxo::UtxoSet::take_outpoints(utxos_guard.as_mut(), &draft);
             drop(utxos_guard);
 
-            let nonce = near_nonce
-                .reserve_nonce()
-                .context("Failed to reserve nonce for near transaction")?;
-
-            omni_connector
-                .near_submit_prepared_btc_transfer(
-                    recipient,
-                    TransferId {
-                        origin_chain: transfer_message.sender.get_chain(),
-                        origin_nonce: transfer_message.origin_nonce,
-                    },
-                    TransactionOptions {
-                        nonce: Some(nonce),
-                        wait_until: near_primitives::views::TxExecutionStatus::Final,
-                        wait_final_outcome_timeout_sec: None,
-                    },
-                    max_gas_fee,
-                    selection,
-                )
-                .await
+            build_and_submit_utxo_transfer(
+                &omni_connector,
+                &near_nonce,
+                draft,
+                recipient,
+                TransferId {
+                    origin_chain: transfer_message.sender.get_chain(),
+                    origin_nonce: transfer_message.origin_nonce,
+                },
+                max_gas_fee,
+            )
+            .await
         }
         Err(err) => {
             drop(utxos_guard);
@@ -462,12 +450,47 @@ pub async fn process_transfer_to_utxo_event(
     }
 }
 
+async fn build_and_submit_utxo_transfer(
+    omni_connector: &OmniConnector,
+    near_nonce: &utils::nonce::NonceManager,
+    draft: BtcTransferDraft,
+    recipient: String,
+    transfer_id: TransferId,
+    max_gas_fee: Option<u64>,
+) -> std::result::Result<near_primitives::hash::CryptoHash, BridgeSdkError> {
+    let selection = omni_connector
+        .near_build_btc_transfer_selection(draft)
+        .await?;
+
+    // Reserved after the build so a slow bundle doesn't hold a nonce out of
+    // the sequence while other NEAR transactions queue behind it.
+    let nonce = near_nonce.reserve_nonce().map_err(|err| {
+        BridgeSdkError::UnknownError(format!(
+            "Failed to reserve nonce for near transaction: {err:?}"
+        ))
+    })?;
+
+    omni_connector
+        .near_submit_prepared_btc_transfer(
+            recipient,
+            transfer_id,
+            TransactionOptions {
+                nonce: Some(nonce),
+                wait_until: near_primitives::views::TxExecutionStatus::Final,
+                wait_final_outcome_timeout_sec: None,
+            },
+            max_gas_fee,
+            selection,
+        )
+        .await
+}
+
 #[allow(clippy::too_many_lines)]
 pub async fn process_sign_transfer_event(
     config: &config::Config,
     redis_connection_manager: &mut redis::aio::ConnectionManager,
     omni_connector: Arc<OmniConnector>,
-    signer: AccountId,
+    signer: &AccountId,
     omni_bridge_event: OmniBridgeEvent,
     evm_nonces: Arc<utils::nonce::EvmNonceManagers>,
 ) -> Result<EventAction> {
@@ -484,7 +507,17 @@ pub async fn process_sign_transfer_event(
         message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
     );
 
-    if message_payload.fee_recipient != Some(signer) {
+    // Both the signer and the configured `near.fee_recipient` are ours, so
+    // accept either: a transfer signed before `fee_recipient` was changed
+    // still carries the previous recipient and must still be finalized.
+    let is_our_fee_recipient = |fee_recipient: &AccountId| {
+        fee_recipient == signer || fee_recipient == config.fee_recipient(signer)
+    };
+    if !message_payload
+        .fee_recipient
+        .as_ref()
+        .is_some_and(is_our_fee_recipient)
+    {
         warn!("Fee recipient mismatch, dropping: {omni_bridge_event:?}");
         return Ok(EventAction::Drop);
     }

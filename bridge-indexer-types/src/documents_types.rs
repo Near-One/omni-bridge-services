@@ -92,6 +92,9 @@ pub enum OmniTransactionOrigin {
         block_timestamp: u64,
         event_index: Option<u64>,
     },
+    HyperCoreTransaction {
+        hypercore_time_ms: u64,
+    },
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, strum::IntoStaticStr)]
@@ -115,6 +118,9 @@ pub enum OmniTransferMessage {
     NearClaimFeeEvent(omni_types::TransferMessage),
     EvmInitTransferMessage(InitTransferMessage),
     EvmFinTransferMessage(FinTransferMessage),
+    HyperEvmPreInitTransfer(HyperEvmPreInitTransferMessage),
+    HyperCoreInitTransferMessage {},
+    HyperCoreFinTransferMessage {},
     SolanaInitTransfer(SolanaInitTransferMessage),
     SolanaFinTransfer(SolanaFinTransferMessage),
     UtxoSignTransaction {
@@ -160,6 +166,25 @@ pub enum OmniTransferMessage {
 pub struct NearSignTransferEvent {
     pub signature: SignatureResponse,
     pub message_payload: TransferMessagePayload,
+}
+
+/// Phase one of a `HyperCore` -> `HyperEVM` transfer. The `InitTransfer` that
+/// `triggerPendingInitTransfer` emits later shares the `transfer_id`.
+#[skip_serializing_none]
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct HyperEvmPreInitTransferMessage {
+    pub origin_nonce: Nonce,
+    pub token: OmniAddress,
+    /// The actual user, unlike `InitTransfer`'s `sender` — the token contract.
+    pub sender: OmniAddress,
+    /// Sequenced per sender, so not unique alone.
+    pub core_nonce: u64,
+    pub amount: U128,
+    pub fee: U128,
+    /// Raw strings as committed on-chain: the bridge re-hashes the payload, so
+    /// re-normalising either one breaks the commitment.
+    pub recipient: String,
+    pub msg: String,
 }
 
 #[skip_serializing_none]

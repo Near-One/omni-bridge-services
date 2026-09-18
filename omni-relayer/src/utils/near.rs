@@ -139,6 +139,19 @@ async fn fetch_tx_outcome(
     }
 }
 
+const TERMINAL_FAILURE_OVERRIDES: [&str; 1] = ["BTC pending info not exist"];
+
+fn is_retryable_failure(err_str: &str, errors: &[&str]) -> bool {
+    if TERMINAL_FAILURE_OVERRIDES
+        .iter()
+        .any(|terminal| err_str.contains(terminal))
+    {
+        return false;
+    }
+
+    errors.iter().any(|e| err_str.contains(e))
+}
+
 fn scan_receipt_failures(
     tx_hash: CryptoHash,
     outcome: &near_primitives::views::FinalExecutionOutcomeView,
@@ -153,7 +166,7 @@ fn scan_receipt_failures(
         {
             has_any_failure = true;
             let err_str = err.to_string();
-            if errors.iter().any(|e| err_str.contains(e)) {
+            if is_retryable_failure(&err_str, errors) {
                 has_listed_failure = true;
                 warn!("Transaction {tx_hash} has expected receipt failure: {err:?}");
             } else {
@@ -232,4 +245,61 @@ pub fn extract_near_to_utxo(
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The patterns the UTXO signing path lists as retryable.
+    const SIGN_RETRYABLE: [&str; 4] = [
+        "Request has timed out.",
+        "not exist",
+        "Previous btc tx has not been signed",
+        "Too many pending sign transactions",
+    ];
+
+    #[test]
+    fn missing_utxo_is_retryable() {
+        let err = "Smart contract panicked: UTXO 0b13776c8a64eaf701c240885afc0c8560258c08201df207863033380b03b0c6:1 not exist";
+        assert!(is_retryable_failure(err, &SIGN_RETRYABLE));
+    }
+
+    #[test]
+    fn missing_btc_pending_info_is_terminal() {
+        let err = "Smart contract panicked: BTC pending info not exist";
+        assert!(!is_retryable_failure(err, &SIGN_RETRYABLE));
+    }
+
+    #[test]
+    fn terminal_override_wins_over_every_listed_pattern() {
+        // Even when the caller lists the exact terminal text, it stays terminal.
+        let err = "Smart contract panicked: BTC pending info not exist";
+        assert!(!is_retryable_failure(
+            err,
+            &["BTC pending info not exist", "not exist"]
+        ));
+    }
+
+    #[test]
+    fn other_listed_patterns_stay_retryable() {
+        for err in [
+            "Smart contract panicked: Previous btc tx has not been signed",
+            "Smart contract panicked: Too many pending sign transactions",
+            "Request has timed out.",
+        ] {
+            assert!(is_retryable_failure(err, &SIGN_RETRYABLE), "{err}");
+        }
+    }
+
+    #[test]
+    fn unlisted_failures_are_not_retryable() {
+        let err = "Smart contract panicked: Insufficient balance";
+        assert!(!is_retryable_failure(err, &SIGN_RETRYABLE));
+    }
+
+    #[test]
+    fn empty_pattern_list_never_retries() {
+        assert!(!is_retryable_failure("UTXO abc:0 not exist", &[]));
+    }
 }
