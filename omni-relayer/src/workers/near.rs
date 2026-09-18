@@ -91,6 +91,7 @@ pub async fn process_transfer_event(
         config,
         &transfer_message.sender,
         destination_chain,
+        Some(&transfer_message.token),
         &context,
     )
     .await
@@ -233,6 +234,7 @@ pub async fn process_transfer_to_utxo_event(
         config,
         &transfer_message.sender,
         destination_chain,
+        Some(&transfer_message.token),
         &context,
     )
     .await
@@ -546,8 +548,25 @@ pub async fn process_sign_transfer_event(
     // the transfer message (the sign payload does not carry it).
     let destination_chain = message_payload.recipient.get_chain();
     let allowlist_active = config.is_destination_restricted(destination_chain);
+    let context = format!(
+        "({:?}:{})",
+        message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
+    );
 
-    if config.is_bridge_api_enabled() || allowlist_active {
+    // Chain rules need no transfer message; the token rule is applied below,
+    // where the transfer message is fetched.
+    if let Some(action) = utils::validation::enforce_transfer_enabled(
+        config,
+        message_payload.transfer_id.origin_chain,
+        destination_chain,
+        None,
+        &context,
+    ) {
+        return Ok(action);
+    }
+    let token_rules_active = config.disabled_transfers.has_disabled_tokens();
+
+    if config.is_bridge_api_enabled() || allowlist_active || token_rules_active {
         let transfer_message = match omni_connector
             .near_get_transfer_message(message_payload.transfer_id)
             .await
@@ -574,14 +593,21 @@ pub async fn process_sign_transfer_event(
             }
         };
 
+        if let Some(action) = utils::validation::enforce_transfer_enabled(
+            config,
+            message_payload.transfer_id.origin_chain,
+            destination_chain,
+            Some(&transfer_message.token),
+            &context,
+        ) {
+            return Ok(action);
+        }
+
         if let Some(action) = utils::validation::enforce_sender_allowlist(
             config,
             &transfer_message.sender,
             destination_chain,
-            &format!(
-                "({:?}:{})",
-                message_payload.transfer_id.origin_chain, message_payload.transfer_id.origin_nonce
-            ),
+            &context,
         ) {
             return Ok(action);
         }
@@ -934,6 +960,18 @@ pub async fn initiate_fast_transfer(
         "({:?}:{})",
         transfer_id.origin_chain, transfer_id.origin_nonce
     );
+    // Token rules are not applied here: the fast path carries the token as a raw
+    // origin-chain string, not an `OmniAddress`.
+    if let Some(action) = utils::validation::enforce_transfer_enabled(
+        config,
+        transfer_id.origin_chain,
+        ChainKind::Near,
+        None,
+        &context,
+    ) {
+        return Ok(action);
+    }
+
     if let Some(action) =
         utils::validation::enforce_sender_allowlist(config, &sender, ChainKind::Near, &context)
     {
