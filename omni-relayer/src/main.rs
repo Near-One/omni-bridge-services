@@ -172,6 +172,7 @@ async fn main() -> Result<()> {
 
     let near_omni_signer = utils::near::get_signer(&config, config::NearSignerType::Omni)?;
     let omni_connector = Arc::new(startup::build_omni_connector(&config, &near_omni_signer).await?);
+    startup::validate_fee_recipient(&config, &omni_connector).await?;
 
     let (near_fast_signer, fast_connector) = if config.is_fast_relayer_enabled() {
         let near_fast_signer = utils::near::get_signer(&config, config::NearSignerType::Fast)?;

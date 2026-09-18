@@ -7,13 +7,13 @@ use std::{
 };
 
 use crate::types::DepositMsg;
-use alloy::primitives::TxHash;
+use alloy::primitives::{Address, TxHash};
 use anyhow::{Context, Result};
 use bridge_connector_common::result::BridgeSdkError;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;
-use tracing::{Instrument, info, warn};
+use tracing::{Instrument, debug, info, warn};
 
 use near_sdk::json_types::U128;
 use sha2::{Digest, Sha256};
@@ -30,6 +30,7 @@ use crate::{config, utils};
 
 mod aptos;
 mod evm;
+mod hyperevm;
 mod near;
 mod solana;
 mod starknet;
@@ -171,6 +172,18 @@ pub enum Transfer {
         creation_timestamp: i64,
         expected_finalization_time: i64,
     },
+    HyperEvmPreInit {
+        origin_nonce: u64,
+        token_address: Address,
+        sender: Address,
+        core_nonce: u64,
+        amount: U128,
+        fee: U128,
+        recipient: String,
+        message: String,
+        tx_hash: TxHash,
+        creation_timestamp: i64,
+    },
     Solana {
         amount: U128,
         token: Pubkey,
@@ -262,6 +275,11 @@ impl Transfer {
                 origin_nonce: log.origin_nonce,
             }
             .into(),
+            Transfer::HyperEvmPreInit { origin_nonce, .. } => TransferId {
+                origin_chain: ChainKind::HyperEvm,
+                origin_nonce: *origin_nonce,
+            }
+            .into(),
             Transfer::Solana {
                 sender, sequence, ..
             } => TransferId {
@@ -302,6 +320,7 @@ impl Transfer {
                 transfer_message, ..
             } => transfer_message.get_transfer_id().origin_chain,
             Transfer::Evm { chain_kind, .. } => *chain_kind,
+            Transfer::HyperEvmPreInit { .. } => ChainKind::HyperEvm,
             Transfer::Solana { sender, .. } => sender.get_chain(),
             Transfer::Starknet { .. } => ChainKind::Strk,
             Transfer::Aptos { .. } => ChainKind::Aptos,
@@ -318,6 +337,9 @@ impl Transfer {
         let (kind, tx) = match self {
             Transfer::Near { .. } => ("Transfer::Near", None),
             Transfer::Evm { tx_hash, .. } => ("Transfer::Evm", Some(tx_hash.to_string())),
+            Transfer::HyperEvmPreInit { tx_hash, .. } => {
+                ("Transfer::HyperEvmPreInit", Some(tx_hash.to_string()))
+            }
             Transfer::Solana { .. } => ("Transfer::Solana", None),
             Transfer::Starknet { tx_hash, .. } => ("Transfer::Starknet", Some(tx_hash.clone())),
             Transfer::Aptos { tx_hash, .. } => ("Transfer::Aptos", Some(tx_hash.clone())),
@@ -879,6 +901,26 @@ async fn process_message(
                     origin_chain,
                 }
             }
+            Transfer::HyperEvmPreInit { .. } => {
+                // No fee key: the `InitTransfer` this submits comes back as
+                // `Transfer::Evm`, and that stage runs the fee check.
+                let result = hyperevm::process_pre_init_transfer_event(
+                    config,
+                    redis,
+                    omni_connector.clone(),
+                    transfer,
+                    evm_nonces.clone(),
+                )
+                .await;
+
+                MessageResult {
+                    action: result,
+                    needs_evm_nonce_resync: true,
+                    fee_key: None,
+                    produced_events: Vec::new(),
+                    origin_chain,
+                }
+            }
             Transfer::Solana {
                 sequence,
                 ref sender,
@@ -1079,7 +1121,7 @@ async fn process_message(
                 config,
                 redis,
                 omni_connector.clone(),
-                signer.clone(),
+                &signer,
                 omni_bridge_event,
                 evm_nonces.clone(),
             )
@@ -1106,48 +1148,58 @@ async fn process_message(
         fin_transfer_event.log_context().record();
         let origin_chain = fin_transfer_event.origin_chain();
 
-        let result = match fin_transfer_event {
-            FinTransfer::Evm { .. } => {
-                evm::process_evm_transfer_event(
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce.clone(),
-                )
-                .await
+        // Only the fee recipient can call `claim_fee`; a different recipient
+        // claims on its own, so this is `Remove` (handed off), not `Drop`.
+        let result = if config.is_signer_fee_recipient(&signer) {
+            match fin_transfer_event {
+                FinTransfer::Evm { .. } => {
+                    evm::process_evm_transfer_event(
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce.clone(),
+                    )
+                    .await
+                }
+                FinTransfer::Solana { .. } => {
+                    solana::process_fin_transfer_event(
+                        config,
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce.clone(),
+                    )
+                    .await
+                }
+                FinTransfer::Starknet { .. } => {
+                    starknet::process_fin_transfer_event(
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce,
+                    )
+                    .await
+                }
+                FinTransfer::Aptos { .. } => {
+                    aptos::process_fin_transfer_event(
+                        jsonrpc_client,
+                        omni_connector.clone(),
+                        signer,
+                        fin_transfer_event,
+                        near_omni_nonce,
+                    )
+                    .await
+                }
             }
-            FinTransfer::Solana { .. } => {
-                solana::process_fin_transfer_event(
-                    config,
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce.clone(),
-                )
-                .await
-            }
-            FinTransfer::Starknet { .. } => {
-                starknet::process_fin_transfer_event(
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce,
-                )
-                .await
-            }
-            FinTransfer::Aptos { .. } => {
-                aptos::process_fin_transfer_event(
-                    jsonrpc_client,
-                    omni_connector.clone(),
-                    signer,
-                    fin_transfer_event,
-                    near_omni_nonce,
-                )
-                .await
-            }
+        } else {
+            debug!(
+                "Skipping fee claim (fees go to {} instead of the signer): {fin_transfer_event:?}",
+                config.fee_recipient(&signer)
+            );
+            Ok(EventAction::Remove)
         };
         MessageResult {
             action: result,

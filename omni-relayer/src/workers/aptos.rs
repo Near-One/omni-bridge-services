@@ -142,6 +142,8 @@ pub async fn process_init_transfer_event(
         }
     }
 
+    // The bridge contract pays fin-transfer fees to the account submitting
+    // `fin_transfer` (the signer), so `near.fee_recipient` does not apply here.
     let fee_recipient = omni_connector
         .near_bridge_client()
         .and_then(NearBridgeClient::account_id)

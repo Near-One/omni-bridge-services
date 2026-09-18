@@ -317,6 +317,17 @@ impl Config {
         }
     }
 
+    /// Account that receives the fee for NEAR->foreign transfers signed by
+    /// this relayer: `near.fee_recipient` when set, otherwise the signer.
+    pub fn fee_recipient<'a>(&'a self, signer: &'a AccountId) -> &'a AccountId {
+        self.near.fee_recipient.as_ref().unwrap_or(signer)
+    }
+
+    /// Only the fee recipient may call `claim_fee` (`OnlyFeeRecipientCanClaim`).
+    pub fn is_signer_fee_recipient(&self, signer: &AccountId) -> bool {
+        self.fee_recipient(signer) == signer
+    }
+
     pub fn is_sender_allowed(&self, sender: &OmniAddress, destination_chain: ChainKind) -> bool {
         sender_allowed(&self.allowlisted_senders, sender, destination_chain)
     }
@@ -452,6 +463,11 @@ pub struct Near {
     pub zcash: Option<AccountId>,
     pub omni_credentials_path: Option<String>,
     pub fast_credentials_path: Option<String>,
+    /// Fee recipient for NEAR->EVM/Solana/Starknet/Aptos transfers signed by
+    /// this relayer; defaults to the signer. Must be a trusted relayer on the
+    /// omni bridge (validated at startup) and storage-registered on the fee
+    /// tokens. Does not apply to NEAR->BTC/Zcash or foreign->NEAR fees.
+    pub fee_recipient: Option<AccountId>,
     pub sign_without_checking_fee: Option<Vec<OmniAddress>>,
     #[serde(default)]
     pub fast_relayer_enabled: bool,
