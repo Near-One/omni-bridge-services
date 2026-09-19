@@ -240,13 +240,13 @@ pub async fn process_transfer_to_utxo_event(
         return Ok((action, Vec::new()));
     }
 
-    let OmniAddress::Near(ref sender) = transfer_message.sender else {
-        warn!(
-            "Expected NEAR sender for NEAR to UTXO transfer, got: {:?}, dropping",
-            transfer_message.sender
-        );
-        return Ok((EventAction::Drop, Vec::new()));
-    };
+    // let OmniAddress::Near(ref sender) = transfer_message.sender else {
+    //     warn!(
+    //         "Expected NEAR sender for NEAR to UTXO transfer, got: {:?}, dropping",
+    //         transfer_message.sender
+    //     );
+    //     return Ok((EventAction::Drop, Vec::new()));
+    // };
 
     let Some(recipient) = transfer_message.recipient.get_utxo_address() else {
         warn!(
@@ -365,8 +365,11 @@ pub async fn process_transfer_to_utxo_event(
                 .await
                 {
                     Ok(receipts) => {
-                        let events =
-                            utils::near::extract_near_to_utxo(&receipts, destination_chain, sender);
+                        let events = utils::near::extract_near_to_utxo(
+                            &receipts,
+                            destination_chain,
+                            &transfer_message.sender,
+                        );
                         if let Some(WorkerEvent::NearToUtxo(transfer)) = events.first()
                             && let Transfer::NearToUtxo { btc_pending_id, .. } = transfer.as_ref()
                         {

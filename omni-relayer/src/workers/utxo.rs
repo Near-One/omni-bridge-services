@@ -8,7 +8,7 @@ use near_bridge_client::{
 };
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::{hash::CryptoHash, types::AccountId};
-use omni_types::{ChainKind, OmniAddress, UtxoId};
+use omni_types::{ChainKind, UtxoId};
 use tracing::{info, warn};
 
 use omni_connector::{BtcDepositArgs, BtcTxType, FinTransferArgs, OmniConnector};
@@ -74,7 +74,6 @@ pub async fn process_near_to_utxo_init_transfer_event(
     }
 
     let context = format!("({btc_pending_id}:{sign_index})");
-    let sender = OmniAddress::Near(sender);
     if let Some(action) = utils::validation::validate_sender(config, &sender, chain, &context).await
     {
         return Ok(action);
