@@ -13,7 +13,7 @@ use bridge_connector_common::result::BridgeSdkError;
 use near_jsonrpc_client::JsonRpcClient;
 use near_primitives::types::AccountId;
 use tokio_stream::StreamExt;
-use tracing::{Instrument, debug, info, warn};
+use tracing::{Instrument, debug, error, info, warn};
 
 use near_sdk::json_types::U128;
 use sha2::{Digest, Sha256};
@@ -25,7 +25,7 @@ use omni_types::{
     UtxoFinTransferMsg, UtxoId, near_events::OmniBridgeEvent,
 };
 
-use crate::metrics::{Metrics, event_outcome, stall_reason};
+use crate::metrics::{Metrics, event_outcome, rejection_reason, stall_reason};
 use crate::{config, utils};
 
 mod aptos;
@@ -782,8 +782,57 @@ pub async fn process_events(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn process_message(
+    event: serde_json::Value,
+    config: &config::Config,
+    redis: &mut redis::aio::ConnectionManager,
+    jsonrpc_client: &JsonRpcClient,
+    omni_connector: Arc<OmniConnector>,
+    fast_connector: Arc<OmniConnector>,
+    signer: AccountId,
+    near_omni_nonce: Arc<utils::nonce::NonceManager>,
+    near_fast_nonce: Option<Arc<utils::nonce::NonceManager>>,
+    evm_nonces: Arc<utils::nonce::EvmNonceManagers>,
+) -> MessageResult {
+    let mut result = route_message(
+        event,
+        config,
+        redis,
+        jsonrpc_client,
+        omni_connector,
+        fast_connector,
+        signer,
+        near_omni_nonce,
+        near_fast_nonce,
+        evm_nonces,
+    )
+    .await;
+
+    if let Err(ref err) = result.action
+        && let Some(missing_client) = unconfigured_client(err)
+    {
+        error!("{missing_client}, dropping: this relayer cannot serve this work item");
+        Metrics::global()
+            .record_preflight_rejection(rejection_reason::NOT_CONFIGURED, result.origin_chain);
+        result.action = Ok(EventAction::Drop);
+        result.produced_events.clear();
+    }
+
+    result
+}
+
+/// The message of a `BridgeSdkError::ConfigError`, if that is what this error
+/// is. Looks through any context a worker added.
+fn unconfigured_client(err: &anyhow::Error) -> Option<&str> {
+    match err.downcast_ref::<BridgeSdkError>() {
+        Some(BridgeSdkError::ConfigError(msg)) => Some(msg),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+async fn route_message(
     event: serde_json::Value,
     config: &config::Config,
     redis: &mut redis::aio::ConnectionManager,
@@ -1410,6 +1459,35 @@ mod tests {
             Duration::from_hours(1),      // max_backoff = 1h
             Duration::from_hours(7 * 24), // max_message_age = 7 days
         )
+    }
+
+    #[test]
+    fn missing_client_is_recognised_through_worker_context() {
+        // The worker wraps the SDK error with `.context(...)`; the classifier
+        // must still see it, otherwise the item retries until it ages out.
+        let err = Err::<(), _>(BridgeSdkError::ConfigError(
+            "ZCash bridge client is not configured".to_string(),
+        ))
+        .context("Failed to submit Zcash transfer (502608)")
+        .unwrap_err();
+        assert_eq!(
+            unconfigured_client(&err),
+            Some("ZCash bridge client is not configured")
+        );
+    }
+
+    #[test]
+    fn other_sdk_errors_are_not_missing_clients() {
+        let err = Err::<(), _>(BridgeSdkError::MpcFinalityNotReached)
+            .context("Failed to finalize transfer (Eth:7)")
+            .unwrap_err();
+        assert_eq!(unconfigured_client(&err), None);
+    }
+
+    #[test]
+    fn untyped_errors_are_not_missing_clients() {
+        let err = anyhow::anyhow!("ZCash bridge client is not configured");
+        assert_eq!(unconfigured_client(&err), None);
     }
 
     #[test]
