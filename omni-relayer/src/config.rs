@@ -247,6 +247,25 @@ impl Config {
         config.map_or(0, |utxo| utxo.sign_delay_secs)
     }
 
+    pub fn is_chain_configured(&self, chain: ChainKind) -> bool {
+        match chain {
+            ChainKind::Near => true,
+            ChainKind::Eth => self.eth.is_some(),
+            ChainKind::Base => self.base.is_some(),
+            ChainKind::Arb => self.arb.is_some(),
+            ChainKind::Bnb => self.bnb.is_some(),
+            ChainKind::Pol => self.pol.is_some(),
+            ChainKind::HyperEvm => self.hyperevm.is_some(),
+            ChainKind::Abs => self.abs.is_some(),
+            ChainKind::Sol => self.solana.is_some(),
+            ChainKind::Fogo => self.fogo.is_some(),
+            ChainKind::Strk => self.starknet.is_some(),
+            ChainKind::Aptos => self.aptos.is_some(),
+            ChainKind::Btc => self.btc.is_some(),
+            ChainKind::Zcash => self.zcash.is_some(),
+        }
+    }
+
     pub fn active_utxo_management(&self, chain: ChainKind) -> Option<&ActiveUtxoManagement> {
         let config = match chain {
             ChainKind::Btc => self.btc.as_ref(),

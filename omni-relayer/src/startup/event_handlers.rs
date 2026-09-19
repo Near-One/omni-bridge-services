@@ -212,7 +212,18 @@ pub(super) async fn handle_transaction_event(
                 transfer_message.origin_nonce
             );
 
-            if transfer_message.recipient.get_chain() != ChainKind::Near {
+            let recipient_chain = transfer_message.recipient.get_chain();
+
+            // Queueing work for a chain this process has no client for would
+            // only produce a `ConfigError` on every delivery until the item aged
+            // out, so it is dropped at ingestion instead.
+            if recipient_chain != ChainKind::Near && !config.is_chain_configured(recipient_chain) {
+                info!(
+                    "No {recipient_chain:?} configuration in this relayer, skipping transfer ({:?}:{})",
+                    transfer_message.get_origin_chain(),
+                    transfer_message.origin_nonce
+                );
+            } else if recipient_chain != ChainKind::Near {
                 let key = near_event_key(&origin_transaction_id, transfer_message.origin_nonce);
 
                 add_event(

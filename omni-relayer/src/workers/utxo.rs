@@ -36,6 +36,21 @@ pub struct ConfirmedTxHash {
     pub btc_tx_hash: String,
 }
 
+/// Receipt failures that clear once the contract's BTC light client catches up
+/// with the block holding the transaction.
+///
+/// The relayer can submit a finalization before the light client has the block,
+/// either because it deferred on a stale target or because its own RPC node did
+/// not yet know the transaction. The contract then panics inside
+/// `verify_transaction_inclusion`, which is transient: the same call succeeds
+/// once the header lands.
+const LIGHT_CLIENT_RETRYABLE_ERRORS: [&str; 4] = [
+    "Not enough blocks confirmed",
+    "Not enough confirmations for the block-cumulative bridge amount",
+    "Call verify_transaction_inclusion failed",
+    "cannot find requested transaction block",
+];
+
 pub async fn process_near_to_utxo_init_transfer_event(
     config: &config::Config,
     redis: &mut redis::aio::ConnectionManager,
@@ -334,10 +349,7 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 jsonrpc_client,
                 tx_hash,
                 signer,
-                &[
-                    "Not enough blocks confirmed",
-                    "Not enough confirmations for the block-cumulative bridge amount",
-                ],
+                &LIGHT_CLIENT_RETRYABLE_ERRORS,
             )
             .await
             {
@@ -642,7 +654,7 @@ pub async fn process_confirmed_tx_hash(
                 jsonrpc_client,
                 tx_hash,
                 signer,
-                &["Not enough blocks confirmed"],
+                &LIGHT_CLIENT_RETRYABLE_ERRORS,
             )
             .await)
         }
@@ -759,5 +771,39 @@ mod tests {
     fn non_utxo_errors_are_not_duplicates() {
         let err = BridgeSdkError::UnknownError("transaction is already in state".to_string());
         assert_eq!(duplicate_broadcast_marker(&err), None);
+    }
+
+    /// Exactly as the contract reported them in production on 2026-09-19, when
+    /// the relayer finalized a BTC deposit before the light client had the block.
+    #[test]
+    fn light_client_panics_are_retryable() {
+        for err in [
+            "Smart contract panicked: panicked at contracts/satoshi-bridge/src/btc_light_client/deposit.rs:378:14:\nCall verify_transaction_inclusion failed: Failed",
+            "Smart contract panicked: cannot find requested transaction block",
+            "Smart contract panicked: Not enough blocks confirmed",
+            "Smart contract panicked: Not enough confirmations for the block-cumulative bridge amount",
+        ] {
+            assert!(
+                LIGHT_CLIENT_RETRYABLE_ERRORS
+                    .iter()
+                    .any(|pattern| err.contains(pattern)),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_panics_are_not_light_client_failures() {
+        for err in [
+            "Smart contract panicked: BTC pending info not exist",
+            "Smart contract panicked: Insufficient balance",
+        ] {
+            assert!(
+                !LIGHT_CLIENT_RETRYABLE_ERRORS
+                    .iter()
+                    .any(|pattern| err.contains(pattern)),
+                "{err}"
+            );
+        }
     }
 }
