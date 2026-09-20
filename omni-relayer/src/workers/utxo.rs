@@ -209,6 +209,7 @@ async fn screen_utxo_deposit(
     };
 
     Ok(utils::validation::check_shield_deposit(
+        config,
         chain,
         &near_bridge_client.utxo_chain_token(chain)?,
         amount,

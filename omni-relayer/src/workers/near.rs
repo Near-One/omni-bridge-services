@@ -98,9 +98,13 @@ pub async fn process_transfer_event(
         return Ok((action, Vec::new()));
     }
 
-    if let Some(action) =
-        utils::validation::check_shield_withdrawal(&omni_connector, &transfer_message, &context)
-            .await
+    if let Some(action) = utils::validation::check_shield_withdrawal(
+        config,
+        &omni_connector,
+        &transfer_message,
+        &context,
+    )
+    .await
     {
         return Ok((action, Vec::new()));
     }
@@ -263,9 +267,13 @@ pub async fn process_transfer_to_utxo_event(
         return Ok((EventAction::Drop, Vec::new()));
     };
 
-    if let Some(action) =
-        utils::validation::check_shield_withdrawal(&omni_connector, transfer_message, &context)
-            .await
+    if let Some(action) = utils::validation::check_shield_withdrawal(
+        config,
+        &omni_connector,
+        transfer_message,
+        &context,
+    )
+    .await
     {
         return Ok((action, Vec::new()));
     }
@@ -602,9 +610,13 @@ pub async fn process_sign_transfer_event(
             return Ok(action);
         }
 
-        if let Some(action) =
-            utils::validation::check_shield_withdrawal(&omni_connector, &transfer_message, &context)
-                .await
+        if let Some(action) = utils::validation::check_shield_withdrawal(
+            config,
+            &omni_connector,
+            &transfer_message,
+            &context,
+        )
+        .await
         {
             return Ok(action);
         }
@@ -973,6 +985,7 @@ pub async fn initiate_fast_transfer(
     };
 
     if let Some(action) = utils::validation::check_shield_deposit(
+        config,
         transfer_id.origin_chain,
         &token_id,
         amount.0,

@@ -16,7 +16,7 @@ use crate::config;
 use crate::metrics::{Metrics, rejection_reason};
 use crate::workers::EventAction;
 
-use super::{kyt, shield};
+use super::{kyt, shield, token_price};
 
 const MIN_SHIELD_RETRY_DELAY: Duration = Duration::from_secs(30);
 
@@ -53,6 +53,7 @@ pub(crate) async fn check_kyt_senders(
 }
 
 pub(crate) async fn check_shield_deposit(
+    config: &config::Config,
     origin_chain: ChainKind,
     token_id: &AccountId,
     amount: u128,
@@ -68,8 +69,12 @@ pub(crate) async fn check_shield_deposit(
         return None;
     }
 
+    // The deposit's amount comes straight off the origin chain's event, so it
+    // is in that chain's units, not the nep141 ones the locker normalizes to.
+    let amount_usd = token_price::amount_usd(config, token_id, amount, origin_chain).await;
+
     map_shield_decision(
-        shield::evaluate_deposit(origin_chain, token_id, amount, sender).await,
+        shield::evaluate_deposit(origin_chain, token_id, amount, amount_usd, sender).await,
         "deposit",
         origin_chain,
         context,
@@ -77,6 +82,7 @@ pub(crate) async fn check_shield_deposit(
 }
 
 pub(crate) async fn check_shield_withdrawal(
+    config: &config::Config,
     omni_connector: &OmniConnector,
     transfer_message: &TransferMessage,
     context: &str,
@@ -117,11 +123,23 @@ pub(crate) async fn check_shield_withdrawal(
         }
     };
 
+    // `TransferMessage` amounts are normalized to the nep141 representation by
+    // the locker (`fin_transfer_callback`), whatever chain the transfer came
+    // from, so they are priced as NEAR units rather than destination ones.
+    let amount_usd = token_price::amount_usd(
+        config,
+        &token_id,
+        transfer_message.amount.0,
+        ChainKind::Near,
+    )
+    .await;
+
     map_shield_decision(
         shield::evaluate_withdrawal(
             destination_chain,
             &token_id,
             transfer_message.amount.0,
+            amount_usd,
             &transfer_message.recipient,
         )
         .await,

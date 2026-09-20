@@ -21,7 +21,6 @@ use reqwest::{Client, header::HeaderMap};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const BRIDGE: &str = "omni";
-const AMOUNT_USD_UNKNOWN: f64 = 0.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -154,6 +153,7 @@ pub async fn evaluate_deposit(
     chain: ChainKind,
     token_id: &AccountId,
     amount: u128,
+    amount_usd: f64,
     sender: &OmniAddress,
 ) -> Result<Decision> {
     let blockchain =
@@ -166,7 +166,7 @@ pub async fn evaluate_deposit(
         bridge: BRIDGE,
         token: &token,
         amount: amount.to_string(),
-        amount_usd: AMOUNT_USD_UNKNOWN,
+        amount_usd,
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         sender_address: &sender_address,
     };
@@ -178,6 +178,7 @@ pub async fn evaluate_withdrawal(
     chain: ChainKind,
     token_id: &AccountId,
     amount: u128,
+    amount_usd: f64,
     recipient: &OmniAddress,
 ) -> Result<Decision> {
     let blockchain =
@@ -190,7 +191,7 @@ pub async fn evaluate_withdrawal(
         bridge: BRIDGE,
         token: &token,
         amount: amount.to_string(),
-        amount_usd: AMOUNT_USD_UNKNOWN,
+        amount_usd,
         recipient: &recipient_address,
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
     };

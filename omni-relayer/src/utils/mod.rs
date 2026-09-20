@@ -9,5 +9,6 @@ pub mod redis;
 pub mod shield;
 pub mod solana;
 pub mod storage;
+pub mod token_price;
 pub mod utxo;
 pub mod validation;

@@ -141,6 +141,12 @@ async fn main() -> Result<()> {
         }
     }
 
+    if config::Config::is_shield_enabled() && !config.is_bridge_api_enabled() {
+        warn!(
+            "SHIELD USD thresholds inert: `bridge_indexer.api_url` is not configured, so every transfer is evaluated with amountUsd = 0"
+        );
+    }
+
     let restricted_destinations = config.restricted_destination_chains();
     if restricted_destinations.is_empty() {
         info!("Sender allowlist inactive (all senders allowed)");
