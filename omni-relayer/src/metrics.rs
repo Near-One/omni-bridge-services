@@ -136,6 +136,11 @@ pub mod rejection_reason {
     /// The transfer id could not be serialized, so the fee check cannot proceed
     /// and the transfer is dropped permanently. Should be identically zero.
     pub const UNPROCESSABLE: &str = "unprocessable";
+    /// This process has no bridge client for the chain the work item needs, so
+    /// no retry can succeed here. Expected to be non-zero only when a chain is
+    /// deliberately served by another relayer instance; anything else means a
+    /// config mistake.
+    pub const NOT_CONFIGURED: &str = "not_configured";
     /// SHIELD reported an active incident on the transfer's scope. The transfer
     /// is held, not dropped, so it resumes once the incident is resolved.
     pub const SHIELD_BLOCK: &str = "shield_block";
