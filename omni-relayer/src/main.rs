@@ -138,6 +138,12 @@ async fn main() -> Result<()> {
         }
     }
 
+    info!(
+        "Fee discount: {}% by default, {} override rule(s)",
+        config.bridge_indexer.fee_discount,
+        config.fee_discount.len()
+    );
+
     let redis_connection_manager = build_redis_connection_manager(&config)
         .await
         .context("Failed to create Redis connection manager")?;

@@ -70,6 +70,15 @@ sign_without_checking_fee = ["near:aurora"]
 # sender = "near:frolik.near"
 # recipient = "hlevm:0x1234567890123456789012345678901234567890"
 
+# [[fee_discount]]                  # sender -> one chain
+# sender = "near:frolik.near"
+# destination_chain = "HlEvm"
+# discount = 50
+#
+# [[fee_discount]]                  # any sender -> this recipient
+# recipient = "hlevm:0x1234567890123456789012345678901234567890"
+# discount = 30
+
 [eth]
 rpc_http_url = "https://sepolia.infura.io/v3/INFURA_API_KEY"
 rpc_ws_url = "wss://sepolia.infura.io/ws/v3/INFURA_API_KEY"
