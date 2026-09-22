@@ -125,6 +125,7 @@ pub async fn process_init_transfer_event(
                 &transfer,
                 transfer_id,
                 &provided_fee,
+                config.fee_discount_for(sender, recipient),
             )
             .await
         {

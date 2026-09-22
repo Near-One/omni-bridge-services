@@ -135,9 +135,9 @@ impl TransferFee {
             .map_err(Into::into)
     }
 
-    pub fn is_fee_sufficient(&self, config: &config::Config, provided_fee: &Fee) -> bool {
+    pub fn is_fee_sufficient(&self, discount: u8, provided_fee: &Fee) -> bool {
         let (native_fee, transferred_fee) = {
-            let discounted_fee = self.apply_discount(config.bridge_indexer.fee_discount);
+            let discounted_fee = self.apply_discount(discount);
             (
                 discounted_fee.native_token_fee.unwrap_or_default().0,
                 discounted_fee.transferred_token_fee.unwrap_or_default().0,
@@ -163,8 +163,9 @@ impl TransferFee {
         transfer: &T,
         transfer_id: TransferId,
         provided_fee: &Fee,
+        discount: u8,
     ) -> Option<EventAction> {
-        if !self.is_fee_sufficient(config, provided_fee) {
+        if !self.is_fee_sufficient(discount, provided_fee) {
             if provided_fee == &Fee::default() {
                 info!("No fee provided for transfer: {transfer:?}, skipping transfer");
                 return Some(EventAction::Remove);
@@ -178,16 +179,14 @@ impl TransferFee {
             if let Some(historical_fee) =
                 utils::redis::get_fee(config, redis_connection_manager, &transfer_id).await
             {
-                if historical_fee.is_fee_sufficient(config, provided_fee) {
+                if historical_fee.is_fee_sufficient(discount, provided_fee) {
                     info!(
                         "Historical fee is sufficient for transfer: {transfer:?}, using historical fee: {historical_fee:?}"
                     );
                 } else {
                     warn!(
                         "Insufficient fee for transfer: {transfer:?}\nGot: {provided_fee:?}, required: {:?}",
-                        self.clone()
-                            .min(historical_fee)
-                            .apply_discount(config.bridge_indexer.fee_discount)
+                        self.clone().min(historical_fee).apply_discount(discount)
                     );
                     return Some(EventAction::Retry);
                 }
@@ -202,7 +201,7 @@ impl TransferFee {
                 .await;
                 warn!(
                     "Insufficient fee for transfer: {transfer:?}\nGot: {provided_fee:?}, required: {:?}",
-                    self.apply_discount(config.bridge_indexer.fee_discount)
+                    self.apply_discount(discount)
                 );
                 return Some(EventAction::Retry);
             }

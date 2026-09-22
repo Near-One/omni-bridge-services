@@ -104,24 +104,25 @@ where
 
     if fee_discount > 100 {
         return Err(serde::de::Error::custom(
-            "Fee discount should be less than 100",
+            "Fee discount must be between 0 and 100",
         ));
     }
 
     Ok(fee_discount)
 }
 
-fn validate_allowlist<'de, D>(deserializer: D) -> Result<Vec<AllowlistRule>, D::Error>
+fn validate_rules<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + ValidateRule,
 {
-    let allowlist = Vec::<AllowlistRule>::deserialize(deserializer)?;
+    let rules = Vec::<T>::deserialize(deserializer)?;
 
-    for rule in &allowlist {
+    for rule in &rules {
         rule.validate().map_err(serde::de::Error::custom)?;
     }
 
-    Ok(allowlist)
+    Ok(rules)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -148,13 +149,37 @@ pub struct Config {
     pub wormhole: Wormhole,
     #[serde(default)]
     pub kyt: Kyt,
-    #[serde(default, deserialize_with = "validate_allowlist")]
+    #[serde(default, deserialize_with = "validate_rules")]
     pub allowlist: Vec<AllowlistRule>,
+    #[serde(default, deserialize_with = "validate_rules")]
+    pub fee_discount: Vec<FeeDiscountRule>,
 }
 
-/// Restricts transfers by sender, recipient, or exact sender->recipient pair.
-/// Targets one destination chain: the recipient's chain when a recipient is
-/// present, else `destination_chain`.
+/// Config rules that reject contradictory field combinations at parse time.
+trait ValidateRule {
+    fn validate(&self) -> Result<(), String>;
+}
+
+/// Rejects a rule pairing an address with a chain it cannot possibly be on,
+/// which would otherwise silently never match.
+fn chains_agree(
+    kind: &str,
+    address_field: &str,
+    address: Option<&OmniAddress>,
+    chain_field: &str,
+    chain: Option<ChainKind>,
+) -> Result<(), String> {
+    match (address, chain) {
+        (Some(address), Some(chain)) if address.get_chain() != chain => Err(format!(
+            "{kind} rule `{chain_field}` ({chain:?}) does not match the `{address_field}`'s chain ({:?})",
+            address.get_chain()
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Restricts which transfers are relayed to the destination chain it targets:
+/// the recipient's chain when a recipient is present, else `destination_chain`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AllowlistRule {
@@ -164,29 +189,6 @@ pub struct AllowlistRule {
 }
 
 impl AllowlistRule {
-    fn validate(&self) -> Result<(), String> {
-        if self.sender.is_none() && self.recipient.is_none() {
-            return Err(
-                "allowlist rule must specify at least one of `sender` or `recipient`".to_string(),
-            );
-        }
-
-        match (&self.recipient, self.destination_chain) {
-            (None, None) => Err(
-                "allowlist rule with no `recipient` must specify `destination_chain`".to_string(),
-            ),
-            (Some(recipient), Some(destination_chain))
-                if recipient.get_chain() != destination_chain =>
-            {
-                Err(format!(
-                    "allowlist rule `destination_chain` ({destination_chain:?}) does not match the `recipient`'s chain ({:?})",
-                    recipient.get_chain()
-                ))
-            }
-            _ => Ok(()),
-        }
-    }
-
     fn target_chain(&self) -> Option<ChainKind> {
         self.recipient
             .as_ref()
@@ -197,6 +199,84 @@ impl AllowlistRule {
     fn matches(&self, sender: &OmniAddress, recipient: &OmniAddress) -> bool {
         self.sender.as_ref().is_none_or(|s| s == sender)
             && self.recipient.as_ref().is_none_or(|r| r == recipient)
+    }
+}
+
+impl ValidateRule for AllowlistRule {
+    fn validate(&self) -> Result<(), String> {
+        if self.sender.is_none() && self.recipient.is_none() {
+            return Err(
+                "allowlist rule must specify at least one of `sender` or `recipient`".to_string(),
+            );
+        }
+
+        // Without a target chain the rule would restrict nothing.
+        if self.target_chain().is_none() {
+            return Err(
+                "allowlist rule with no `recipient` must specify `destination_chain`".to_string(),
+            );
+        }
+
+        chains_agree(
+            "allowlist",
+            "recipient",
+            self.recipient.as_ref(),
+            "destination_chain",
+            self.destination_chain,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeeDiscountRule {
+    pub sender: Option<OmniAddress>,
+    pub recipient: Option<OmniAddress>,
+    pub origin_chain: Option<ChainKind>,
+    pub destination_chain: Option<ChainKind>,
+    #[serde(deserialize_with = "validate_fee_discount")]
+    pub discount: u8,
+}
+
+impl FeeDiscountRule {
+    fn matches(&self, sender: &OmniAddress, recipient: &OmniAddress) -> bool {
+        self.sender.as_ref().is_none_or(|s| s == sender)
+            && self.recipient.as_ref().is_none_or(|r| r == recipient)
+            && self.origin_chain.is_none_or(|c| c == sender.get_chain())
+            && self
+                .destination_chain
+                .is_none_or(|c| c == recipient.get_chain())
+    }
+}
+
+impl ValidateRule for FeeDiscountRule {
+    fn validate(&self) -> Result<(), String> {
+        if self.sender.is_none()
+            && self.recipient.is_none()
+            && self.origin_chain.is_none()
+            && self.destination_chain.is_none()
+        {
+            return Err(
+                "fee_discount rule matching every transfer is redundant; set \
+                 `bridge_indexer.fee_discount` instead"
+                    .to_string(),
+            );
+        }
+
+        chains_agree(
+            "fee_discount",
+            "sender",
+            self.sender.as_ref(),
+            "origin_chain",
+            self.origin_chain,
+        )?;
+        chains_agree(
+            "fee_discount",
+            "recipient",
+            self.recipient.as_ref(),
+            "destination_chain",
+            self.destination_chain,
+        )
     }
 }
 
@@ -266,6 +346,20 @@ fn recipient_possibly_allowed(
         }
     }
     !destination_restricted
+}
+
+/// First matching rule wins, so config order is priority order. Falls back to
+/// `default_discount` when no rule matches.
+fn resolve_fee_discount(
+    rules: &[FeeDiscountRule],
+    default_discount: u8,
+    sender: &OmniAddress,
+    recipient: &OmniAddress,
+) -> u8 {
+    rules
+        .iter()
+        .find(|rule| rule.matches(sender, recipient))
+        .map_or(default_discount, |rule| rule.discount)
 }
 
 /// Returns `true` if at least one rule targets `destination_chain`.
@@ -423,6 +517,16 @@ impl Config {
 
     pub fn is_destination_restricted(&self, destination_chain: ChainKind) -> bool {
         destination_is_restricted(&self.allowlist, destination_chain)
+    }
+
+    /// See [`resolve_fee_discount`].
+    pub fn fee_discount_for(&self, sender: &OmniAddress, recipient: &OmniAddress) -> u8 {
+        resolve_fee_discount(
+            &self.fee_discount,
+            self.bridge_indexer.fee_discount,
+            sender,
+            recipient,
+        )
     }
 
     pub fn restricted_destination_chains(&self) -> BTreeSet<ChainKind> {
@@ -761,10 +865,36 @@ mod tests {
     fn parse_allowlist(input: &str) -> Result<Vec<AllowlistRule>, toml::de::Error> {
         #[derive(Deserialize)]
         struct Wrapper {
-            #[serde(default, deserialize_with = "validate_allowlist")]
+            #[serde(default, deserialize_with = "validate_rules")]
             allowlist: Vec<AllowlistRule>,
         }
         toml::from_str::<Wrapper>(input).map(|wrapper| wrapper.allowlist)
+    }
+
+    /// Parses a `[[fee_discount]]` section with the same attributes as
+    /// `Config::fee_discount`.
+    fn parse_fee_discounts(input: &str) -> Result<Vec<FeeDiscountRule>, toml::de::Error> {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(default, deserialize_with = "validate_rules")]
+            fee_discount: Vec<FeeDiscountRule>,
+        }
+        toml::from_str::<Wrapper>(input).map(|wrapper| wrapper.fee_discount)
+    }
+
+    fn discount_rule(
+        sender: Option<OmniAddress>,
+        recipient: Option<OmniAddress>,
+        destination_chain: Option<ChainKind>,
+        discount: u8,
+    ) -> FeeDiscountRule {
+        FeeDiscountRule {
+            sender,
+            recipient,
+            origin_chain: None,
+            destination_chain,
+            discount,
+        }
     }
 
     #[test]

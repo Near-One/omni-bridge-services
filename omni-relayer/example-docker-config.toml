@@ -69,6 +69,15 @@ sign_without_checking_fee = ["near:aurora"]
 # sender = "near:frolik.near"
 # recipient = "hlevm:0x1234567890123456789012345678901234567890"
 
+# [[fee_discount]]                  # sender -> one chain
+# sender = "near:frolik.near"
+# destination_chain = "HlEvm"
+# discount = 50
+#
+# [[fee_discount]]                  # any sender -> this recipient
+# recipient = "hlevm:0x1234567890123456789012345678901234567890"
+# discount = 30
+
 # KYT (Know Your Transaction) checks are enabled by setting KYT_API_URL and
 # KYT_API_KEY environment variables.
 [kyt]

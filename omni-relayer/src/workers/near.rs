@@ -137,6 +137,7 @@ pub async fn process_transfer_event(
                 &transfer_message,
                 transfer_message.get_transfer_id(),
                 &transfer_message.fee,
+                config.fee_discount_for(&transfer_message.sender, &transfer_message.recipient),
             )
             .await
         {
@@ -573,6 +574,7 @@ pub async fn process_sign_transfer_event(
                     &transfer_message,
                     transfer_message.get_transfer_id(),
                     &transfer_message.fee,
+                    config.fee_discount_for(&transfer_message.sender, &transfer_message.recipient),
                 )
                 .await
             {
