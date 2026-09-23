@@ -41,14 +41,17 @@ pub struct ConfirmedTxHash {
 ///
 /// The relayer can submit a finalization before the light client has the block,
 /// either because it deferred on a stale target or because its own RPC node did
-/// not yet know the transaction. The contract then panics inside
-/// `verify_transaction_inclusion`, which is transient: the same call succeeds
-/// once the header lands.
-const LIGHT_CLIENT_RETRYABLE_ERRORS: [&str; 4] = [
+/// not yet know the transaction. The contract then panics inside one of the
+/// `verify_transaction_inclusion*` calls, or reports the block as off the main
+/// chain while it is still catching up on a reorg. Both clear once the light
+/// client has the header on its main chain.
+const LIGHT_CLIENT_RETRYABLE_ERRORS: [&str; 5] = [
     "Not enough blocks confirmed",
     "Not enough confirmations for the block-cumulative bridge amount",
-    "Call verify_transaction_inclusion failed",
+    // Prefix only: the contract has several `verify_transaction_inclusion*` entry points.
+    "Call verify_transaction_inclusion",
     "cannot find requested transaction block",
+    "block does not belong to the current main chain",
 ];
 
 pub async fn process_near_to_utxo_init_transfer_event(
@@ -779,6 +782,8 @@ mod tests {
     fn light_client_panics_are_retryable() {
         for err in [
             "Smart contract panicked: panicked at contracts/satoshi-bridge/src/btc_light_client/deposit.rs:378:14:\nCall verify_transaction_inclusion failed: Failed",
+            "Smart contract panicked: panicked at contracts/satoshi-bridge/src/btc_light_client/deposit.rs:138:14:\nCall verify_transaction_inclusion_with_heights failed: Failed",
+            "Smart contract panicked: block does not belong to the current main chain",
             "Smart contract panicked: cannot find requested transaction block",
             "Smart contract panicked: Not enough blocks confirmed",
             "Smart contract panicked: Not enough confirmations for the block-cumulative bridge amount",

@@ -140,6 +140,7 @@ async fn fetch_tx_outcome(
 }
 
 const TERMINAL_FAILURE_OVERRIDES: [&str; 1] = ["BTC pending info not exist"];
+const RETRYABLE_FAILURE_OVERRIDES: [&str; 1] = ["Pausable: Method is paused"];
 
 fn is_retryable_failure(err_str: &str, errors: &[&str]) -> bool {
     if TERMINAL_FAILURE_OVERRIDES
@@ -149,7 +150,10 @@ fn is_retryable_failure(err_str: &str, errors: &[&str]) -> bool {
         return false;
     }
 
-    errors.iter().any(|e| err_str.contains(e))
+    RETRYABLE_FAILURE_OVERRIDES
+        .iter()
+        .chain(errors)
+        .any(|e| err_str.contains(e))
 }
 
 fn scan_receipt_failures(
@@ -301,5 +305,13 @@ mod tests {
     #[test]
     fn empty_pattern_list_never_retries() {
         assert!(!is_retryable_failure("UTXO abc:0 not exist", &[]));
+    }
+
+    /// A paused contract must park the transfer, not drop it, on every path.
+    #[test]
+    fn paused_contract_is_retryable_for_any_caller() {
+        let err = "Smart contract panicked: Pausable: Method is paused";
+        assert!(is_retryable_failure(err, &SIGN_RETRYABLE));
+        assert!(is_retryable_failure(err, &[]));
     }
 }
