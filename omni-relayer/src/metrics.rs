@@ -30,7 +30,9 @@ pub mod event_outcome {
     /// Nak'd for immediate retry: a real stall (dependency not ready, RPC error).
     pub const RETRY: &str = "retry";
     /// Nak'd with an explicit delay: the scheduled finality wait, which fires on
-    /// essentially every transfer. Kept separate so [`RETRY`] stays alertable.
+    /// essentially every transfer, and deliberate holds such as a SHIELD block
+    /// (counted by reason under `relayer_preflight_rejections_total`). Kept
+    /// separate so [`RETRY`] stays alertable.
     pub const RETRY_SCHEDULED: &str = "retry_scheduled";
     /// Terminated because a worker returned `EventAction::Drop`: the relayer
     /// gave up on the event permanently and nothing downstream follows it — an
@@ -159,25 +161,6 @@ pub mod rejection_reason {
     pub const SHIELD_UNAVAILABLE: &str = "shield_unavailable";
 }
 
-/// Outcome of the token price lookup that fills SHIELD's `amountUsd`. A
-/// transfer is never held or dropped over a price, so these never appear as a
-/// rejection reason — an unknown price silently sends `amountUsd = 0`, which
-/// every USD threshold reads as below-threshold. That is why the failure modes
-/// need their own counter: without one, SHIELD's USD rules going inert is
-/// invisible.
-pub mod price_outcome {
-    /// A USD value was obtained and sent to SHIELD.
-    pub const PRICED: &str = "priced";
-    /// The indexer answered, but has no price for the token: not in its
-    /// allowlist price map, or no Coingecko listing. Has a nonzero baseline for
-    /// long-tail tokens; alert on it rising for a token that used to price.
-    pub const UNPRICEABLE: &str = "unpriceable";
-    /// The lookup failed: the indexer was unreachable, timed out, rejected the
-    /// request, or answered with something unparseable. Alert on any sustained
-    /// rate — every transfer in it is evaluated by SHIELD as $0.
-    pub const UNAVAILABLE: &str = "unavailable";
-}
-
 /// Disposition of the head-of-line pending EVM transaction each fee-bumping pass.
 pub mod pending_tx_outcome {
     /// The transaction was mined.
@@ -269,7 +252,7 @@ pub struct Metrics {
     near_tx_receipt: Counter<u64>,
     stalled_retries: Counter<u64>,
     preflight_rejections: Counter<u64>,
-    token_price_lookups: Counter<u64>,
+    token_price_errors: Counter<u64>,
     nats_publish: Counter<u64>,
     evm_pending_tx: Counter<u64>,
 }
@@ -302,9 +285,9 @@ impl Metrics {
                 .u64_counter("relayer_preflight_rejections_total")
                 .with_description("Transfers rejected before any chain interaction")
                 .build(),
-            token_price_lookups: meter
-                .u64_counter("relayer_token_price_lookups_total")
-                .with_description("Token USD price lookups backing SHIELD's amountUsd")
+            token_price_errors: meter
+                .u64_counter("relayer_token_price_errors_total")
+                .with_description("Failed token USD price lookups; SHIELD saw amountUsd = 0")
                 .build(),
             nats_publish: meter
                 .u64_counter("relayer_nats_publish_total")
@@ -381,30 +364,21 @@ impl Metrics {
         );
     }
 
-    /// Records the outcome of a token price lookup. See [`price_outcome`].
+    /// Records a failed token price lookup: the bridge indexer was unreachable,
+    /// timed out, rejected the request or answered with something unparseable.
+    /// The transfer is still relayed, but SHIELD evaluates it with
+    /// `amountUsd = 0`, i.e. below every USD threshold — so without this
+    /// counter the USD rules going inert would be invisible. Alert on any
+    /// sustained rate.
     ///
-    /// `chain` is the chain whose units the priced amount is in, not
-    /// necessarily the token's own chain — see `utils::token_price`.
-    ///
-    /// `token` is the nep141 account id, labelled so a pricing problem can be
-    /// attributed to one token rather than to the endpoint. Its cardinality is
-    /// the set of tokens the bridge has registered, which is bounded and grows
-    /// only when a token is deployed — unlike a sender or a transfer id, which
-    /// must never become a label.
-    pub fn record_token_price_lookup(
-        &self,
-        outcome: &'static str,
-        chain: ChainKind,
-        token: &AccountId,
-    ) {
-        self.token_price_lookups.add(
-            1,
-            &[
-                KeyValue::new("outcome", outcome),
-                KeyValue::new("chain", chain_label(chain)),
-                KeyValue::new("token", token.to_string()),
-            ],
-        );
+    /// Only failures are counted, and only by `token`, to keep the series count
+    /// down: one series per token that has ever failed. Spread across many
+    /// tokens reads as an indexer outage; concentrated on one, as a problem
+    /// with that token. A token the indexer answers for but cannot price (no
+    /// Coingecko listing) is not a failure and is only logged.
+    pub fn record_token_price_error(&self, token: &AccountId) {
+        self.token_price_errors
+            .add(1, &[KeyValue::new("token", token.to_string())]);
     }
 
     /// Records a NATS publish attempt.

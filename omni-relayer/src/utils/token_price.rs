@@ -3,17 +3,21 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use near_sdk::AccountId;
 use omni_types::ChainKind;
-use reqwest::{Client, Url};
+use reqwest::{Client, StatusCode, Url};
 use std::sync::OnceLock;
 use tracing::warn;
 
 use crate::config;
-use crate::metrics::{Metrics, price_outcome};
+use crate::metrics::Metrics;
 
 /// Deliberately short: this lookup is a pre-flight fallback, not a dependency.
 /// A price that takes longer than this to arrive is one to give up on rather
 /// than hold a transfer for.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The indexer's token-price endpoint is keyed so an open endpoint can't burn
+/// its Coingecko quota. A secret, so an env var rather than committed config.
+const API_KEY_ENV: &str = "TOKEN_PRICE_API_KEY";
 
 /// The value sent to SHIELD when the price is unknown: no Coingecko listing for
 /// the token, the indexer being unreachable, or the bridge API not configured.
@@ -39,6 +43,26 @@ struct TokenPriceResponse {
     decimals: u32,
 }
 
+fn api_key() -> Option<&'static str> {
+    static API_KEY: OnceLock<Option<String>> = OnceLock::new();
+
+    API_KEY
+        .get_or_init(|| {
+            std::env::var(API_KEY_ENV)
+                .ok()
+                .map(|key| key.trim().to_string())
+                .filter(|key| !key.is_empty())
+        })
+        .as_deref()
+}
+
+/// Whether a price lookup can be attempted at all. When it can't, every
+/// transfer goes to SHIELD with [`AMOUNT_USD_UNKNOWN`] without an attempt, so
+/// that a deployment choice isn't reported as a lookup failure per transfer.
+pub fn is_enabled(config: &config::Config) -> bool {
+    config.is_bridge_api_enabled() && api_key().is_some()
+}
+
 fn client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
 
@@ -56,7 +80,7 @@ pub async fn amount_usd(
     amount: u128,
     chain: ChainKind,
 ) -> f64 {
-    if !config.is_bridge_api_enabled() {
+    if !is_enabled(config) {
         return AMOUNT_USD_UNKNOWN;
     }
 
@@ -75,23 +99,17 @@ fn usd_value(amount: u128, decimals: u32, usd_price: f64) -> f64 {
 }
 
 async fn price(config: &config::Config, token_id: &AccountId, chain: ChainKind) -> Option<Price> {
-    let metrics = Metrics::global();
-
     match fetch_price(config, token_id, chain).await {
-        Ok(Some(price)) => {
-            metrics.record_token_price_lookup(price_outcome::PRICED, chain, token_id);
-            Some(price)
-        }
+        Ok(Some(price)) => Some(price),
         Ok(None) => {
             warn!("No USD price for token {token_id}, reporting the amount as unknown to SHIELD");
-            metrics.record_token_price_lookup(price_outcome::UNPRICEABLE, chain, token_id);
             None
         }
         Err(err) => {
             warn!(
                 "Failed to fetch USD price for token {token_id}: {err:?}, reporting the amount as unknown to SHIELD"
             );
-            metrics.record_token_price_lookup(price_outcome::UNAVAILABLE, chain, token_id);
+            Metrics::global().record_token_price_error(token_id);
             None
         }
     }
@@ -107,6 +125,7 @@ async fn fetch_price(
         .api_url
         .as_ref()
         .context("No api url was provided")?;
+    let api_key = api_key().with_context(|| format!("`{API_KEY_ENV}` env var is not set"))?;
 
     let mut url = Url::parse(base_url)
         .context("Failed to parse bridge_indexer.api_url")?
@@ -118,6 +137,7 @@ async fn fetch_price(
 
     let response = client()
         .get(url)
+        .header("X-API-Key", api_key)
         .send()
         .await
         .context("Token price request failed")?;
@@ -130,6 +150,14 @@ async fn fetch_price(
         .text()
         .await
         .context("Token price response body read failed")?;
+
+    // A deploy/config error rather than a pricing one, so worded to be told
+    // apart from the rest at a glance.
+    if status == StatusCode::UNAUTHORIZED {
+        return Err(anyhow!(
+            "Token price API rejected the API key ({status}): `{API_KEY_ENV}` is wrong or was rotated out on the indexer: {body}"
+        ));
+    }
 
     if !status.is_success() {
         return Err(anyhow!("Token price request returned {status}: {body}"));

@@ -141,9 +141,14 @@ async fn main() -> Result<()> {
         }
     }
 
-    if config::Config::is_shield_enabled() && !config.is_bridge_api_enabled() {
+    if config::Config::is_shield_enabled() && !utils::token_price::is_enabled(&config) {
+        let missing = if config.is_bridge_api_enabled() {
+            "`TOKEN_PRICE_API_KEY` env var is not set"
+        } else {
+            "`bridge_indexer.api_url` is not configured"
+        };
         warn!(
-            "SHIELD USD thresholds inert: `bridge_indexer.api_url` is not configured, so every transfer is evaluated with amountUsd = 0"
+            "SHIELD USD thresholds inert: {missing}, so every transfer is evaluated with amountUsd = 0"
         );
     }
 

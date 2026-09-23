@@ -18,7 +18,22 @@ use crate::workers::EventAction;
 
 use super::{kyt, shield, token_price};
 
+/// Floor for every SHIELD hold, including a `delay` shorter than this.
 const MIN_SHIELD_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// Cap for the backoff on SHIELD holds with no delay of their own (block,
+/// approval, missing grants). Bounds how long a transfer keeps waiting after
+/// the incident clears, while cutting a long incident to one SHIELD call per
+/// held transfer per hour instead of one every 30 seconds.
+const MAX_SHIELD_RETRY_DELAY: Duration = Duration::from_hours(1);
+
+/// A SHIELD hold with no delay of its own. The backoff runs on the NATS
+/// delivery count, which includes the transfer's earlier deliveries (a
+/// finality wait, a fee retry), so a transfer that has already been redelivered
+/// a few times starts further up the curve — erring towards fewer SHIELD calls.
+const SHIELD_HOLD: EventAction = EventAction::RetryWithBackoff {
+    min: MIN_SHIELD_RETRY_DELAY,
+    max: MAX_SHIELD_RETRY_DELAY,
+};
 
 async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
     check_kyt_senders(std::slice::from_ref(sender), context).await
@@ -162,7 +177,7 @@ fn map_shield_decision(
         Ok(shield::Decision::Block { reason }) => {
             warn!("SHIELD blocked {direction} {context} (active incident: {reason}), holding");
             metrics.record_preflight_rejection(rejection_reason::SHIELD_BLOCK, Some(chain));
-            Some(EventAction::RetryAfter(MIN_SHIELD_RETRY_DELAY))
+            Some(SHIELD_HOLD)
         }
         Ok(shield::Decision::Delay { delay, reason }) => {
             info!("SHIELD delayed {direction} {context} ({reason}), holding");
@@ -176,12 +191,12 @@ fn map_shield_decision(
                 "SHIELD requires manual approval for {direction} {context} ({reason}); the relayer has no approval flow, holding"
             );
             metrics.record_preflight_rejection(rejection_reason::SHIELD_APPROVAL, Some(chain));
-            Some(EventAction::RetryAfter(MIN_SHIELD_RETRY_DELAY))
+            Some(SHIELD_HOLD)
         }
         Ok(shield::Decision::NotEnoughPermissions { reason }) => {
             warn!("SHIELD grants are misconfigured for {direction} {context}: {reason}, holding");
             metrics.record_preflight_rejection(rejection_reason::SHIELD_MISCONFIGURED, Some(chain));
-            Some(EventAction::RetryAfter(MIN_SHIELD_RETRY_DELAY))
+            Some(SHIELD_HOLD)
         }
         Err(err) => {
             warn!("SHIELD {direction} evaluation failed for {context}: {err:?}, retrying");
