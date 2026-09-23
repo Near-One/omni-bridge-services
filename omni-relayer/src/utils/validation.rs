@@ -19,12 +19,6 @@ use crate::workers::EventAction;
 use super::{kyt, shield, token_price};
 
 const MIN_SHIELD_RETRY_DELAY: Duration = Duration::from_secs(30);
-const MAX_SHIELD_RETRY_DELAY: Duration = Duration::from_hours(1);
-
-const SHIELD_HOLD: EventAction = EventAction::RetryWithBackoff {
-    min: MIN_SHIELD_RETRY_DELAY,
-    max: MAX_SHIELD_RETRY_DELAY,
-};
 
 async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
     check_kyt_senders(std::slice::from_ref(sender), context).await
@@ -168,7 +162,7 @@ fn map_shield_decision(
         Ok(shield::Decision::Block { reason }) => {
             warn!("SHIELD blocked {direction} {context} (active incident: {reason}), holding");
             metrics.record_preflight_rejection(rejection_reason::SHIELD_BLOCK, Some(chain));
-            Some(SHIELD_HOLD)
+            Some(EventAction::Retry)
         }
         Ok(shield::Decision::Delay { delay, reason }) => {
             info!("SHIELD delayed {direction} {context} ({reason}), holding");
@@ -182,12 +176,12 @@ fn map_shield_decision(
                 "SHIELD requires manual approval for {direction} {context} ({reason}); the relayer has no approval flow, holding"
             );
             metrics.record_preflight_rejection(rejection_reason::SHIELD_APPROVAL, Some(chain));
-            Some(SHIELD_HOLD)
+            Some(EventAction::Retry)
         }
         Ok(shield::Decision::NotEnoughPermissions { reason }) => {
             warn!("SHIELD grants are misconfigured for {direction} {context}: {reason}, holding");
             metrics.record_preflight_rejection(rejection_reason::SHIELD_MISCONFIGURED, Some(chain));
-            Some(SHIELD_HOLD)
+            Some(EventAction::Retry)
         }
         Err(err) => {
             warn!("SHIELD {direction} evaluation failed for {context}: {err:?}, retrying");

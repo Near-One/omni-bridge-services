@@ -91,11 +91,6 @@ impl<E> RetryableEvent<E> {
 pub enum EventAction {
     Retry,
     RetryAfter(Duration),
-    /// Exponential backoff like [`Self::Retry`], clamped to `[min, max]`.
-    RetryWithBackoff {
-        min: Duration,
-        max: Duration,
-    },
     /// The relayer did its part: the transfer was submitted, or handed to the
     /// next stage. Acked as [`event_outcome::DONE`].
     Remove,
@@ -131,10 +126,7 @@ fn compute_ack_decision(
         // out, and a give-up is never counted as a successful relay.
         Ok(EventAction::Remove) => return NatsAckDecision::Ack,
         Ok(EventAction::Drop) => return NatsAckDecision::Drop,
-        Ok(
-            EventAction::Retry | EventAction::RetryAfter(_) | EventAction::RetryWithBackoff { .. },
-        )
-        | Err(_) => {}
+        Ok(EventAction::Retry | EventAction::RetryAfter(_)) | Err(_) => {}
     }
 
     if age > max_message_age {
@@ -142,17 +134,9 @@ fn compute_ack_decision(
     }
     let backoff = match result {
         Ok(EventAction::RetryAfter(d)) => (*d).min(max_backoff),
-        Ok(EventAction::RetryWithBackoff { min, max }) => exponential_backoff(delivered)
-            .min(*max)
-            .max(*min)
-            .min(max_backoff),
-        _ => exponential_backoff(delivered).min(max_backoff),
+        _ => Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1))).min(max_backoff),
     };
     NatsAckDecision::NakWithBackoff(backoff)
-}
-
-fn exponential_backoff(delivered: u32) -> Duration {
-    Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
 }
 
 pub enum WorkerEvent {
@@ -571,9 +555,7 @@ async fn handle_nats_ack(
             return record_ack(&ack, origin_chain, event_outcome::DROPPED_TERMINAL);
         }
         Err(err) => warn!("Worker returned error: {err:?}"),
-        Ok(
-            EventAction::Retry | EventAction::RetryAfter(_) | EventAction::RetryWithBackoff { .. },
-        ) => {}
+        Ok(EventAction::Retry | EventAction::RetryAfter(_)) => {}
     }
 
     let metrics = Metrics::global();
@@ -607,10 +589,7 @@ async fn handle_nats_ack(
                 // `RetryAfter` is the scheduled finality wait, which fires on
                 // essentially every transfer. Counted apart from `RETRY` so that
                 // the latter stays a usable stall signal.
-                let outcome = if matches!(
-                    result,
-                    Ok(EventAction::RetryAfter(_) | EventAction::RetryWithBackoff { .. })
-                ) {
+                let outcome = if matches!(result, Ok(EventAction::RetryAfter(_))) {
                     event_outcome::RETRY_SCHEDULED
                 } else {
                     metrics.record_message_age(origin_chain, age);
@@ -763,10 +742,7 @@ pub async fn process_events(
                 if message_result.needs_evm_nonce_resync
                     && matches!(
                         message_result.action,
-                        Ok(EventAction::Retry
-                            | EventAction::RetryAfter(_)
-                            | EventAction::RetryWithBackoff { .. })
-                            | Err(_)
+                        Ok(EventAction::Retry | EventAction::RetryAfter(_)) | Err(_)
                     )
                 {
                     is_evm_nonce_resync_needed.store(true, Ordering::Relaxed);
@@ -1664,61 +1640,6 @@ mod tests {
             decision,
             NatsAckDecision::NakWithBackoff(d) if d == Duration::from_hours(1)
         ));
-    }
-
-    const HOLD: EventAction = EventAction::RetryWithBackoff {
-        min: Duration::from_secs(30),
-        max: Duration::from_mins(30),
-    };
-
-    #[test]
-    fn retry_with_backoff_is_floored_on_early_deliveries() {
-        // delivered=1: 3^0 = 1s, below the 30s floor.
-        let decision = make_decision(&Ok(HOLD), 0, 1);
-        assert!(matches!(
-            decision,
-            NatsAckDecision::NakWithBackoff(d) if d == Duration::from_secs(30)
-        ));
-    }
-
-    #[test]
-    fn retry_with_backoff_grows_between_floor_and_cap() {
-        // delivered=6: 3^5 = 243s, inside [30s, 30min].
-        let decision = make_decision(&Ok(HOLD), 0, 6);
-        assert!(matches!(
-            decision,
-            NatsAckDecision::NakWithBackoff(d) if d == Duration::from_secs(243)
-        ));
-    }
-
-    #[test]
-    fn retry_with_backoff_is_capped_at_its_own_max() {
-        // delivered=20: 3^19s, far past the hold's 30min cap (and the 1h global).
-        let decision = make_decision(&Ok(HOLD), 0, 20);
-        assert!(matches!(
-            decision,
-            NatsAckDecision::NakWithBackoff(d) if d == Duration::from_mins(30)
-        ));
-    }
-
-    #[test]
-    fn retry_with_backoff_respects_the_global_max_backoff() {
-        // A hold cap above `max_backoff_hours` (1h in `make_decision`) yields to it.
-        let result = Ok(EventAction::RetryWithBackoff {
-            min: Duration::from_secs(30),
-            max: Duration::from_hours(6),
-        });
-        let decision = make_decision(&result, 0, 20);
-        assert!(matches!(
-            decision,
-            NatsAckDecision::NakWithBackoff(d) if d == Duration::from_hours(1)
-        ));
-    }
-
-    #[test]
-    fn retry_with_backoff_still_ages_out() {
-        let decision = make_decision(&Ok(HOLD), 7 * 24 * 3600 + 1, 20);
-        assert!(matches!(decision, NatsAckDecision::Term));
     }
 
     #[test]
