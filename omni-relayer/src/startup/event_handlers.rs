@@ -864,12 +864,16 @@ pub(super) async fn handle_transaction_event(
                 anyhow::bail!("Expected Utxo ChainTransferId for TransferUtxoToNear: {event:?}");
             };
 
-            info!(
-                "Received TransferUtxoToNear on {:?}: {utxo_id}",
-                event.transfer_id.origin_chain
-            );
-            let key = format!("utxo-deposit:{utxo_id}");
             let chain = event.transfer_id.origin_chain;
+            if !config.is_chain_configured(chain) {
+                info!(
+                    "No {chain:?} configuration in this relayer, skipping TransferUtxoToNear: {utxo_id}"
+                );
+                return Ok(());
+            }
+
+            info!("Received TransferUtxoToNear on {chain:?}: {utxo_id}");
+            let key = format!("utxo-deposit:{utxo_id}");
             let payload = workers::Transfer::UtxoToNear {
                 chain,
                 btc_tx_hash: utxo_id.tx_hash.clone(),
