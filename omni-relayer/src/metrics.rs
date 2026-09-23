@@ -30,9 +30,7 @@ pub mod event_outcome {
     /// Nak'd for immediate retry: a real stall (dependency not ready, RPC error).
     pub const RETRY: &str = "retry";
     /// Nak'd with an explicit delay: the scheduled finality wait, which fires on
-    /// essentially every transfer, and deliberate holds such as a SHIELD block
-    /// (counted by reason under `relayer_preflight_rejections_total`). Kept
-    /// separate so [`RETRY`] stays alertable.
+    /// essentially every transfer. Kept separate so [`RETRY`] stays alertable.
     pub const RETRY_SCHEDULED: &str = "retry_scheduled";
     /// Terminated because a worker returned `EventAction::Drop`: the relayer
     /// gave up on the event permanently and nothing downstream follows it — an
@@ -364,18 +362,7 @@ impl Metrics {
         );
     }
 
-    /// Records a failed token price lookup: the bridge indexer was unreachable,
-    /// timed out, rejected the request or answered with something unparseable.
-    /// The transfer is still relayed, but SHIELD evaluates it with
-    /// `amountUsd = 0`, i.e. below every USD threshold — so without this
-    /// counter the USD rules going inert would be invisible. Alert on any
-    /// sustained rate.
-    ///
-    /// Only failures are counted, and only by `token`, to keep the series count
-    /// down: one series per token that has ever failed. Spread across many
-    /// tokens reads as an indexer outage; concentrated on one, as a problem
-    /// with that token. A token the indexer answers for but cannot price (no
-    /// Coingecko listing) is not a failure and is only logged.
+    /// Records a failed token price lookup; SHIELD then sees `amountUsd = 0`.
     pub fn record_token_price_error(&self, token: &AccountId) {
         self.token_price_errors
             .add(1, &[KeyValue::new("token", token.to_string())]);

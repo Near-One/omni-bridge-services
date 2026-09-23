@@ -15,8 +15,6 @@ use crate::metrics::Metrics;
 /// than hold a transfer for.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The indexer's token-price endpoint is keyed so an open endpoint can't burn
-/// its Coingecko quota. A secret, so an env var rather than committed config.
 const API_KEY_ENV: &str = "TOKEN_PRICE_API_KEY";
 
 /// The value sent to SHIELD when the price is unknown: no Coingecko listing for
@@ -56,9 +54,6 @@ fn api_key() -> Option<&'static str> {
         .as_deref()
 }
 
-/// Whether a price lookup can be attempted at all. When it can't, every
-/// transfer goes to SHIELD with [`AMOUNT_USD_UNKNOWN`] without an attempt, so
-/// that a deployment choice isn't reported as a lookup failure per transfer.
 pub fn is_enabled(config: &config::Config) -> bool {
     config.is_bridge_api_enabled() && api_key().is_some()
 }
@@ -151,8 +146,6 @@ async fn fetch_price(
         .await
         .context("Token price response body read failed")?;
 
-    // A deploy/config error rather than a pricing one, so worded to be told
-    // apart from the rest at a glance.
     if status == StatusCode::UNAUTHORIZED {
         return Err(anyhow!(
             "Token price API rejected the API key ({status}): `{API_KEY_ENV}` is wrong or was rotated out on the indexer: {body}"

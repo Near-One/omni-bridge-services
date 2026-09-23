@@ -91,12 +91,7 @@ impl<E> RetryableEvent<E> {
 pub enum EventAction {
     Retry,
     RetryAfter(Duration),
-    /// Exponential backoff on the delivery count, as for [`Self::Retry`], but
-    /// floored at `min` and capped at `max`. For holds that are expected to
-    /// clear on their own but on no known schedule — a SHIELD block — where a
-    /// fixed delay either hammers the dependency or waits needlessly long, and
-    /// the stock backoff's one-second start and multi-hour cap are both wrong.
-    /// Acked like [`Self::RetryAfter`]: a deliberate hold, not a stall.
+    /// Exponential backoff like [`Self::Retry`], clamped to `[min, max]`.
     RetryWithBackoff {
         min: Duration,
         max: Duration,
@@ -147,7 +142,6 @@ fn compute_ack_decision(
     }
     let backoff = match result {
         Ok(EventAction::RetryAfter(d)) => (*d).min(max_backoff),
-        // `max` before `min` rather than `clamp`, which panics on `min > max`.
         Ok(EventAction::RetryWithBackoff { min, max }) => exponential_backoff(delivered)
             .min(*max)
             .max(*min)
@@ -157,7 +151,6 @@ fn compute_ack_decision(
     NatsAckDecision::NakWithBackoff(backoff)
 }
 
-/// `3^(delivered - 1)` seconds: 1s on the first delivery, then 3s, 9s, 27s, ...
 fn exponential_backoff(delivered: u32) -> Duration {
     Duration::from_secs(3u64.saturating_pow(delivered.saturating_sub(1)))
 }
@@ -612,9 +605,8 @@ async fn handle_nats_ack(
             }
             NatsAckDecision::NakWithBackoff(backoff) => {
                 // `RetryAfter` is the scheduled finality wait, which fires on
-                // essentially every transfer, and `RetryWithBackoff` a deliberate
-                // hold. Both are counted apart from `RETRY` so that the latter
-                // stays a usable stall signal.
+                // essentially every transfer. Counted apart from `RETRY` so that
+                // the latter stays a usable stall signal.
                 let outcome = if matches!(
                     result,
                     Ok(EventAction::RetryAfter(_) | EventAction::RetryWithBackoff { .. })

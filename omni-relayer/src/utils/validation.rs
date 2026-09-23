@@ -18,18 +18,9 @@ use crate::workers::EventAction;
 
 use super::{kyt, shield, token_price};
 
-/// Floor for every SHIELD hold, including a `delay` shorter than this.
 const MIN_SHIELD_RETRY_DELAY: Duration = Duration::from_secs(30);
-/// Cap for the backoff on SHIELD holds with no delay of their own (block,
-/// approval, missing grants). Bounds how long a transfer keeps waiting after
-/// the incident clears, while cutting a long incident to one SHIELD call per
-/// held transfer per hour instead of one every 30 seconds.
 const MAX_SHIELD_RETRY_DELAY: Duration = Duration::from_hours(1);
 
-/// A SHIELD hold with no delay of its own. The backoff runs on the NATS
-/// delivery count, which includes the transfer's earlier deliveries (a
-/// finality wait, a fee retry), so a transfer that has already been redelivered
-/// a few times starts further up the curve — erring towards fewer SHIELD calls.
 const SHIELD_HOLD: EventAction = EventAction::RetryWithBackoff {
     min: MIN_SHIELD_RETRY_DELAY,
     max: MAX_SHIELD_RETRY_DELAY,
