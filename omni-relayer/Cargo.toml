@@ -11,7 +11,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 # Metrics are pushed via OTLP to Grafana Cloud (no scrape endpoint), matching
 # omni-proxy and wormhole-vaa-api. Keep these versions in sync with those crates.
 opentelemetry = { version = "0.27", features = ["metrics"] }
-opentelemetry_sdk = { version = "0.27", features = ["metrics", "rt-tokio"] }
+opentelemetry_sdk = { version = "0.30", features = ["metrics", "rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["metrics", "http-proto", "reqwest-client"] }
 
 chrono = "0.4"
