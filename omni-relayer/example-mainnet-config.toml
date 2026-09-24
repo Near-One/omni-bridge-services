@@ -265,6 +265,13 @@ sign_delay_secs = 0
 # fixed_fee_rate = 1000
 # max_input_number = 20
 
+# Uncomment to override the connector's withdraw UTXO selection params.
+# Unset fields fall back to the values from the contract config.
+# [btc.utxo_selection]
+# algorithm_switch_threshold = 1000  # replaces active_management_upper_limit
+# split_below = 10                   # replaces passive_management_lower_limit
+# merge_above = 100                  # replaces passive_management_upper_limit
+
 [zcash]
 rpc_http_url = "https://x-api-key:TATUM_API_KEY@zcash-mainnet.gateway.tatum.io"
 light_client = "zcash-client.bridge.near"
@@ -275,6 +282,13 @@ verifying_withdraw_enabled = true
 lc_polling_interval_secs = 10
 # No co-relayer exists for Zcash today; keep at 0 unless one is introduced.
 sign_delay_secs = 0
+
+# Uncomment to override the connector's withdraw UTXO selection params.
+# Unset fields fall back to the values from the contract config.
+# [zcash.utxo_selection]
+# algorithm_switch_threshold = 1000  # replaces active_management_upper_limit
+# split_below = 10                   # replaces passive_management_lower_limit
+# merge_above = 100                  # replaces passive_management_upper_limit
 
 [orchard]
 enabled = false

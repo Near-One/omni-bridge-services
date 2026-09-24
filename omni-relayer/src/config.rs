@@ -581,6 +581,8 @@ pub struct Utxo {
     pub sign_delay_secs: u64,
     #[serde(default)]
     pub active_utxo_management: Option<ActiveUtxoManagement>,
+    #[serde(default)]
+    pub utxo_selection: UtxoSelection,
     /// Percent of the user's `max_gas_fee` actually offered to the UTXO
     /// selector. The remainder is reserved for fee bumping. 0..=100.
     #[serde(default = "default_max_gas_fee_percent")]
@@ -603,6 +605,30 @@ const fn default_max_gas_fee_percent() -> u8 {
 
 const fn default_change_reserve() -> u128 {
     5000
+}
+
+/// Local overrides of the connector's withdraw selection params.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct UtxoSelection {
+    /// Replaces `active_management_upper_limit`.
+    #[serde(default)]
+    pub algorithm_switch_threshold: Option<u32>,
+    /// Replaces `passive_management_lower_limit`.
+    #[serde(default)]
+    pub split_below: Option<u32>,
+    /// Replaces `passive_management_upper_limit`.
+    #[serde(default)]
+    pub merge_above: Option<u32>,
+}
+
+impl From<&UtxoSelection> for utxo_utils::WithdrawSelectionOverrides {
+    fn from(selection: &UtxoSelection) -> Self {
+        Self {
+            algorithm_switch_threshold: selection.algorithm_switch_threshold,
+            split_below: selection.split_below,
+            merge_above: selection.merge_above,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
