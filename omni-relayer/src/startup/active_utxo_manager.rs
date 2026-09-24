@@ -5,6 +5,7 @@ use near_bridge_client::TransactionOptions;
 use omni_connector::OmniConnector;
 use omni_types::ChainKind;
 use tracing::{info, warn};
+use utxo_utils::ActiveManagementPlan;
 
 use crate::{config::ActiveUtxoManagement, utils};
 
@@ -53,6 +54,13 @@ pub async fn start_active_utxo_manager(
             settings.utxo_count_threshold
         );
 
+        let plan = ActiveManagementPlan::Merge {
+            input_number: settings.max_input_number,
+            prefer_largest: false,
+            per_utxo_cap: None,
+            max_total: None,
+        };
+
         let nonce = match near_nonce.reserve_nonce() {
             Ok(nonce) => Some(nonce),
             Err(err) => {
@@ -64,11 +72,8 @@ pub async fn start_active_utxo_manager(
         match omni_connector
             .active_utxo_management(
                 chain,
+                &plan,
                 settings.fixed_fee_rate,
-                settings.max_input_number,
-                false,
-                None,
-                None,
                 TransactionOptions {
                     nonce,
                     wait_until: near_primitives::views::TxExecutionStatus::Final,

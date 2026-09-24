@@ -42,4 +42,4 @@ protoc-bin-vendored = "3"
 [dev-dependencies]
 httpmock = "0.7"
 sha3 = "0.10"
-wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "6425aee3e6bfa453722497410bb9ecfccf717f12" }
+wormhole-bridge-client = { git = "https://github.com/Near-One/bridge-sdk-rs", package = "wormhole-bridge-client", rev = "d1361ac1c68fa579ed1a498d30f2124bc16e09cc" }
