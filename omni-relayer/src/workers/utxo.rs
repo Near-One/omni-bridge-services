@@ -202,8 +202,11 @@ pub async fn process_utxo_to_near_init_transfer_event(
                 warn!("Unsupported chain for UTXO, dropping: {chain:?}");
                 return Ok(EventAction::Drop);
             }
-        }
-        .with_context(|| format!("{chain:?} UTXO config missing for input KYT"))?;
+        };
+        let Some(rpc_url) = rpc_url else {
+            warn!("No {chain:?} configuration in this relayer, dropping: {btc_tx_hash}:{vout}");
+            return Ok(EventAction::Drop);
+        };
 
         let input_addresses = match utils::utxo::fetch_input_addresses(rpc_url, chain, &btc_tx_hash)
             .await
