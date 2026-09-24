@@ -267,7 +267,7 @@ sign_delay_secs = 0
 
 # Uncomment to override the connector's withdraw UTXO selection params.
 # Unset fields fall back to the values from the contract config.
-# [btc.utxo_selection]
+# [btc.withdraw_selection]
 # algorithm_switch_threshold = 1000  # replaces active_management_upper_limit
 # split_below = 10                   # replaces passive_management_lower_limit
 # merge_above = 100                  # replaces passive_management_upper_limit
@@ -285,7 +285,7 @@ sign_delay_secs = 0
 
 # Uncomment to override the connector's withdraw UTXO selection params.
 # Unset fields fall back to the values from the contract config.
-# [zcash.utxo_selection]
+# [zcash.withdraw_selection]
 # algorithm_switch_threshold = 1000  # replaces active_management_upper_limit
 # split_below = 10                   # replaces passive_management_lower_limit
 # merge_above = 100                  # replaces passive_management_upper_limit

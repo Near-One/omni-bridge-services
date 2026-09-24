@@ -424,7 +424,7 @@ pub async fn build_omni_connector(
         (ChainKind::Zcash, config.zcash.as_ref()),
     ]
     .into_iter()
-    .filter_map(|(chain, utxo)| Some((chain, (&utxo?.utxo_selection).into())))
+    .filter_map(|(chain, utxo)| Some((chain, (&utxo?.withdraw_selection).into())))
     .collect::<HashMap<_, _>>();
 
     let omni_connector = OmniConnectorBuilder::default()
