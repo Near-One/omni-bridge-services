@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose};
+use near_sdk::AccountId;
 use omni_types::ChainKind;
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Histogram};
@@ -140,6 +141,22 @@ pub mod rejection_reason {
     /// deliberately served by another relayer instance; anything else means a
     /// config mistake.
     pub const NOT_CONFIGURED: &str = "not_configured";
+    /// SHIELD reported an active incident on the transfer's scope. The transfer
+    /// is held, not dropped, so it resumes once the incident is resolved.
+    pub const SHIELD_BLOCK: &str = "shield_block";
+    /// SHIELD asked for the transfer to be delayed (a security mode, not an
+    /// incident); held for the delay it returned.
+    pub const SHIELD_DELAY: &str = "shield_delay";
+    /// SHIELD wants the transfer approved by a human. The relayer has no
+    /// approval flow, so it is held exactly like a block.
+    pub const SHIELD_APPROVAL: &str = "shield_approval";
+    /// The relayer's SHIELD token lacks the grants for the evaluated scope —
+    /// our own misconfiguration, and the one SHIELD reason that never clears on
+    /// its own. Alert on any nonzero rate.
+    pub const SHIELD_MISCONFIGURED: &str = "shield_misconfigured";
+    /// SHIELD was unreachable or answered with something unparseable. An
+    /// outage, not a decision; retried with the standard backoff.
+    pub const SHIELD_UNAVAILABLE: &str = "shield_unavailable";
 }
 
 /// Disposition of the head-of-line pending EVM transaction each fee-bumping pass.
@@ -233,6 +250,7 @@ pub struct Metrics {
     near_tx_receipt: Counter<u64>,
     stalled_retries: Counter<u64>,
     preflight_rejections: Counter<u64>,
+    token_price_errors: Counter<u64>,
     nats_publish: Counter<u64>,
     evm_pending_tx: Counter<u64>,
 }
@@ -264,6 +282,10 @@ impl Metrics {
             preflight_rejections: meter
                 .u64_counter("relayer_preflight_rejections_total")
                 .with_description("Transfers rejected before any chain interaction")
+                .build(),
+            token_price_errors: meter
+                .u64_counter("relayer_token_price_errors_total")
+                .with_description("Failed token USD price lookups; SHIELD saw amountUsd = 0")
                 .build(),
             nats_publish: meter
                 .u64_counter("relayer_nats_publish_total")
@@ -338,6 +360,12 @@ impl Metrics {
                 KeyValue::new("chain", optional_chain_label(chain)),
             ],
         );
+    }
+
+    /// Records a failed token price lookup; SHIELD then sees `amountUsd = 0`.
+    pub fn record_token_price_error(&self, token: &AccountId) {
+        self.token_price_errors
+            .add(1, &[KeyValue::new("token", token.to_string())]);
     }
 
     /// Records a NATS publish attempt.

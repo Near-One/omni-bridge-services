@@ -1,17 +1,24 @@
-//! Sender validation: the configurable per-destination sender allowlist and
-//! KYT screening applied before a transfer is relayed.
+//! Sender validation: the configurable per-destination sender allowlist,
+//! KYT screening, and SHIELD scope evaluation applied before a transfer is
+//! relayed.
 //!
 //! These checks are chain-agnostic (every relaying worker uses them), so they
 //! live in `utils` rather than inside any single chain worker.
 
-use omni_types::{ChainKind, OmniAddress};
-use tracing::warn;
+use std::time::Duration;
+
+use near_sdk::AccountId;
+use omni_connector::OmniConnector;
+use omni_types::{ChainKind, OmniAddress, TransferMessage};
+use tracing::{info, warn};
 
 use crate::config;
 use crate::metrics::{Metrics, rejection_reason};
 use crate::workers::EventAction;
 
-use super::kyt;
+use super::{kyt, shield, token_price};
+
+const MIN_SHIELD_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
     check_kyt_senders(std::slice::from_ref(sender), context).await
@@ -40,6 +47,145 @@ pub(crate) async fn check_kyt_senders(
             warn!("KYT check failed for {senders:?}: {err:?}, retrying");
             Metrics::global()
                 .record_preflight_rejection(rejection_reason::KYT_UNAVAILABLE, origin_chain);
+            Some(EventAction::Retry)
+        }
+    }
+}
+
+pub(crate) async fn check_shield_deposit(
+    config: &config::Config,
+    origin_chain: ChainKind,
+    token_id: &AccountId,
+    amount: u128,
+    sender: &OmniAddress,
+    context: &str,
+) -> Option<EventAction> {
+    if !config::Config::is_shield_enabled() {
+        return None;
+    }
+
+    if shield::blockchain_tag(origin_chain).is_none() {
+        warn!("SHIELD cannot evaluate deposit {context}: unsupported chain {origin_chain:?}");
+        return None;
+    }
+
+    // The deposit's amount comes straight off the origin chain's event, so it
+    // is in that chain's units, not the nep141 ones the locker normalizes to.
+    let amount_usd = token_price::amount_usd(config, token_id, amount, origin_chain).await;
+
+    map_shield_decision(
+        shield::evaluate_deposit(origin_chain, token_id, amount, amount_usd, sender).await,
+        "deposit",
+        origin_chain,
+        context,
+    )
+}
+
+pub(crate) async fn check_shield_withdrawal(
+    config: &config::Config,
+    omni_connector: &OmniConnector,
+    transfer_message: &TransferMessage,
+    context: &str,
+) -> Option<EventAction> {
+    if !config::Config::is_shield_enabled() {
+        return None;
+    }
+
+    let destination_chain = transfer_message.get_destination_chain();
+    if shield::blockchain_tag(destination_chain).is_none() {
+        warn!(
+            "SHIELD cannot evaluate withdrawal {context}: unsupported chain {destination_chain:?}"
+        );
+        return None;
+    }
+
+    // `TransferMessage::token` is a NEAR account id only for transfers that
+    // started on NEAR. One that arrived from a foreign chain and is routed
+    // onward to another one keeps its origin-chain token address, because the
+    // locker builds the message straight out of the prover result
+    // (`fin_transfer_callback`). Resolve it the same way the locker's own
+    // `get_token_id` does.
+    let token_id = if let OmniAddress::Near(token_id) = &transfer_message.token {
+        token_id.clone()
+    } else {
+        match omni_connector
+            .near_get_token_id(transfer_message.token.clone())
+            .await
+        {
+            Ok(token_id) => token_id,
+            Err(err) => {
+                warn!(
+                    "Failed to get token id for transfer {context}: {:?}: {err:?}",
+                    transfer_message.token
+                );
+                return Some(EventAction::Retry);
+            }
+        }
+    };
+
+    // `TransferMessage` amounts are normalized to the nep141 representation by
+    // the locker (`fin_transfer_callback`), whatever chain the transfer came
+    // from, so they are priced as NEAR units rather than destination ones.
+    let amount_usd = token_price::amount_usd(
+        config,
+        &token_id,
+        transfer_message.amount.0,
+        ChainKind::Near,
+    )
+    .await;
+
+    map_shield_decision(
+        shield::evaluate_withdrawal(
+            destination_chain,
+            &token_id,
+            transfer_message.amount.0,
+            amount_usd,
+            &transfer_message.recipient,
+        )
+        .await,
+        "withdrawal",
+        destination_chain,
+        context,
+    )
+}
+
+fn map_shield_decision(
+    decision: anyhow::Result<shield::Decision>,
+    direction: &str,
+    chain: ChainKind,
+    context: &str,
+) -> Option<EventAction> {
+    let metrics = Metrics::global();
+
+    match decision {
+        Ok(shield::Decision::Allow) => None,
+        Ok(shield::Decision::Block { reason }) => {
+            warn!("SHIELD blocked {direction} {context} (active incident: {reason}), holding");
+            metrics.record_preflight_rejection(rejection_reason::SHIELD_BLOCK, Some(chain));
+            Some(EventAction::Retry)
+        }
+        Ok(shield::Decision::Delay { delay, reason }) => {
+            info!("SHIELD delayed {direction} {context} ({reason}), holding");
+            metrics.record_preflight_rejection(rejection_reason::SHIELD_DELAY, Some(chain));
+            Some(EventAction::RetryAfter(
+                delay.unwrap_or_default().max(MIN_SHIELD_RETRY_DELAY),
+            ))
+        }
+        Ok(shield::Decision::Approval { reason }) => {
+            warn!(
+                "SHIELD requires manual approval for {direction} {context} ({reason}); the relayer has no approval flow, holding"
+            );
+            metrics.record_preflight_rejection(rejection_reason::SHIELD_APPROVAL, Some(chain));
+            Some(EventAction::Retry)
+        }
+        Ok(shield::Decision::NotEnoughPermissions { reason }) => {
+            warn!("SHIELD grants are misconfigured for {direction} {context}: {reason}, holding");
+            metrics.record_preflight_rejection(rejection_reason::SHIELD_MISCONFIGURED, Some(chain));
+            Some(EventAction::Retry)
+        }
+        Err(err) => {
+            warn!("SHIELD {direction} evaluation failed for {context}: {err:?}, retrying");
+            metrics.record_preflight_rejection(rejection_reason::SHIELD_UNAVAILABLE, Some(chain));
             Some(EventAction::Retry)
         }
     }
