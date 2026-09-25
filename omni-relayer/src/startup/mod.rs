@@ -419,6 +419,14 @@ pub async fn build_omni_connector(
     let btc_light_client = build_light_client(config, ChainKind::Btc)?;
     let zcash_light_client = build_light_client(config, ChainKind::Zcash)?;
 
+    let utxo_selection_overrides = [
+        (ChainKind::Btc, config.btc.as_ref()),
+        (ChainKind::Zcash, config.zcash.as_ref()),
+    ]
+    .into_iter()
+    .filter_map(|(chain, utxo)| Some((chain, (&utxo?.withdraw_selection).into())))
+    .collect::<HashMap<_, _>>();
+
     let omni_connector = OmniConnectorBuilder::default()
         .network(Some(config.near.network.into()))
         .near_bridge_client(Some(near_bridge_client))
@@ -438,6 +446,7 @@ pub async fn build_omni_connector(
         .btc_bridge_client(btc_bridge_client)
         .zcash_bridge_client(zcash_bridge_client)
         .enable_orchard(config.orchard.as_ref().map(|orchard| orchard.enabled))
+        .utxo_selection_overrides(Some(utxo_selection_overrides))
         .eth_light_client(eth_light_client)
         .btc_light_client(btc_light_client)
         .zcash_light_client(zcash_light_client)
