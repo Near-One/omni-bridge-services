@@ -634,7 +634,16 @@ impl ProxyHttp for RpcProxy {
             self.ws_active.fetch_sub(1, Ordering::Relaxed);
         }
 
-        let failed = ctx.is_failure || e.is_some();
+        // An upgraded connection reports its only status code — the `101` of the
+        // handshake — before any data flows, so `status_codes`/`rpc_codes` can
+        // never flag it, and a peer that closes cleanly raises no transport
+        // error either. Every closed session therefore counted as a *success*,
+        // decaying real failures and pinning the route to a flapping upstream.
+        //
+        // Count the close itself instead: a healthy socket closes rarely enough
+        // that its failures age out of the window, while one that drops every
+        // few minutes reaches `failure_threshold` and fails over.
+        let failed = ctx.is_failure || e.is_some() || ctx.ws_upgraded;
         if let Some(routes) = ctx.routes.as_ref()
             && let Some(ref prefix) = ctx.route_prefix
             && let Some(state) = routes.get(prefix)
@@ -644,6 +653,7 @@ impl ProxyHttp for RpcProxy {
                 health.record_failure();
                 let detail = match e {
                     Some(err) => err.to_string(),
+                    None if ctx.ws_upgraded => "websocket session closed".to_owned(),
                     None => "failure status or rpc error code".to_owned(),
                 };
                 warn!(
@@ -700,6 +710,8 @@ impl ProxyHttp for RpcProxy {
             if failed {
                 let reason = if e.is_some() {
                     "transport_error"
+                } else if ctx.ws_upgraded {
+                    "ws_closed"
                 } else if state.route.failover().is_failure_status(ctx.status_code) {
                     "failure_status"
                 } else {

@@ -104,45 +104,53 @@ prefix = "/ws/eth"
 upstreams = [
   { url = "wss://sepolia.infura.io/ws/v3/${INFURA_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/arb"
 upstreams = [
   { url = "wss://arbitrum-sepolia.infura.io/ws/v3/${INFURA_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/base"
 upstreams = [
   { url = "wss://base-sepolia.infura.io/ws/v3/${INFURA_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/bnb"
 upstreams = [
   { url = "wss://rpc.ankr.com/bsc_testnet_chapel/ws/${ANKR_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/pol"
 upstreams = [
   { url = "wss://polygon-amoy.infura.io/ws/v3/${INFURA_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/abs"
 upstreams = [
   { url = "wss://api.testnet.abs.xyz/ws" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/aurora"
 upstreams = [
   { url = "wss://testnet.aurora.dev" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/solana"
 upstreams = [
   { url = "wss://api.devnet.solana.com" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
