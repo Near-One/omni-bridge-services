@@ -182,6 +182,10 @@ async fn main() -> Result<()> {
     let jsonrpc_client = near_jsonrpc_client::JsonRpcClient::connect(config.near.rpc_url.clone());
 
     let near_omni_signer = utils::near::get_signer(&config, config::NearSignerType::Omni)?;
+    utils::shield::init_identity(
+        near_omni_signer.account_id.to_string(),
+        config.near.omni_bridge_id.to_string(),
+    );
     let omni_connector = Arc::new(startup::build_omni_connector(&config, &near_omni_signer).await?);
     startup::validate_fee_recipient(&config, &omni_connector).await?;
 

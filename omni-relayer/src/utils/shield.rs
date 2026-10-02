@@ -50,6 +50,8 @@ struct DepositRequest<'a> {
     amount_usd: f64,
     timestamp: String,
     sender_address: &'a str,
+    account_id: &'a str,
+    deposit_address: &'a str,
 }
 
 #[derive(serde::Serialize)]
@@ -62,6 +64,8 @@ struct WithdrawalRequest<'a> {
     amount_usd: f64,
     recipient: &'a str,
     timestamp: String,
+    account_id: &'a str,
+    deposit_address: &'a str,
 }
 
 #[derive(Clone, Copy, serde::Deserialize)]
@@ -89,6 +93,26 @@ struct EvaluateResponse {
 struct ResponseMetadata {
     #[serde(default)]
     delay_ms: Option<u64>,
+}
+
+/// Who is asking. SHIELD requires `accountId` and `depositAddress` on every
+/// evaluation but doesn't define them for `bridge: "omni"`.
+struct Identity {
+    account_id: String,
+    deposit_address: String,
+}
+
+static IDENTITY: OnceLock<Identity> = OnceLock::new();
+
+pub fn init_identity(account_id: String, deposit_address: String) {
+    let _ = IDENTITY.set(Identity {
+        account_id,
+        deposit_address,
+    });
+}
+
+fn identity() -> Result<&'static Identity> {
+    IDENTITY.get().context("SHIELD identity is not initialized")
 }
 
 fn client() -> Result<&'static Client> {
@@ -154,12 +178,14 @@ pub async fn evaluate_deposit(
     token_id: &AccountId,
     amount: u128,
     amount_usd: f64,
-    sender: &OmniAddress,
+    sender: Option<&OmniAddress>,
 ) -> Result<Decision> {
     let blockchain =
         blockchain_tag(chain).with_context(|| format!("No SHIELD blockchain tag for {chain:?}"))?;
     let token = to_asset_id(token_id);
-    let sender_address = bare_address(sender);
+    // SHIELD requires the field but accepts "" when there is no sender.
+    let sender_address = sender.map(bare_address).unwrap_or_default();
+    let identity = identity()?;
 
     let request = DepositRequest {
         blockchain,
@@ -169,6 +195,8 @@ pub async fn evaluate_deposit(
         amount_usd,
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         sender_address: &sender_address,
+        account_id: &identity.account_id,
+        deposit_address: &identity.deposit_address,
     };
 
     evaluate("deposit", &request).await
@@ -179,12 +207,13 @@ pub async fn evaluate_withdrawal(
     token_id: &AccountId,
     amount: u128,
     amount_usd: f64,
-    recipient: &OmniAddress,
+    recipient: Option<&OmniAddress>,
 ) -> Result<Decision> {
     let blockchain =
         blockchain_tag(chain).with_context(|| format!("No SHIELD blockchain tag for {chain:?}"))?;
     let token = to_asset_id(token_id);
-    let recipient_address = bare_address(recipient);
+    let recipient_address = recipient.map(bare_address).unwrap_or_default();
+    let identity = identity()?;
 
     let request = WithdrawalRequest {
         blockchain,
@@ -194,6 +223,8 @@ pub async fn evaluate_withdrawal(
         amount_usd,
         recipient: &recipient_address,
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        account_id: &identity.account_id,
+        deposit_address: &identity.deposit_address,
     };
 
     evaluate("withdrawal", &request).await
@@ -352,6 +383,8 @@ mod tests {
             amount_usd: 0.0,
             timestamp: "2026-05-28T08:00:00.000Z".to_string(),
             sender_address: "0xsender",
+            account_id: "omni-relayer.bridge.near",
+            deposit_address: "omni.bridge.near",
         };
 
         assert_eq!(
@@ -364,6 +397,8 @@ mod tests {
                 "amountUsd": 0.0,
                 "timestamp": "2026-05-28T08:00:00.000Z",
                 "senderAddress": "0xsender",
+                "accountId": "omni-relayer.bridge.near",
+                "depositAddress": "omni.bridge.near",
             })
         );
     }
@@ -378,6 +413,8 @@ mod tests {
             amount_usd: 0.0,
             recipient: "0xrecipient",
             timestamp: "2026-05-28T08:00:00.000Z".to_string(),
+            account_id: "omni-relayer.bridge.near",
+            deposit_address: "omni.bridge.near",
         };
 
         assert_eq!(
@@ -390,6 +427,8 @@ mod tests {
                 "amountUsd": 0.0,
                 "recipient": "0xrecipient",
                 "timestamp": "2026-05-28T08:00:00.000Z",
+                "accountId": "omni-relayer.bridge.near",
+                "depositAddress": "omni.bridge.near",
             })
         );
     }

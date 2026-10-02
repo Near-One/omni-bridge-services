@@ -5,7 +5,11 @@
 //! These checks are chain-agnostic (every relaying worker uses them), so they
 //! live in `utils` rather than inside any single chain worker.
 
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use near_sdk::AccountId;
 use omni_connector::OmniConnector;
@@ -19,6 +23,8 @@ use crate::workers::EventAction;
 use super::{kyt, shield, token_price};
 
 const MIN_SHIELD_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// How long a served SHIELD delay is remembered for a transfer.
+const SHIELD_DELAY_MEMORY: Duration = Duration::from_hours(24);
 
 async fn check_kyt(sender: &OmniAddress, context: &str) -> Option<EventAction> {
     check_kyt_senders(std::slice::from_ref(sender), context).await
@@ -57,7 +63,7 @@ pub(crate) async fn check_shield_deposit(
     origin_chain: ChainKind,
     token_id: &AccountId,
     amount: u128,
-    sender: &OmniAddress,
+    sender: Option<&OmniAddress>,
     context: &str,
 ) -> Option<EventAction> {
     if !config::Config::is_shield_enabled() {
@@ -123,26 +129,42 @@ pub(crate) async fn check_shield_withdrawal(
         }
     };
 
-    // `TransferMessage` amounts are normalized to the nep141 representation by
-    // the locker (`fin_transfer_callback`), whatever chain the transfer came
-    // from, so they are priced as NEAR units rather than destination ones.
-    let amount_usd = token_price::amount_usd(
+    check_shield_withdrawal_scope(
         config,
+        destination_chain,
         &token_id,
         transfer_message.amount.0,
-        ChainKind::Near,
+        Some(&transfer_message.recipient),
+        context,
     )
-    .await;
+    .await
+}
+
+/// `amount` is in nep141 units, as the locker normalizes it.
+pub(crate) async fn check_shield_withdrawal_scope(
+    config: &config::Config,
+    destination_chain: ChainKind,
+    token_id: &AccountId,
+    amount: u128,
+    recipient: Option<&OmniAddress>,
+    context: &str,
+) -> Option<EventAction> {
+    if !config::Config::is_shield_enabled() {
+        return None;
+    }
+
+    if shield::blockchain_tag(destination_chain).is_none() {
+        warn!(
+            "SHIELD cannot evaluate withdrawal {context}: unsupported chain {destination_chain:?}"
+        );
+        return None;
+    }
+
+    let amount_usd = token_price::amount_usd(config, token_id, amount, ChainKind::Near).await;
 
     map_shield_decision(
-        shield::evaluate_withdrawal(
-            destination_chain,
-            &token_id,
-            transfer_message.amount.0,
-            amount_usd,
-            &transfer_message.recipient,
-        )
-        .await,
+        shield::evaluate_withdrawal(destination_chain, token_id, amount, amount_usd, recipient)
+            .await,
         "withdrawal",
         destination_chain,
         context,
@@ -165,11 +187,24 @@ fn map_shield_decision(
             Some(EventAction::Retry)
         }
         Ok(shield::Decision::Delay { delay, reason }) => {
-            info!("SHIELD delayed {direction} {context} ({reason}), holding");
-            metrics.record_preflight_rejection(rejection_reason::SHIELD_DELAY, Some(chain));
-            Some(EventAction::RetryAfter(
-                delay.unwrap_or_default().max(MIN_SHIELD_RETRY_DELAY),
-            ))
+            // SHIELD returns `delay` on every call while a security mode is on,
+            // so a transfer passes once it has waited out the first one.
+            let delay = delay.unwrap_or_default().max(MIN_SHIELD_RETRY_DELAY);
+            let key = format!("{direction}:{context}");
+            let remaining = shield_delays().lock().map_or(Some(delay), |mut records| {
+                delay_remaining(&mut records, key, delay, Instant::now())
+            });
+
+            if let Some(remaining) = remaining {
+                info!("SHIELD delayed {direction} {context} ({reason}), holding for {remaining:?}");
+                metrics.record_preflight_rejection(rejection_reason::SHIELD_DELAY, Some(chain));
+                Some(EventAction::RetryAfter(remaining))
+            } else {
+                info!(
+                    "SHIELD delay for {direction} {context} already served ({reason}), proceeding"
+                );
+                None
+            }
         }
         Ok(shield::Decision::Approval { reason }) => {
             warn!(
@@ -189,6 +224,26 @@ fn map_shield_decision(
             Some(EventAction::Retry)
         }
     }
+}
+
+fn shield_delays() -> &'static Mutex<HashMap<String, Instant>> {
+    static DELAYS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+    DELAYS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Records when `key` may proceed on its first delay; `None` once that time
+/// has passed.
+fn delay_remaining(
+    records: &mut HashMap<String, Instant>,
+    key: String,
+    delay: Duration,
+    now: Instant,
+) -> Option<Duration> {
+    records.retain(|_, until| now.saturating_duration_since(*until) < SHIELD_DELAY_MEMORY);
+
+    let until = *records.entry(key).or_insert(now + delay);
+    (now < until).then(|| until - now)
 }
 
 /// Enforces the configured sender allowlist for `destination_chain`. Returns
@@ -226,4 +281,100 @@ pub(crate) async fn validate_sender(
     }
 
     check_kyt(sender, context).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DELAY: Duration = Duration::from_mins(2);
+
+    #[test]
+    fn first_shield_delay_holds_for_the_full_delay() {
+        let mut records = HashMap::new();
+        let now = Instant::now();
+
+        assert_eq!(
+            delay_remaining(&mut records, "deposit:(Eth:1)".to_string(), DELAY, now),
+            Some(DELAY)
+        );
+    }
+
+    #[test]
+    fn repeated_shield_delay_holds_only_for_what_is_left() {
+        let mut records = HashMap::new();
+        let now = Instant::now();
+        delay_remaining(&mut records, "deposit:(Eth:1)".to_string(), DELAY, now);
+
+        assert_eq!(
+            delay_remaining(
+                &mut records,
+                "deposit:(Eth:1)".to_string(),
+                DELAY,
+                now + Duration::from_secs(30)
+            ),
+            Some(Duration::from_secs(90))
+        );
+    }
+
+    #[test]
+    fn shield_delay_passes_once_served() {
+        let mut records = HashMap::new();
+        let now = Instant::now();
+        delay_remaining(&mut records, "deposit:(Eth:1)".to_string(), DELAY, now);
+
+        assert_eq!(
+            delay_remaining(
+                &mut records,
+                "deposit:(Eth:1)".to_string(),
+                DELAY,
+                now + DELAY
+            ),
+            None
+        );
+        assert_eq!(
+            delay_remaining(
+                &mut records,
+                "deposit:(Eth:1)".to_string(),
+                DELAY,
+                now + DELAY + Duration::from_hours(1)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn shield_delays_are_tracked_per_transfer_and_direction() {
+        let mut records = HashMap::new();
+        let now = Instant::now();
+        delay_remaining(&mut records, "deposit:(Eth:1)".to_string(), DELAY, now);
+
+        let later = now + DELAY;
+        assert_eq!(
+            delay_remaining(&mut records, "deposit:(Eth:2)".to_string(), DELAY, later),
+            Some(DELAY)
+        );
+        assert_eq!(
+            delay_remaining(&mut records, "withdrawal:(Eth:1)".to_string(), DELAY, later),
+            Some(DELAY)
+        );
+    }
+
+    #[test]
+    fn served_shield_delay_is_forgotten_after_its_memory_window() {
+        let mut records = HashMap::new();
+        let now = Instant::now();
+        delay_remaining(&mut records, "deposit:(Eth:1)".to_string(), DELAY, now);
+
+        let much_later = now + DELAY + SHIELD_DELAY_MEMORY;
+        assert_eq!(
+            delay_remaining(
+                &mut records,
+                "deposit:(Eth:1)".to_string(),
+                DELAY,
+                much_later
+            ),
+            Some(DELAY)
+        );
+    }
 }

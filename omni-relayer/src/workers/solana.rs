@@ -125,7 +125,12 @@ pub async fn process_init_transfer_event(
         };
 
         if let Some(action) = utils::validation::check_shield_deposit(
-            config, chain_kind, &token_id, amount.0, sender, &context,
+            config,
+            chain_kind,
+            &token_id,
+            amount.0,
+            Some(sender),
+            &context,
         )
         .await
         {

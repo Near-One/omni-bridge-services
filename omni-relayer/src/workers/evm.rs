@@ -116,7 +116,7 @@ pub async fn process_init_transfer_event(
         chain_kind,
         &token_id,
         log.amount.0,
-        &sender,
+        Some(&sender),
         &context,
     )
     .await
