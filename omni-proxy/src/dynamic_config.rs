@@ -39,6 +39,7 @@ struct UpstreamDto {
 struct RouteDto {
     blockchain: String,
     conn_type: ConnType,
+    service: Option<String>,
     failure_threshold: u32,
     window_secs: u64,
     upstreams: Vec<UpstreamDto>,
@@ -47,11 +48,16 @@ struct RouteDto {
 impl RouteDto {
     /// `http` is the implicit/default connection type and is omitted from the path,
     /// any other connection type is kept explicit.
+    /// `service`, when present, is appended last.
     fn route_prefix(&self) -> String {
-        if self.conn_type == ConnType::Http {
+        let base = if self.conn_type == ConnType::Http {
             format!("/{}", self.blockchain)
         } else {
             format!("/{}/{}", self.conn_type.as_str(), self.blockchain)
+        };
+        match &self.service {
+            Some(service) => format!("{base}/{service}"),
+            None => base,
         }
     }
 }
@@ -119,7 +125,7 @@ mod tests {
     ) -> Value {
         json!({
             "id": 1,
-            "service": "test-service",
+            "service": Value::Null,
             "blockchain": blockchain,
             "connType": conn_type,
             "keyHash": "irrelevant",
@@ -217,6 +223,19 @@ mod tests {
         let ws_route: RouteDto =
             serde_json::from_value(route_dto_json("solana", "ws", 3, 60, &[])).unwrap();
         assert_eq!(ws_route.route_prefix(), "/ws/solana");
+    }
+
+    #[test]
+    fn test_route_prefix_appends_service_last() {
+        let mut http_json = route_dto_json("eth", "http", 3, 60, &[]);
+        http_json["service"] = json!("service-name");
+        let http_route: RouteDto = serde_json::from_value(http_json).unwrap();
+        assert_eq!(http_route.route_prefix(), "/eth/service-name");
+
+        let mut ws_json = route_dto_json("solana", "ws", 3, 60, &[]);
+        ws_json["service"] = json!("service-name");
+        let ws_route: RouteDto = serde_json::from_value(ws_json).unwrap();
+        assert_eq!(ws_route.route_prefix(), "/ws/solana/service-name");
     }
 
     #[tokio::test]
