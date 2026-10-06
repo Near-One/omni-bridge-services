@@ -20,6 +20,8 @@ const MAX_RPC_BODY_BYTES: usize = 256 * 1024;
 
 const SERVICE_QUERY_PREFIX: &str = "omni-proxy-service=";
 
+const MIN_HEALTHY_WS_SESSION: Duration = Duration::from_mins(5);
+
 struct UpstreamHealth {
     failures: Mutex<VecDeque<Instant>>,
 }
@@ -640,10 +642,14 @@ impl ProxyHttp for RpcProxy {
         // error either. Every closed session therefore counted as a *success*,
         // decaying real failures and pinning the route to a flapping upstream.
         //
-        // Count the close itself instead: a healthy socket closes rarely enough
-        // that its failures age out of the window, while one that drops every
-        // few minutes reaches `failure_threshold` and fails over.
-        let failed = ctx.is_failure || e.is_some() || ctx.ws_upgraded;
+        // Count a short-lived session as a drop instead. Routes are shared, so
+        // clean closes of long-lived sessions (client shutdown, redeploy) are
+        // routine and say nothing about upstream health.
+        let ws_dropped = ctx.ws_upgraded
+            && ctx
+                .start
+                .is_some_and(|s| s.elapsed() < MIN_HEALTHY_WS_SESSION);
+        let failed = ctx.is_failure || e.is_some() || ws_dropped;
         if let Some(routes) = ctx.routes.as_ref()
             && let Some(ref prefix) = ctx.route_prefix
             && let Some(state) = routes.get(prefix)
@@ -653,7 +659,7 @@ impl ProxyHttp for RpcProxy {
                 health.record_failure();
                 let detail = match e {
                     Some(err) => err.to_string(),
-                    None if ctx.ws_upgraded => "websocket session closed".to_owned(),
+                    None if ws_dropped => "websocket session dropped early".to_owned(),
                     None => "failure status or rpc error code".to_owned(),
                 };
                 warn!(
