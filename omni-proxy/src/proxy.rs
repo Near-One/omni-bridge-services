@@ -716,8 +716,8 @@ impl ProxyHttp for RpcProxy {
             if failed {
                 let reason = if e.is_some() {
                     "transport_error"
-                } else if ctx.ws_upgraded {
-                    "ws_closed"
+                } else if ws_dropped {
+                    "ws_dropped"
                 } else if state.route.failover().is_failure_status(ctx.status_code) {
                     "failure_status"
                 } else {

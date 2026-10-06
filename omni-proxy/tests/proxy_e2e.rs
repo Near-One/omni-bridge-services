@@ -454,10 +454,12 @@ fn ws_connect(port: u16, path: &str) -> String {
     stream.write_all(request.as_bytes()).unwrap();
     stream.flush().unwrap();
 
-    // Read until the upstream closes, so the proxy's `logging` callback has run
-    // by the time the next connection is opened.
+    // Read until the upstream closes. The proxy closes the downstream before its
+    // `logging` callback records the drop, so give it a moment to land before
+    // the next connection is opened.
     let mut response = String::new();
     let _ = stream.read_to_string(&mut response);
+    thread::sleep(Duration::from_millis(50));
     response
 }
 
@@ -531,5 +533,9 @@ failover = {{ failure_threshold = 3, window_secs = 1800 }}
     assert!(
         ws_connect(port, "/ws/test").contains("X-Upstream: primary"),
         "one drop must not be enough to fail over"
+    );
+    assert!(
+        ws_connect(port, "/ws/test").contains("X-Upstream: primary"),
+        "drops below the threshold must not fail over"
     );
 }
