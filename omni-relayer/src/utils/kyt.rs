@@ -36,26 +36,32 @@ struct KytResponse {
     suggested_action: String,
 }
 
-fn client() -> &'static Client {
-    static CLIENT: OnceLock<Client> = OnceLock::new();
+fn client() -> Result<&'static Client> {
+    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 
-    CLIENT.get_or_init(|| {
-        let api_key = std::env::var("KYT_API_KEY").expect("KYT_API_KEY env var is not set");
+    CLIENT
+        .get_or_init(build_client)
+        .as_ref()
+        .map_err(|err| anyhow!("{err}"))
+}
 
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            api_key
-                .parse()
-                .expect("KYT_API_KEY is not a valid HTTP header value"),
-        );
+fn build_client() -> Result<Client, String> {
+    let api_key = std::env::var("KYT_API_KEY").map_err(|_| "KYT_API_KEY env var is not set")?;
 
-        Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .default_headers(headers)
-            .build()
-            .expect("Failed to build KYT reqwest client")
-    })
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-api-key",
+        api_key
+            .trim()
+            .parse()
+            .map_err(|_| "KYT_API_KEY is not a valid HTTP header value")?,
+    );
+
+    Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .default_headers(headers)
+        .build()
+        .map_err(|err| format!("Failed to build KYT reqwest client: {err}"))
 }
 
 fn blockchain_tag(chain: ChainKind) -> Option<&'static str> {
@@ -123,7 +129,7 @@ async fn screen_batch(url: &str, addresses: &[KytAddress]) -> Result<SuggestedAc
         wait_time_ms: WAIT_TIME_MS,
     };
 
-    let raw = client()
+    let raw = client()?
         .post(url)
         .json(&body)
         .send()

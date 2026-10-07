@@ -3,7 +3,7 @@ use std::{str::FromStr, sync::Arc};
 use anyhow::{Context, Result};
 use bridge_connector_common::result::BridgeSdkError;
 use near_bridge_client::{
-    TransactionOptions,
+    NearBridgeClient, TransactionOptions,
     btc::{DepositMsg, PostAction, SafeDepositMsg},
 };
 use near_jsonrpc_client::JsonRpcClient;
@@ -105,6 +105,12 @@ pub async fn process_near_to_utxo_init_transfer_event(
         )));
     }
 
+    if let Some(action) =
+        screen_utxo_withdrawal(&omni_connector, config, chain, &btc_pending_id, &context).await?
+    {
+        return Ok(action);
+    }
+
     let signed_key = utils::redis::near_to_utxo_signed_key(&btc_pending_id);
 
     match utils::redis::exists(config, redis, &signed_key).await {
@@ -169,6 +175,112 @@ pub async fn process_near_to_utxo_init_transfer_event(
     }
 }
 
+/// SHIELD again at signing, the irreversible step, not only at submit.
+async fn screen_utxo_withdrawal(
+    omni_connector: &OmniConnector,
+    config: &config::Config,
+    chain: ChainKind,
+    btc_pending_id: &str,
+    context: &str,
+) -> Result<Option<EventAction>> {
+    if !config::Config::is_shield_enabled() {
+        return Ok(None);
+    }
+
+    let Ok(near_bridge_client) = omni_connector.near_bridge_client() else {
+        anyhow::bail!("Near bridge client is not configured");
+    };
+
+    let pending_info = match near_bridge_client
+        .get_btc_pending_info(chain, btc_pending_id.to_string())
+        .await
+    {
+        Ok(info) => info,
+        Err(BridgeSdkError::InvalidArgument(err)) if err == "BTC pending info not found" => {
+            warn!("BTC pending info is not found for {btc_pending_id} ({chain:?}), dropping");
+            return Ok(Some(EventAction::Drop));
+        }
+        Err(err) => {
+            warn!(
+                "Failed to get BTC pending info for {btc_pending_id} ({chain:?}), retrying: {err:?}"
+            );
+            return Ok(Some(EventAction::Retry));
+        }
+    };
+
+    // Pending info carries no recipient.
+    Ok(utils::validation::check_shield_withdrawal_scope(
+        config,
+        chain,
+        &near_bridge_client.utxo_chain_token(chain)?,
+        pending_info.transfer_amount,
+        None,
+        context,
+    )
+    .await)
+}
+
+async fn screen_utxo_deposit(
+    config: &config::Config,
+    near_bridge_client: &NearBridgeClient,
+    chain: ChainKind,
+    btc_tx_hash: &str,
+    vout: u32,
+    amount: u128,
+) -> Result<Option<EventAction>> {
+    let shield_enabled = config::Config::is_shield_enabled();
+    if !config::Config::is_kyt_enabled() && !shield_enabled {
+        return Ok(None);
+    }
+
+    let rpc_url = match chain {
+        ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
+        ChainKind::Zcash => config.zcash.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
+        _ => {
+            // Reachable from event data, so it must not error: an `Err` is
+            // NAKed with backoff and redelivered until `max_message_age`.
+            warn!("Unsupported chain for UTXO, dropping: {chain:?}");
+            return Ok(Some(EventAction::Drop));
+        }
+    };
+    let Some(rpc_url) = rpc_url else {
+        warn!("No {chain:?} configuration in this relayer, dropping: {btc_tx_hash}:{vout}");
+        return Ok(Some(EventAction::Drop));
+    };
+
+    let input_addresses = match utils::utxo::fetch_input_addresses(rpc_url, chain, btc_tx_hash)
+        .await
+    {
+        Ok(addresses) => addresses,
+        Err(err) => {
+            warn!(
+                "Failed to fetch input addresses for {chain:?} tx {btc_tx_hash}, retrying: {err:?}"
+            );
+            return Ok(Some(EventAction::Retry));
+        }
+    };
+
+    let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
+    if let Some(action) = utils::validation::check_kyt_senders(&input_addresses, &context).await {
+        return Ok(Some(action));
+    }
+
+    if !shield_enabled {
+        return Ok(None);
+    }
+
+    // No sender for fully shielded Zcash spends; chain/token scopes still apply.
+    Ok(utils::validation::check_shield_deposit(
+        config,
+        chain,
+        &near_bridge_client.utxo_chain_token(chain)?,
+        amount,
+        input_addresses.first(),
+        &context,
+    )
+    .await)
+}
+
 pub async fn process_utxo_to_near_init_transfer_event(
     config: &config::Config,
     redis: &mut redis::aio::ConnectionManager,
@@ -194,37 +306,17 @@ pub async fn process_utxo_to_near_init_transfer_event(
         return Ok(EventAction::Drop);
     };
 
-    if config::Config::is_kyt_enabled() {
-        let rpc_url = match chain {
-            ChainKind::Btc => config.btc.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
-            ChainKind::Zcash => config.zcash.as_ref().map(|cfg| cfg.rpc_http_url.as_str()),
-            _ => {
-                warn!("Unsupported chain for UTXO, dropping: {chain:?}");
-                return Ok(EventAction::Drop);
-            }
-        };
-        let Some(rpc_url) = rpc_url else {
-            warn!("No {chain:?} configuration in this relayer, dropping: {btc_tx_hash}:{vout}");
-            return Ok(EventAction::Drop);
-        };
-
-        let input_addresses = match utils::utxo::fetch_input_addresses(rpc_url, chain, &btc_tx_hash)
-            .await
-        {
-            Ok(addresses) => addresses,
-            Err(err) => {
-                warn!(
-                    "Failed to fetch input addresses for {chain:?} tx {btc_tx_hash}, retrying: {err:?}"
-                );
-                return Ok(EventAction::Retry);
-            }
-        };
-
-        let context = format!("({chain:?}:{btc_tx_hash}:{vout})");
-        if let Some(action) = utils::validation::check_kyt_senders(&input_addresses, &context).await
-        {
-            return Ok(action);
-        }
+    if let Some(action) = screen_utxo_deposit(
+        config,
+        near_bridge_client,
+        chain,
+        &btc_tx_hash,
+        vout,
+        amount.0,
+    )
+    .await?
+    {
+        return Ok(action);
     }
 
     let mut nonce = match near_nonce.reserve_nonce() {
