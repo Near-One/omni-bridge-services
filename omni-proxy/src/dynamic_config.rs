@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::config::Config;
+use crate::config::{Config, Failover};
 use crate::errors::DynamicConfigError;
 
 /// TODO: add support for these on backend
@@ -41,6 +41,8 @@ struct RouteDto {
     conn_type: ConnType,
     failure_threshold: u32,
     window_secs: u64,
+    #[serde(default = "Failover::default_min_ws_session_secs")]
+    min_ws_session_secs: u64,
     upstreams: Vec<UpstreamDto>,
 }
 
@@ -79,6 +81,7 @@ fn assemble_config_value(routes: Vec<RouteDto>) -> serde_json::Value {
                     "rpc_codes": Vec::<i32>::new(),
                     "failure_threshold": route.failure_threshold,
                     "window_secs": route.window_secs,
+                    "min_ws_session_secs": route.min_ws_session_secs,
                 },
             })
         })
@@ -115,6 +118,7 @@ mod tests {
         conn_type: &str,
         failure_threshold: u32,
         window_secs: u64,
+        min_ws_session_secs: u64,
         upstreams: &[Value],
     ) -> Value {
         json!({
@@ -125,6 +129,7 @@ mod tests {
             "keyHash": "irrelevant",
             "failureThreshold": failure_threshold,
             "windowSecs": window_secs,
+            "minWsSessionSecs": min_ws_session_secs,
             "createdAt": "2026-01-01T00:00:00Z",
             "updatedAt": "2026-01-01T00:00:00Z",
             "upstreams": upstreams,
@@ -148,6 +153,7 @@ mod tests {
             "http",
             3,
             60,
+            300,
             &[
                 upstream_dto_json("http://a.example.com", None, 0),
                 upstream_dto_json("http://b.example.com", Some(500), 1),
@@ -169,6 +175,7 @@ mod tests {
                 "http",
                 3,
                 60,
+                300,
                 &[upstream_dto_json("http://a.example.com", None, 0)]
             ),
             route_dto_json(
@@ -176,6 +183,7 @@ mod tests {
                 "http",
                 3,
                 60,
+                300,
                 &[upstream_dto_json("http://b.example.com", None, 0)]
             ),
         ]);
@@ -191,6 +199,7 @@ mod tests {
             "http",
             2,
             30,
+            300,
             &[upstream_dto_json("http://a.example.com", None, 0)],
         )]);
         let routes: Vec<RouteDto> = serde_json::from_value(value).unwrap();
@@ -203,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_assemble_rejects_empty_upstreams_via_validate() {
-        let value = json!([route_dto_json("eth", "http", 3, 60, &[])]);
+        let value = json!([route_dto_json("eth", "http", 3, 60, 300, &[])]);
         let routes: Vec<RouteDto> = serde_json::from_value(value).unwrap();
         assert!(Config::from_dynamic_value(assemble_config_value(routes)).is_err());
     }
@@ -211,11 +220,11 @@ mod tests {
     #[test]
     fn test_route_prefix_omits_default_http_conn_type() {
         let http_route: RouteDto =
-            serde_json::from_value(route_dto_json("eth", "http", 3, 60, &[])).unwrap();
+            serde_json::from_value(route_dto_json("eth", "http", 3, 60, 300, &[])).unwrap();
         assert_eq!(http_route.route_prefix(), "/eth");
 
         let ws_route: RouteDto =
-            serde_json::from_value(route_dto_json("solana", "ws", 3, 60, &[])).unwrap();
+            serde_json::from_value(route_dto_json("solana", "ws", 3, 60, 300, &[])).unwrap();
         assert_eq!(ws_route.route_prefix(), "/ws/solana");
     }
 
@@ -232,6 +241,7 @@ mod tests {
                     "http",
                     3,
                     60,
+                    300,
                     &[upstream_dto_json("http://a.example.com", None, 0)],
                 )]));
             })

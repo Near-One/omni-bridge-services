@@ -130,6 +130,8 @@ pub(crate) struct Failover {
     failure_threshold: u32,
     #[serde(default = "Failover::default_window_secs")]
     window_secs: u64,
+    #[serde(default = "Failover::default_min_ws_session_secs")]
+    min_ws_session_secs: u64,
 }
 
 impl Default for Failover {
@@ -139,6 +141,7 @@ impl Default for Failover {
             rpc_codes: Vec::new(),
             failure_threshold: Self::default_threshold(),
             window_secs: Self::default_window_secs(),
+            min_ws_session_secs: Self::default_min_ws_session_secs(),
         }
     }
 }
@@ -149,6 +152,9 @@ impl Failover {
     }
     fn default_window_secs() -> u64 {
         60
+    }
+    pub(crate) fn default_min_ws_session_secs() -> u64 {
+        300
     }
 
     pub(crate) fn is_failure_status(&self, status: u16) -> bool {
@@ -165,6 +171,10 @@ impl Failover {
 
     pub(crate) fn window(&self) -> Duration {
         Duration::from_secs(self.window_secs)
+    }
+
+    pub(crate) fn min_ws_session(&self) -> Duration {
+        Duration::from_secs(self.min_ws_session_secs)
     }
 
     pub(crate) fn rpc_codes(&self) -> &[RpcCode] {

@@ -402,15 +402,6 @@ failover = {{ status_codes = [500] }}
     m.assert();
 }
 
-// ---- WebSocket failover ----------------------------------------------------
-//
-// httpmock cannot serve an HTTP upgrade, and the proxy only needs to see the
-// `101` status line before it starts tunnelling bytes, so these use a raw TCP
-// listener rather than pulling in a WebSocket crate.
-
-/// A fake WebSocket upstream: completes the handshake, then closes immediately.
-/// `tag` is echoed in a response header so the test can tell which upstream
-/// served a connection.
 fn spawn_ws_upstream(tag: &'static str) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -419,7 +410,6 @@ fn spawn_ws_upstream(tag: &'static str) -> String {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             thread::spawn(move || {
-                // Consume the request head; an upgrade carries no body.
                 let mut buf = [0_u8; 1024];
                 let _ = stream.read(&mut buf);
 
@@ -439,8 +429,6 @@ fn spawn_ws_upstream(tag: &'static str) -> String {
     addr
 }
 
-/// Opens a WebSocket connection through the proxy and returns the response head
-/// once the upstream closes the connection.
 fn ws_connect(port: u16, path: &str) -> String {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
     let request = format!(
@@ -454,21 +442,13 @@ fn ws_connect(port: u16, path: &str) -> String {
     stream.write_all(request.as_bytes()).unwrap();
     stream.flush().unwrap();
 
-    // Read until the upstream closes. The proxy closes the downstream before its
-    // `logging` callback records the drop, so give it a moment to land before
-    // the next connection is opened.
+    // Let the proxy's `logging` record the drop before the next connection.
     let mut response = String::new();
     let _ = stream.read_to_string(&mut response);
     thread::sleep(Duration::from_millis(50));
     response
 }
 
-/// Repeated WebSocket drops degrade the upstream and the next connection goes
-/// to the fallback.
-///
-/// Status-code failover cannot see this: the only status a WebSocket reports is
-/// the `101` of its upgrade, and a peer closing cleanly raises no transport
-/// error — so each drop used to be recorded as a success.
 #[test]
 fn test_ws_failover_after_repeated_drops() {
     let primary = spawn_ws_upstream("primary");
@@ -498,7 +478,6 @@ failover = {{ failure_threshold = 2, window_secs = 1800 }}
         );
     }
 
-    // Two drops have reached the threshold, so the primary is now degraded.
     let after = ws_connect(port, "/ws/test");
     assert!(
         after.contains("X-Upstream: fallback"),
@@ -506,8 +485,6 @@ failover = {{ failure_threshold = 2, window_secs = 1800 }}
     );
 }
 
-/// A single drop is normal — providers restart nodes and rotate load balancers.
-/// Only a pattern of drops should move traffic off an upstream.
 #[test]
 fn test_ws_single_drop_stays_on_primary() {
     let primary = spawn_ws_upstream("primary");

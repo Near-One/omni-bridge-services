@@ -20,8 +20,6 @@ const MAX_RPC_BODY_BYTES: usize = 256 * 1024;
 
 const SERVICE_QUERY_PREFIX: &str = "omni-proxy-service=";
 
-const MIN_HEALTHY_WS_SESSION: Duration = Duration::from_mins(5);
-
 struct UpstreamHealth {
     failures: Mutex<VecDeque<Instant>>,
 }
@@ -636,25 +634,15 @@ impl ProxyHttp for RpcProxy {
             self.ws_active.fetch_sub(1, Ordering::Relaxed);
         }
 
-        // An upgraded connection reports its only status code — the `101` of the
-        // handshake — before any data flows, so `status_codes`/`rpc_codes` can
-        // never flag it, and a peer that closes cleanly raises no transport
-        // error either. Every closed session therefore counted as a *success*,
-        // decaying real failures and pinning the route to a flapping upstream.
-        //
-        // Count a short-lived session as a drop instead. Routes are shared, so
-        // clean closes of long-lived sessions (client shutdown, redeploy) are
-        // routine and say nothing about upstream health.
-        let ws_dropped = ctx.ws_upgraded
-            && ctx
-                .start
-                .is_some_and(|s| s.elapsed() < MIN_HEALTHY_WS_SESSION);
-        let failed = ctx.is_failure || e.is_some() || ws_dropped;
         if let Some(routes) = ctx.routes.as_ref()
             && let Some(ref prefix) = ctx.route_prefix
             && let Some(state) = routes.get(prefix)
             && let Some(health) = state.health.get(ctx.upstream_idx)
         {
+            let min_ws_session = state.route.failover().min_ws_session();
+            let ws_dropped =
+                ctx.ws_upgraded && ctx.start.is_some_and(|s| s.elapsed() < min_ws_session);
+            let failed = ctx.is_failure || e.is_some() || ws_dropped;
             if failed {
                 health.record_failure();
                 let detail = match e {
