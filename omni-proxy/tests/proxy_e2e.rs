@@ -307,6 +307,78 @@ failover = {{ status_codes = [500] }}
     m.assert_hits(0);
 }
 
+/// GET /statusz reports the active upstream per route and tracks failover.
+#[test]
+fn test_statusz() {
+    let primary = MockServer::start();
+    let fallback = MockServer::start();
+    let port = alloc_port();
+
+    primary.mock(|when, then| {
+        when.any_request();
+        then.status(500).body(r#"{"error":"boom"}"#);
+    });
+    fallback.mock(|when, then| {
+        when.any_request();
+        then.status(200).body(r#"{"result":"ok"}"#);
+    });
+
+    start_proxy(
+        &format!(
+            r#"
+[[routes]]
+prefix = "/near"
+upstreams = [
+  {{ url = "http://{}" }},
+  {{ url = "http://{}" }},
+]
+failover = {{ status_codes = [500], failure_threshold = 1, window_secs = 300 }}
+"#,
+            primary.address(),
+            fallback.address()
+        ),
+        port,
+    );
+
+    let client = Client::new();
+    let status = |c: &Client| -> serde_json::Value {
+        c.get(proxy_url(port, "/statusz"))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap()
+    };
+
+    // Healthy: primary is active.
+    let before = status(&client);
+    assert_eq!(before["routes_total"], 1);
+    assert_eq!(before["routes_failed_over"], 0);
+    assert_eq!(before["routes"][0]["prefix"], "/near");
+    assert_eq!(before["routes"][0]["active_index"], 0);
+    assert_eq!(before["routes"][0]["failed_over"], false);
+    assert_eq!(before["routes"][0]["upstreams"][0]["recent_failures"], 0);
+
+    // Trip the primary.
+    client
+        .post(proxy_url(port, "/near"))
+        .body("{}")
+        .send()
+        .unwrap();
+
+    let after = status(&client);
+    assert_eq!(after["routes_failed_over"], 1);
+    assert_eq!(after["routes"][0]["active_index"], 1);
+    assert_eq!(after["routes"][0]["failed_over"], true);
+    assert_eq!(after["routes"][0]["all_degraded"], false);
+    assert_eq!(after["routes"][0]["upstreams"][0]["degraded"], true);
+    assert_eq!(after["routes"][0]["upstreams"][0]["active"], false);
+    assert_eq!(after["routes"][0]["upstreams"][1]["active"], true);
+    assert_eq!(
+        after["routes"][0]["active_host"],
+        serde_json::Value::String(fallback.host())
+    );
+}
+
 /// Unknown prefix returns 404.
 #[test]
 fn test_unknown_prefix_returns_404() {
