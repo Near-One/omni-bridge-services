@@ -236,12 +236,12 @@ mod tests {
 
     #[test]
     fn test_route_prefix_appends_service_last() {
-        let mut http_json = route_dto_json("eth", "http", 3, 60, &[]);
+        let mut http_json = route_dto_json("eth", "http", 3, 60, 300, &[]);
         http_json["service"] = json!("service-name");
         let http_route: RouteDto = serde_json::from_value(http_json).unwrap();
         assert_eq!(http_route.route_prefix(), "/eth/service-name");
 
-        let mut ws_json = route_dto_json("solana", "ws", 3, 60, &[]);
+        let mut ws_json = route_dto_json("solana", "ws", 3, 60, 300, &[]);
         ws_json["service"] = json!("service-name");
         let ws_route: RouteDto = serde_json::from_value(ws_json).unwrap();
         assert_eq!(ws_route.route_prefix(), "/ws/solana/service-name");
