@@ -117,6 +117,7 @@ upstreams = [
   { url = "wss://mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
   { url = "wss://rpc.ankr.com/eth/ws/${ANKR_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/arb"
@@ -124,6 +125,7 @@ upstreams = [
   { url = "wss://arbitrum-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
   { url = "wss://rpc.ankr.com/arbitrum/ws/${ANKR_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/base"
@@ -131,6 +133,7 @@ upstreams = [
   { url = "wss://base-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
   { url = "wss://rpc.ankr.com/base/ws/${ANKR_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/bnb"
@@ -138,6 +141,7 @@ upstreams = [
   { url = "wss://bsc-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
   { url = "wss://rpc.ankr.com/bsc/ws/${ANKR_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/pol"
@@ -145,24 +149,28 @@ upstreams = [
   { url = "wss://polygon-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
   { url = "wss://rpc.ankr.com/polygon/ws/${ANKR_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/hlevm"
 upstreams = [
   { url = "wss://hyperevm-mainnet.infura.io/ws/v3/${INFURA_API_KEY}" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/abs"
 upstreams = [
   { url = "wss://api.mainnet.abs.xyz/ws" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/aurora"
 upstreams = [
   { url = "wss://mainnet.aurora.dev" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }
 
 [[routes]]
 prefix = "/ws/solana"
@@ -171,3 +179,4 @@ upstreams = [
   { url = "wss://rpc.ankr.com/solana/ws/${ANKR_API_KEY}" },
   { url = "wss://api.mainnet-beta.solana.com" },
 ]
+failover = { failure_threshold = 3, window_secs = 1800 }

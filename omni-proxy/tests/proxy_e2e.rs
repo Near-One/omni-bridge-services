@@ -10,6 +10,7 @@
 //   requests: the first receives the bad response, the second is routed to
 //   the fallback.
 
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
@@ -399,4 +400,119 @@ failover = {{ status_codes = [500] }}
 
     assert_eq!(resp.status(), 200);
     m.assert();
+}
+
+fn spawn_ws_upstream(tag: &'static str) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            thread::spawn(move || {
+                let mut buf = [0_u8; 1024];
+                let _ = stream.read(&mut buf);
+
+                let response = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\n\
+                     Upgrade: websocket\r\n\
+                     Connection: Upgrade\r\n\
+                     X-Upstream: {tag}\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            });
+        }
+    });
+
+    addr
+}
+
+fn ws_connect(port: u16, path: &str) -> String {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    let request = format!(
+        "GET {path} HTTP/1.1\r\n\
+         Host: 127.0.0.1\r\n\
+         Connection: Upgrade\r\n\
+         Upgrade: websocket\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    stream.flush().unwrap();
+
+    // Let the proxy's `logging` record the drop before the next connection.
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    thread::sleep(Duration::from_millis(50));
+    response
+}
+
+#[test]
+fn test_ws_failover_after_repeated_drops() {
+    let primary = spawn_ws_upstream("primary");
+    let fallback = spawn_ws_upstream("fallback");
+    let port = alloc_port();
+
+    start_proxy(
+        &format!(
+            r#"
+[[routes]]
+prefix = "/ws/test"
+upstreams = [
+  {{ url = "ws://{primary}" }},
+  {{ url = "ws://{fallback}" }},
+]
+failover = {{ failure_threshold = 2, window_secs = 1800 }}
+"#
+        ),
+        port,
+    );
+
+    for attempt in 1..=2 {
+        let resp = ws_connect(port, "/ws/test");
+        assert!(
+            resp.contains("X-Upstream: primary"),
+            "connection {attempt} should still hit the primary, got: {resp}"
+        );
+    }
+
+    let after = ws_connect(port, "/ws/test");
+    assert!(
+        after.contains("X-Upstream: fallback"),
+        "after repeated drops the route should fail over, got: {after}"
+    );
+}
+
+#[test]
+fn test_ws_single_drop_stays_on_primary() {
+    let primary = spawn_ws_upstream("primary");
+    let fallback = spawn_ws_upstream("fallback");
+    let port = alloc_port();
+
+    start_proxy(
+        &format!(
+            r#"
+[[routes]]
+prefix = "/ws/test"
+upstreams = [
+  {{ url = "ws://{primary}" }},
+  {{ url = "ws://{fallback}" }},
+]
+failover = {{ failure_threshold = 3, window_secs = 1800 }}
+"#
+        ),
+        port,
+    );
+
+    assert!(ws_connect(port, "/ws/test").contains("X-Upstream: primary"));
+    assert!(
+        ws_connect(port, "/ws/test").contains("X-Upstream: primary"),
+        "one drop must not be enough to fail over"
+    );
+    assert!(
+        ws_connect(port, "/ws/test").contains("X-Upstream: primary"),
+        "drops below the threshold must not fail over"
+    );
 }
