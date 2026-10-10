@@ -3,7 +3,7 @@ use serde::{
     de::{self},
 };
 
-const MAX_PREFIX_LEN: usize = 32;
+const MAX_PREFIX_LEN: usize = 128;
 
 const MIN_SUPPORTED_HTTP_STATUS_CODE: u16 = 100;
 const MAX_SUPPORTED_HTTP_STATUS_CODE: u16 = 599;
@@ -29,10 +29,10 @@ impl<'de> Deserialize<'de> for Prefix {
         }
         if !prefix
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b == b'-' || b == b'/')
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'/')
         {
             return Err(de::Error::custom(
-                "prefix must contain only lowercase letters/dashes/slashes",
+                "prefix must contain only lowercase letters/digits/dashes/slashes",
             ));
         }
         Ok(Prefix(prefix))
@@ -79,7 +79,7 @@ mod tests {
     fn test_valid_prefixes() {
         let max_len: &'static str =
             Box::leak(format!("/{}", "a".repeat(MAX_PREFIX_LEN - 1)).into_boxed_str());
-        for prefix in ["/eth", "/eth-beacon", "/ws/solana", max_len] {
+        for prefix in ["/eth", "/eth-beacon", "/ws/solana", "/eth1", max_len] {
             assert_de_tokens(&Prefix(prefix.to_string()), &[Token::Str(prefix)]);
         }
     }
@@ -88,10 +88,10 @@ mod tests {
     fn test_invalid_prefixes() {
         assert_de_tokens_error::<Prefix>(&[Token::Str("eth")], "prefix must start with `/`");
 
-        for prefix in ["/ETH", "/Eth", "/eth1", "/eth!"] {
+        for prefix in ["/ETH", "/Eth", "/eth!"] {
             assert_de_tokens_error::<Prefix>(
                 &[Token::Str(prefix)],
-                "prefix must contain only lowercase letters/dashes/slashes",
+                "prefix must contain only lowercase letters/digits/dashes/slashes",
             );
         }
 
