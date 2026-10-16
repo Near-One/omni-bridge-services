@@ -5,6 +5,12 @@ members = [
     "omni-proxy",
     "wormhole-vaa-api",
 ]
+# Both migrated relayers are their own workspaces — their dependency trees cannot share
+# this lockfile, and CI builds each separately (see .github/workflows/rust.yaml):
+#   btc-relayer:  btc-types pins `near-sdk =5.29.0`, omni-types pins `=5.28.1`.
+#   eth2-relayer: lighthouse v7.1.0 needs `c-kzg 1.x` (links = "ckzg"), omni-relayer's
+#                 alloy 1.1 needs `c-kzg 2.x`; only one crate may claim a `links` value.
+exclude = ["light-clients/btc-relayer", "light-clients/eth2-relayer"]
 resolver = "2"
 
 [workspace.dependencies]

@@ -1,0 +1,58 @@
+[package]
+name = "btc-relayer"
+version = "0.2.0"
+edition = "2021"
+repository = "https://github.com/Near-One/omni-bridge-services"
+
+# Standalone workspace — see the `exclude` note in the root Cargo.toml.
+[workspace]
+
+[lib]
+name = "btc_relayer_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "btc-relayer"
+path = "src/main.rs"
+
+[dependencies]
+bitcoin = "0.32.0"
+bitcoincore-rpc = "0.19.0"
+borsh = "1.8.0"
+# btc-types/merkle-tools stay with the light-client contract; pinned to the rev this relayer targets.
+btc-types = { git = "https://github.com/Near-One/btc-light-client-contract", rev = "225876ada6daac10c8c9eced98ea4c4748ba9a71" }
+near-jsonrpc-client = "0.22.0"
+near-jsonrpc-primitives = "0.37.2"
+near-primitives = "0.37.2"
+near-crypto = "0.37.2"
+near-token = "0.3.4"
+reqwest = "0.11.27"
+tokio = { version = "1.37.0", features = ["full"] }
+thiserror = "1.0.31"
+env_logger = "0.11.3"
+serde_json = "1.0.116"
+serde = { version = "1.0.200", features = ["derive"] }
+toml = "0.8.12"
+log = "0.4.21"
+rand_core = "0.6.4"
+sha3 = "0.10.8"
+sha2 = "0.10"
+merkle-tools = { git = "https://github.com/Near-One/btc-light-client-contract", rev = "225876ada6daac10c8c9eced98ea4c4748ba9a71" }
+hex = "0.4"
+minreq = { version = "2.12.0", features = ["https"] }
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1"
+config = { version = "0.15", features = ["toml"] }
+
+[dev-dependencies]
+serial_test = "0.5"
+
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+required-features = ["integration_tests"]
+
+[features]
+integration_tests = []
+zcash = ["btc-types/zcash_header"]
+dogecoin = []

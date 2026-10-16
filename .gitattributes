@@ -1,0 +1,1 @@
+light-clients/eth2-relayer/tests/data/*.json filter=lfs diff=lfs merge=lfs -text

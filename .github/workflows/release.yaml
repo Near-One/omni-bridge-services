@@ -8,6 +8,7 @@ on:
       - 'omni-proxy/**'
       - 'wormhole-vaa-api/**'
       - 'bridge-indexer-types/**'
+      - 'light-clients/**'
       - 'Cargo.toml'
   release:
     types: [published]
@@ -30,6 +31,8 @@ jobs:
       relayer: ${{ steps.filter.outputs.relayer }}
       proxy: ${{ steps.filter.outputs.proxy }}
       wvaa: ${{ steps.filter.outputs.wvaa }}
+      eth2: ${{ steps.filter.outputs.eth2 }}
+      btc: ${{ steps.filter.outputs.btc }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -49,6 +52,12 @@ jobs:
             wvaa:
               - 'wormhole-vaa-api/**'
               - 'Cargo.toml'
+            # The light-client relayers are their own workspaces: the root
+            # Cargo.toml does not affect them, but their own lockfile does.
+            eth2:
+              - 'light-clients/eth2-relayer/**'
+            btc:
+              - 'light-clients/btc-relayer/**'
 
   omni-relayer:
     needs: changes
@@ -189,6 +198,118 @@ jobs:
           context: .
           file: ./wormhole-vaa-api/Dockerfile
           push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          profile-name: "bridge-docker-builder"
+
+      - name: Output image digest
+        run: echo "Image pushed with digest ${{ steps.build.outputs.digest }}"
+
+  eth2-relayer:
+    needs: changes
+    if: ${{ needs.changes.outputs.eth2 == 'true' || github.event_name != 'push' }}
+    runs-on: warp-ubuntu-latest-x64-2x
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker to use gcloud as credential helper
+        run: gcloud auth configure-docker ${{ env.REGISTRY }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Image name kept as `eth-relayer`: deployments already pin it.
+          images: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/eth-relayer
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        id: build
+        uses: Warpbuilds/build-push-action@v6
+        with:
+          context: .
+          file: ./light-clients/eth2-relayer/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          profile-name: "bridge-docker-builder"
+
+      - name: Output image digest
+        run: echo "Image pushed with digest ${{ steps.build.outputs.digest }}"
+
+  # One image per chain variant, same binary built with different features.
+  btc-relayer:
+    needs: changes
+    if: ${{ needs.changes.outputs.btc == 'true' || github.event_name != 'push' }}
+    runs-on: warp-ubuntu-latest-x64-2x
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chain: btc
+            features: ""
+          - chain: ltc
+            features: ""
+          - chain: zec
+            features: "zcash"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configure Docker to use gcloud as credential helper
+        run: gcloud auth configure-docker ${{ env.REGISTRY }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ matrix.chain }}-relayer
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        id: build
+        uses: Warpbuilds/build-push-action@v6
+        with:
+          context: .
+          file: ./light-clients/btc-relayer/Dockerfile
+          push: true
+          build-args: |
+            FEATURES=${{ matrix.features }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
