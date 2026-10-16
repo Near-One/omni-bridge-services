@@ -1,0 +1,20 @@
+---
+# Migrated along with the light-client relayers; both source repos ran this
+# shared analysis. Needs the DD_API_KEY secret to be set on this repo.
+name: "Security Analysis"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * *"
+
+jobs:
+  analysis:
+    name: "Shared"
+    uses: aurora-is-near/.github/.github/workflows/security_analysis.yml@master
+    secrets:
+      DD_API_KEY: ${{ secrets.DD_API_KEY }}

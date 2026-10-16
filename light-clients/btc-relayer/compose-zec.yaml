@@ -1,0 +1,34 @@
+name: relayer-zcash
+services:
+  zebra:
+    image: zfnd/zebra:latest
+    platform: ${PLATFORM:-linux/amd64}
+    environment:
+      - ZEBRA_NETWORK__NETWORK=Mainnet   # Testnet uses RPC port 18232
+      - ZEBRA_RPC__LISTEN_ADDR=0.0.0.0:8232
+      - ZEBRA_RPC__ENABLE_COOKIE_AUTH=false
+    ports:
+      - "127.0.0.1:8232:8232"   # RPC has no auth, keep it local
+      - "8233:8233"             # P2P (18233 on testnet)
+    volumes:
+      - zebra-cache:/home/zebra/.cache/zebra
+    networks:
+      - relayer-network
+  relayer:
+    image: zec-relayer
+    build:
+      context: ../../
+      dockerfile: ./light-clients/btc-relayer/Dockerfile
+      args:
+        FEATURES: "zcash"
+    platform: ${PLATFORM:-linux/amd64}
+    depends_on:
+      - zebra
+    networks:
+      - relayer-network
+
+volumes:
+  zebra-cache:
+
+networks:
+  relayer-network:

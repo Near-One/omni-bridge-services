@@ -1,0 +1,106 @@
+[package]
+name = "eth2-relayer"
+version = "0.8.0"
+edition = "2024"
+repository = "https://github.com/Near-One/omni-bridge-services"
+
+# Standalone workspace — see the `exclude` note in the root Cargo.toml.
+[workspace]
+
+[lib]
+name = "eth2_relayer"
+path = "src/lib.rs"
+
+# Binary stays `relayer`: deployments invoke it by that name.
+[[bin]]
+name = "relayer"
+path = "src/main.rs"
+
+[dependencies]
+# Lighthouse ecosystem dependencies
+eth2 = { git = "https://github.com/sigp/lighthouse", tag = "v7.1.0" }
+types = { git = "https://github.com/sigp/lighthouse", tag = "v7.1.0" }
+sensitive_url = { git = "https://github.com/sigp/lighthouse", tag = "v7.1.0" }
+
+# Contract crates still live in rainbow-bridge; pinned to the rev this relayer targets.
+eth-types = { git = "https://github.com/Near-One/rainbow-bridge", rev = "2980cdf1e3704b2f4a6d7795563ab95f257e660b" }
+eth2-utility = { git = "https://github.com/Near-One/rainbow-bridge", rev = "2980cdf1e3704b2f4a6d7795563ab95f257e660b" }
+
+# Async runtime
+tokio = { version = "1.45", features = ["full"] }
+
+# Serialization and data handling
+borsh = { version = "1.5", features = ["derive"] }
+serde = { version = "1.0" }
+serde_json = { version = "1.0" }
+toml = { version = "0.8" }
+
+# Blockchain and crypto
+alloy = { version = "0.12", default-features = false, features = [
+    "providers",
+    "rpc",
+    "rpc-types",
+    "transports",
+    "reqwest",
+] }
+tree_hash = { version = "0.8" }
+tree_hash_derive = { version = "0.8" }
+
+# NEAR ecosystem
+near-crypto = { version = "0.30" }
+near-primitives = { version = "0.30" }
+near-gas = { version = "0.3" }
+near-fetch = { git = "https://github.com/r-near/fetch", branch = "main" }
+
+# CLI and configuration
+clap = { version = "4.5", features = ["derive"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# Logging and tracing
+tracing = { version = "0.1" }
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-indicatif = { version = "0.3" }
+
+# Progress and UI
+indicatif = { version = "0.17", features = ["improved_unicode"] }
+
+# Error handling and utilities
+thiserror = { version = "2.0" }
+color-eyre = { version = "0.6" }
+hex = { version = "0.4" }
+url = { version = "2.5" }
+
+[dev-dependencies]
+near-workspaces = { version = "0.20", features = ["unstable"] }
+tracing-test = { version = "0.2" }
+
+# The integration tests compile the eth2-client contract from a rainbow-bridge
+# checkout (ETH2_CLIENT_PATH) and run a NEAR sandbox, so they are feature-gated
+# out of the workspace `cargo test` run.
+[features]
+integration_tests = []
+
+[[test]]
+name = "contract_initialization"
+path = "tests/contract_initialization.rs"
+required-features = ["integration_tests"]
+
+[[test]]
+name = "error_handling"
+path = "tests/error_handling.rs"
+required-features = ["integration_tests"]
+
+[[test]]
+name = "lifecycle"
+path = "tests/lifecycle.rs"
+required-features = ["integration_tests"]
+
+[[test]]
+name = "sepolia_sandbox"
+path = "tests/sepolia_sandbox.rs"
+required-features = ["integration_tests"]
+
+[[test]]
+name = "view_methods"
+path = "tests/view_methods.rs"
+required-features = ["integration_tests"]

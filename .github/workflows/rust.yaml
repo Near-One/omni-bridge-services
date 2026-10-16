@@ -44,3 +44,60 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  # The two light-client relayers are separate workspaces (see the root Cargo.toml
+  # `exclude` note), so they need their own fmt/clippy/test run.
+  light-clients:
+    name: ${{ matrix.crate }} (1.96.0)
+    runs-on: warp-ubuntu-2204-x64-16x
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Lint the feature-gated integration tests too; they are not run here
+          # (they need a NEAR sandbox and live RPC endpoints).
+          - crate: eth2-relayer
+            lint-features: --features integration_tests
+          - crate: btc-relayer
+            lint-features: --all-features
+    defaults:
+      run:
+        working-directory: light-clients/${{ matrix.crate }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # eth2-relayer's test fixtures are in LFS.
+          lfs: true
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          components: clippy, rustfmt
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev pkg-config libclang-dev
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: light-clients/${{ matrix.crate }}
+          cache-provider: warpbuild
+          cache-on-failure: true
+          cache-all-crates: true
+
+      - name: Run fmt
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: |
+          cargo clippy --all-targets ${{ matrix.lint-features }} --no-deps -- \
+            -D clippy::all -D clippy::pedantic \
+            -D clippy::as_conversions \
+            -A clippy::missing_errors_doc -A clippy::missing_panics_doc \
+            -A clippy::must_use_candidate -A clippy::unreadable_literal \
+            -A clippy::similar_names -A clippy::too_long_first_doc_paragraph
+
+      - name: Test
+        run: cargo test

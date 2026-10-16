@@ -1,0 +1,672 @@
+use std::str::FromStr;
+
+#[cfg(feature = "dogecoin")]
+use bitcoin::consensus::serialize;
+#[cfg(feature = "dogecoin")]
+use bitcoincore_rpc::bitcoin::hashes::Hash;
+use borsh::to_vec;
+use btc_types::contract_args::InitArgs;
+use btc_types::header::ExtendedHeader;
+use log::info;
+use merkle_tools::H256;
+use near_crypto::Signer;
+use near_jsonrpc_client::methods::tx::RpcTransactionResponse;
+use near_jsonrpc_client::{methods, JsonRpcClient, MethodCallResult};
+use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_jsonrpc_primitives::types::transactions::{RpcTransactionError, TransactionInfo};
+use near_primitives::borsh;
+use near_primitives::hash::CryptoHash;
+use near_primitives::transaction::{
+    Action, FunctionCallAction, SignedTransaction, Transaction, TransactionV0,
+};
+use near_primitives::types::{AccountId, BlockReference, Gas};
+use near_primitives::views::TxExecutionStatus;
+use near_token::NearToken;
+use serde_json::{from_slice, json};
+
+use crate::bitcoin_client::AuxData;
+use tokio::time;
+
+use crate::config::NearConfig;
+
+const SUBMIT_BLOCKS: &str = "submit_blocks";
+const BOOTSTRAP_BLOCKS: &str = "bootstrap_blocks";
+const GET_BOOTSTRAP_END_HEIGHT: &str = "get_bootstrap_end_height";
+const GET_LAST_BLOCK_HEADER: &str = "get_last_block_header";
+#[allow(dead_code)]
+const VERIFY_TRANSACTION_INCLUSION: &str = "verify_transaction_inclusion";
+#[allow(dead_code)]
+const VERIFY_TRANSACTION_INCLUSION_V2: &str = "verify_transaction_inclusion_v2";
+const RECEIVE_LAST_N_BLOCKS: &str = "get_last_n_blocks_hashes";
+const GET_HEIGHT_BY_BLOCK_HASH: &str = "get_height_by_block_hash";
+
+#[derive(thiserror::Error, Debug)]
+pub enum CustomError {
+    #[error("Prev Block Not Found")]
+    PrevBlockNotFound,
+    #[error("Exceeded the maximum amount of gas")]
+    GasExceeded,
+    #[error("Tx execution Error: {0:?}")]
+    TxExecutionError(String),
+}
+
+/// Result of a successful block submission, including gas telemetry.
+pub struct SubmitResult {
+    pub gas_burnt: u64,
+}
+
+#[derive(Clone)]
+pub struct NearClient {
+    client: JsonRpcClient,
+    signer: Signer,
+    btc_light_client_account_id: AccountId,
+    transaction_timeout_sec: u64,
+}
+
+pub struct SignedSubmitTransaction {
+    pub first_block_height: u64,
+    pub last_block_height: u64,
+    pub signed_tx: SignedTransaction,
+}
+
+#[cfg(feature = "dogecoin")]
+fn get_aux_data(aux_data: Option<AuxData>) -> Option<btc_types::aux::AuxData> {
+    match aux_data {
+        None => None,
+        Some(aux_data) => Some(btc_types::aux::AuxData {
+            coinbase_tx: serialize(&aux_data.coinbase_tx),
+            merkle_proof: aux_data
+                .merkle_branch
+                .iter()
+                .map(|h| H256::from(h.to_raw_hash().to_byte_array()))
+                .collect(),
+            chain_merkle_proof: aux_data
+                .chainmerkle_branch
+                .iter()
+                .map(|h| H256::from(h.to_raw_hash().to_byte_array()))
+                .collect(),
+            chain_id: aux_data.chain_index.try_into().unwrap(),
+            parent_block: aux_data.parent_block,
+        }),
+    }
+}
+
+impl NearClient {
+    /// Create new Near client
+    ///
+    /// # Panics
+    /// * incorrect near endpoint
+    /// * incorrect `private_key` or `account_id`
+    /// * incorrect `btc_light_client_account_id`
+    #[must_use]
+    pub fn new(config: &NearConfig) -> Self {
+        let client = JsonRpcClient::connect(&config.endpoint);
+
+        let (signer_account_id, signer_secret_key) =
+            if let Some(near_credentials_path) = config.near_credentials_path.clone() {
+                let data = std::fs::read_to_string(near_credentials_path).unwrap();
+                let res: serde_json::Value = serde_json::from_str(&data).unwrap();
+
+                let private_key = res["private_key"].to_string().replace('\"', "");
+                let private_key = near_crypto::SecretKey::from_str(private_key.as_str()).unwrap();
+
+                let account_id = res["account_id"].to_string().replace('\"', "");
+                let account_id = AccountId::from_str(account_id.as_str()).unwrap();
+                (account_id, private_key)
+            } else {
+                (
+                    AccountId::from_str(&config.account_id).unwrap(),
+                    near_crypto::SecretKey::from_str(&config.private_key).unwrap(),
+                )
+            };
+
+        let signer = near_crypto::InMemorySigner::from_secret_key(
+            signer_account_id.clone(),
+            signer_secret_key,
+        );
+
+        Self {
+            client,
+            signer,
+            btc_light_client_account_id: config
+                .btc_light_client_account_id
+                .clone()
+                .parse()
+                .unwrap(),
+            transaction_timeout_sec: config.transaction_timeout_sec,
+        }
+    }
+
+    /// Initializes the BTC Light Client
+    ///
+    /// # Arguments
+    /// * `args` - A reference to `InitArgs` containing the initialization parameters.
+    ///
+    /// # Returns
+    /// A `Result` containing the `RpcTransactionResponse` if successful, or an error.
+    ///
+    /// # Errors
+    /// This function can return an error in the following cases:
+    /// - If submitting the transaction (`submit_tx`) fails, e.g., due to network issues or RPC failures.
+    /// - If retrieving the transaction status (`get_tx_status`) fails, e.g., if the transaction is not found or the query times out.
+    /// - If the contract execution itself fails on the NEAR side, resulting in a `FinalExecutionStatus::Failure`.
+    ///   In this case, the function constructs and returns a formatted error with details from the contract failure.
+    pub async fn init_contract(
+        &self,
+        args: &InitArgs,
+    ) -> Result<RpcTransactionResponse, Box<dyn std::error::Error + Send + Sync>> {
+        let tx_hash = self
+            .submit_tx(
+                self.sign_tx(
+                    "init",
+                    json!({"args": args}).to_string().into_bytes(),
+                    0,
+                    None,
+                )
+                .await?,
+            )
+            .await?;
+
+        self.get_tx_status(tx_hash)
+            .await
+            .map_err(std::convert::Into::into)
+            .map(|response| {
+                if let Some(final_execution_outcome) = response.final_execution_outcome.clone() {
+                    if let near_primitives::views::FinalExecutionStatus::Failure(err) =
+                        final_execution_outcome.into_outcome().status
+                    {
+                        Err(format!("Transaction failed with error: {err:?}"))?;
+                    }
+                }
+                Ok(response)
+            })
+            .and_then(|result| result)
+    }
+
+    /// Signs one or more transactions to call the `submit_blocks` (or `bootstrap_blocks`) method on the smart contract.
+    ///
+    /// This method splits the provided block headers into batches of `batch_size` and
+    /// creates a signed transaction for each batch. It automatically increments the nonce
+    /// for each transaction based on the current access key state.
+    ///
+    /// # Arguments
+    /// * `headers` - A vector of tuples containing block height, block header, and optional auxiliary data.
+    /// * `batch_size` - The size of each batch of headers to be processed.
+    /// * `bootstrap` - Submit via `bootstrap_blocks` while the contract is bootstrapping.
+    ///
+    /// # Returns
+    /// A `Result` containing a vector of `SignedSubmitTransaction` if successful, or an error.
+    ///
+    /// # Errors
+    /// This function can return an error in the following cases:
+    /// * Serialization of the arguments fails (`to_vec`).
+    /// * Signing of the transaction fails (`sign_tx`).
+    /// * No blocks to submit in the current chunk.
+    /// * No last block height in the current chunk.
+    pub async fn sign_submit_blocks(
+        &self,
+        headers: Vec<(u64, btc_types::header::Header, Option<AuxData>)>,
+        batch_size: usize,
+        bootstrap: bool,
+    ) -> Result<Vec<SignedSubmitTransaction>, Box<dyn std::error::Error + Send + Sync>> {
+        let method_name = if bootstrap {
+            BOOTSTRAP_BLOCKS
+        } else {
+            SUBMIT_BLOCKS
+        };
+        let mut signed_txs = Vec::new();
+
+        let access_key_query_response = self
+            .client
+            .call(methods::query::RpcQueryRequest {
+                block_reference: BlockReference::latest(),
+                request: near_primitives::views::QueryRequest::ViewAccessKey {
+                    account_id: self.signer.get_account_id(),
+                    public_key: self.signer.public_key(),
+                },
+            })
+            .await?;
+
+        let start_nonce = match access_key_query_response.kind {
+            near_jsonrpc_primitives::types::query::QueryResponseKind::AccessKey(access_key) => {
+                access_key.nonce + 1
+            }
+            _ => return Err("failed to extract current nonce".into()),
+        };
+
+        for (current_nonce, header_chunk) in (start_nonce..).zip(headers.chunks(batch_size)) {
+            for header in header_chunk {
+                info!(
+                    "Block to submit: height = {}, hash = {}",
+                    header.0,
+                    header.1.block_hash()
+                );
+            }
+
+            let Some(first_block_height) = header_chunk.first().map(|(height, _, _)| *height)
+            else {
+                return Err("No blocks to submit in the current chunk".into());
+            };
+
+            let Some(last_block_height) = header_chunk.last().map(|(height, _, _)| *height) else {
+                return Err("No last block height in the current chunk".into());
+            };
+
+            #[cfg(feature = "dogecoin")]
+            let args: Vec<_> = header_chunk
+                .iter()
+                .map(|(_, header, aux_data)| (header.clone(), get_aux_data(aux_data.clone())))
+                .collect();
+
+            #[cfg(not(feature = "dogecoin"))]
+            let args: Vec<_> = header_chunk
+                .iter()
+                .map(|(_, header, _)| header.clone())
+                .collect();
+
+            signed_txs.push(SignedSubmitTransaction {
+                first_block_height,
+                last_block_height,
+                signed_tx: self
+                    .sign_tx(
+                        method_name,
+                        to_vec(&args)?,
+                        5 * 10_u128.pow(23),
+                        Some(current_nonce),
+                    )
+                    .await?,
+            });
+        }
+
+        Ok(signed_txs)
+    }
+
+    /// Submitting block header to the smart contract.
+    /// This method supports retries internally.
+    ///
+    /// # Errors
+    /// * Transaction fails
+    /// * Connection issue
+    pub async fn submit_blocks(
+        &self,
+        signed_tx: SignedTransaction,
+    ) -> Result<Result<SubmitResult, CustomError>, Box<dyn std::error::Error + Send + Sync>> {
+        let sent_at = time::Instant::now();
+        let tx_hash = self.submit_tx(signed_tx).await?;
+
+        info!("Blocks submitted: tx_hash = {tx_hash:?}");
+
+        loop {
+            let response = self.get_tx_status(tx_hash).await;
+            let received_at = time::Instant::now();
+            let delta = (received_at - sent_at).as_secs();
+
+            if delta > self.transaction_timeout_sec {
+                Err("time limit exceeded for the transaction to be recognized")?;
+            }
+
+            match response {
+                Err(err) => match err.handler_error() {
+                    Some(
+                        RpcTransactionError::TimeoutError
+                        | RpcTransactionError::UnknownTransaction { .. },
+                    ) => {
+                        time::sleep(time::Duration::from_secs(2)).await;
+                    }
+                    _ => Err(err)?,
+                },
+                Ok(response) => {
+                    info!("Success response gotten after: {delta}s");
+                    return Ok(Self::parse_submit_blocks_response(&response));
+                }
+            }
+        }
+    }
+
+    fn parse_submit_blocks_response(
+        response: &RpcTransactionResponse,
+    ) -> Result<SubmitResult, CustomError> {
+        if let Some(ref final_execution_outcome) = response.final_execution_outcome {
+            let outcome = final_execution_outcome.clone().into_outcome();
+
+            if let near_primitives::views::FinalExecutionStatus::Failure(ref err) = outcome.status {
+                let err_str = format!("{err:?}");
+                if err_str.contains("PrevBlockNotFound") {
+                    return Err(CustomError::PrevBlockNotFound);
+                } else if err_str.contains("Exceeded the maximum amount of gas") {
+                    return Err(CustomError::GasExceeded);
+                }
+                return Err(CustomError::TxExecutionError(err_str));
+            }
+
+            let gas_burnt = outcome.transaction_outcome.outcome.gas_burnt.as_gas()
+                + outcome
+                    .receipts_outcome
+                    .iter()
+                    .map(|r| r.outcome.gas_burnt.as_gas())
+                    .sum::<u64>();
+
+            return Ok(SubmitResult { gas_burnt });
+        }
+
+        Ok(SubmitResult { gas_burnt: 0 })
+    }
+
+    /// Height up to which the contract accepts `bootstrap_blocks`; 0 once bootstrap is finished
+    ///
+    /// # Errors
+    /// * Connection issue
+    pub async fn get_bootstrap_end_height(
+        &self,
+    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        match self
+            .submit_view_tx(GET_BOOTSTRAP_END_HEIGHT, json!({}).to_string().into_bytes())
+            .await
+        {
+            Ok(result) => Ok(from_slice::<u64>(&result)?),
+            // Contracts deployed before bootstrap support have no such method
+            Err(err) if err.to_string().contains("MethodNotFound") => Ok(0),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Get last Bitcoin Block Header on Near
+    ///
+    /// # Errors
+    /// * Connection issue
+    pub async fn get_last_block_header(
+        &self,
+    ) -> Result<ExtendedHeader, Box<dyn std::error::Error + Send + Sync>> {
+        let args = json!({});
+        let result = self
+            .submit_view_tx(GET_LAST_BLOCK_HEADER, args.to_string().into_bytes())
+            .await?;
+
+        let header = from_slice::<ExtendedHeader>(&result)?;
+        info!("Block Height: {}", header.block_height);
+        info!("Block Hash: {}", header.block_hash);
+
+        Ok(header)
+    }
+
+    /// Check that block already submitted to Near
+    /// If the block is on Near but from fork
+    /// the function return false
+    ///
+    /// # Errors
+    /// * Connection issue
+    pub async fn is_block_hash_exists(
+        &self,
+        block_hash: String,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let args = json!({
+            "blockhash": block_hash,
+        });
+
+        let result = self
+            .submit_view_tx(GET_HEIGHT_BY_BLOCK_HASH, args.to_string().into_bytes())
+            .await?;
+
+        let block_height = from_slice::<Option<u64>>(&result)?;
+        Ok(block_height.is_some())
+    }
+
+    /// Get last n Bitcoin block hashes from Near
+    ///
+    /// # Errors
+    /// * Connection issue
+    pub async fn get_last_n_blocks_hashes(
+        &self,
+        n: u64,
+        shift_from_the_end: u64,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let args = json!({
+            "skip": shift_from_the_end,
+            "limit": n,
+        });
+
+        let result = self
+            .submit_view_tx(RECEIVE_LAST_N_BLOCKS, args.to_string().into_bytes())
+            .await?;
+
+        let block_hashes = from_slice::<Vec<String>>(&result)?;
+        info!("{block_hashes:#?}");
+        Ok(block_hashes)
+    }
+
+    /// Verify transaction inclusion
+    ///
+    /// # Errors
+    /// * Connection issue
+    /// * Transaction fails
+    #[allow(dead_code)]
+    pub async fn verify_transaction_inclusion(
+        &self,
+        transaction_hash: H256,
+        transaction_position: usize,
+        transaction_block_blockhash: H256,
+        merkle_proof: Vec<H256>,
+        confirmations: u64,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let args = btc_types::contract_args::ProofArgs {
+            tx_id: transaction_hash,
+            tx_block_blockhash: transaction_block_blockhash,
+            tx_index: transaction_position.try_into()?,
+            merkle_proof,
+            confirmations,
+        };
+
+        let tx_hash = self
+            .submit_tx(
+                self.sign_tx(VERIFY_TRANSACTION_INCLUSION, to_vec(&args)?, 0, None)
+                    .await?,
+            )
+            .await?;
+        let response = self.get_tx_status(tx_hash).await?;
+        Self::parse_verify_response(response, VERIFY_TRANSACTION_INCLUSION)
+    }
+
+    /// Verify transaction inclusion using the v2 contract method,
+    /// which additionally validates a coinbase merkle proof
+    /// (mitigates the 64-byte tx Merkle proof forgery vulnerability).
+    ///
+    /// # Errors
+    /// * Connection issue
+    /// * Transaction fails
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub async fn verify_transaction_inclusion_v2(
+        &self,
+        transaction_hash: H256,
+        transaction_position: usize,
+        transaction_block_blockhash: H256,
+        merkle_proof: Vec<H256>,
+        coinbase_tx_id: H256,
+        coinbase_merkle_proof: Vec<H256>,
+        confirmations: u64,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let args = btc_types::contract_args::ProofArgsV2 {
+            tx_id: transaction_hash,
+            tx_block_blockhash: transaction_block_blockhash,
+            tx_index: transaction_position.try_into()?,
+            merkle_proof,
+            coinbase_tx_id,
+            coinbase_merkle_proof,
+            confirmations,
+        };
+
+        let tx_hash = self
+            .submit_tx(
+                self.sign_tx(VERIFY_TRANSACTION_INCLUSION_V2, to_vec(&args)?, 0, None)
+                    .await?,
+            )
+            .await?;
+        let response = self.get_tx_status(tx_hash).await?;
+        Self::parse_verify_response(response, VERIFY_TRANSACTION_INCLUSION_V2)
+    }
+
+    #[allow(dead_code)]
+    fn parse_verify_response(
+        response: RpcTransactionResponse,
+        method_label: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let outcome = response
+            .final_execution_outcome
+            .ok_or("No final execution outcome")?
+            .into_outcome();
+
+        let gas_burnt: u64 = outcome.transaction_outcome.outcome.gas_burnt.as_gas()
+            + outcome
+                .receipts_outcome
+                .iter()
+                .map(|r| r.outcome.gas_burnt.as_gas())
+                .sum::<u64>();
+        let tokens_burnt: u128 = outcome
+            .transaction_outcome
+            .outcome
+            .tokens_burnt
+            .as_yoctonear()
+            + outcome
+                .receipts_outcome
+                .iter()
+                .map(|r| r.outcome.tokens_burnt.as_yoctonear())
+                .sum::<u128>();
+
+        info!(
+            "[{method_label}] gas_burnt = {gas_burnt} ({} TGas, rounded), tokens_burnt = {tokens_burnt}",
+            gas_burnt / 1_000_000_000_000
+        );
+
+        match outcome.status {
+            near_primitives::views::FinalExecutionStatus::SuccessValue(value) => {
+                let parsed_output = String::from_utf8(value)?;
+                info!("Transaction succeeded with result: {parsed_output:?}");
+                Ok(parsed_output == "true")
+            }
+            near_primitives::views::FinalExecutionStatus::Failure(err) => {
+                Err(format!("Transaction failed with error: {err:?}"))?
+            }
+            other => Err(format!("Transaction status: {other:?}"))?,
+        }
+    }
+
+    /// Sign transaction for a method call to the smart contract.
+    ///
+    /// # Arguments
+    /// * `method_name` - The name of the method to call on the smart contract.
+    /// * `args` - A vector of bytes representing the arguments to pass to the method.
+    /// * `deposit` - The amount of NEAR to deposit with the transaction.
+    ///
+    /// # Returns
+    /// A `Result` containing a `SignedTransaction` if successful, or an error.
+    ///
+    /// # Errors
+    /// * Access key query fails, e.g., due to network issues or RPC failures.
+    /// * Current nonce cannot be extracted from the access key query response.
+    /// * Signing the transaction fails, e.g., due to an invalid signer or public key.
+    pub async fn sign_tx(
+        &self,
+        method_name: &str,
+        args: Vec<u8>,
+        deposit: u128,
+        nonce: Option<u64>,
+    ) -> Result<SignedTransaction, Box<dyn std::error::Error + Send + Sync>> {
+        let access_key_query_response = self
+            .client
+            .call(methods::query::RpcQueryRequest {
+                block_reference: BlockReference::latest(),
+                request: near_primitives::views::QueryRequest::ViewAccessKey {
+                    account_id: self.signer.get_account_id(),
+                    public_key: self.signer.public_key(),
+                },
+            })
+            .await?;
+
+        let nonce = if let Some(nonce) = nonce {
+            nonce
+        } else {
+            match access_key_query_response.kind {
+                QueryResponseKind::AccessKey(access_key) => access_key.nonce + 1,
+                _ => return Err("failed to extract current nonce")?,
+            }
+        };
+
+        let transaction = Transaction::V0(TransactionV0 {
+            signer_id: self.signer.get_account_id(),
+            public_key: self.signer.public_key(),
+            nonce,
+            receiver_id: self.btc_light_client_account_id.clone(),
+            block_hash: access_key_query_response.block_hash,
+            actions: vec![Action::FunctionCall(Box::new(FunctionCallAction {
+                method_name: method_name.to_string(),
+                args,
+                gas: Gas::from_gas(1_000_000_000_000_000), // 1 PetaGas
+                deposit: NearToken::from_yoctonear(deposit),
+            }))],
+        });
+
+        let tx_hash = transaction.get_hash_and_size().0;
+        Ok(SignedTransaction::new(
+            self.signer.sign(tx_hash.as_ref()),
+            transaction,
+        ))
+    }
+
+    /// Broadcasts the transaction without waiting for it to be executed.
+    ///
+    /// Uses `send_tx` with `wait_until = None` rather than the deprecated
+    /// `broadcast_tx_async`: some RPC providers no longer expose the latter and answer
+    /// with `-32601 Method not found`, which makes every submission routed to them fail.
+    async fn submit_tx(
+        &self,
+        signed_tx: SignedTransaction,
+    ) -> Result<CryptoHash, Box<dyn std::error::Error + Send + Sync>> {
+        let tx_hash = signed_tx.get_hash();
+
+        self.client
+            .call(methods::send_tx::RpcSendTransactionRequest {
+                signed_transaction: signed_tx,
+                wait_until: TxExecutionStatus::None,
+            })
+            .await?;
+
+        Ok(tx_hash)
+    }
+
+    async fn get_tx_status(
+        &self,
+        tx_hash: CryptoHash,
+    ) -> MethodCallResult<RpcTransactionResponse, RpcTransactionError> {
+        self.client
+            .call(methods::tx::RpcTransactionStatusRequest {
+                transaction_info: TransactionInfo::TransactionId {
+                    tx_hash,
+                    sender_account_id: self.signer.get_account_id(),
+                },
+                wait_until: TxExecutionStatus::Executed,
+            })
+            .await
+    }
+
+    async fn submit_view_tx(
+        &self,
+        method_name: &str,
+        args: Vec<u8>,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_request = near_jsonrpc_client::methods::query::RpcQueryRequest {
+            block_reference: near_primitives::types::BlockReference::Finality(
+                near_primitives::types::Finality::Final,
+            ),
+            request: near_primitives::views::QueryRequest::CallFunction {
+                account_id: self.btc_light_client_account_id.clone(),
+                method_name: method_name.to_string(),
+                args: args.into(),
+            },
+        };
+        let response = self.client.call(read_request).await?;
+        if let QueryResponseKind::CallResult(result) = response.kind {
+            Ok(result.result)
+        } else {
+            Err("the view tx fail")?
+        }
+    }
+}
