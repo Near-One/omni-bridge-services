@@ -190,6 +190,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "hits a public Sepolia RPC for historical blocks"]
     async fn test_large_batch_chunking() {
         let config = crate::config::ExecutionConfig {
             max_batch_size: 100,
@@ -205,6 +206,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "hits a public Sepolia RPC for historical blocks"]
     async fn test_small_vs_large_batch_size() {
         let config_small = crate::config::ExecutionConfig {
             max_batch_size: 5,

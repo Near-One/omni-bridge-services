@@ -19,6 +19,6 @@ services:
       context: ../../
       dockerfile: ./light-clients/btc-relayer/Dockerfile
       args:
-        FEATURES: "litecoin"
+        FEATURES: ""
     depends_on:
       - litecoind
