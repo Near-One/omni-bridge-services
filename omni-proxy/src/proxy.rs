@@ -634,16 +634,20 @@ impl ProxyHttp for RpcProxy {
             self.ws_active.fetch_sub(1, Ordering::Relaxed);
         }
 
-        let failed = ctx.is_failure || e.is_some();
         if let Some(routes) = ctx.routes.as_ref()
             && let Some(ref prefix) = ctx.route_prefix
             && let Some(state) = routes.get(prefix)
             && let Some(health) = state.health.get(ctx.upstream_idx)
         {
+            let min_ws_session = state.route.failover().min_ws_session();
+            let ws_dropped =
+                ctx.ws_upgraded && ctx.start.is_some_and(|s| s.elapsed() < min_ws_session);
+            let failed = ctx.is_failure || e.is_some() || ws_dropped;
             if failed {
                 health.record_failure();
                 let detail = match e {
                     Some(err) => err.to_string(),
+                    None if ws_dropped => "websocket session dropped early".to_owned(),
                     None => "failure status or rpc error code".to_owned(),
                 };
                 warn!(
@@ -700,6 +704,8 @@ impl ProxyHttp for RpcProxy {
             if failed {
                 let reason = if e.is_some() {
                     "transport_error"
+                } else if ws_dropped {
+                    "ws_dropped"
                 } else if state.route.failover().is_failure_status(ctx.status_code) {
                     "failure_status"
                 } else {
