@@ -10,6 +10,7 @@ use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Histogram};
 use pingora::prelude::*;
 use pingora::upstreams::peer::HttpPeer;
+use serde::Serialize;
 use serde_json::Value;
 use tracing::warn;
 
@@ -20,6 +21,8 @@ const MAX_RPC_BODY_BYTES: usize = 256 * 1024;
 
 const SERVICE_QUERY_PREFIX: &str = "omni-proxy-service=";
 
+const HEALTH_PATH: &str = "/healthz";
+const STATUS_PATH: &str = "/statusz";
 struct UpstreamHealth {
     failures: Mutex<VecDeque<Instant>>,
 }
@@ -112,6 +115,94 @@ impl RouteState {
 
         Selection::AllDegraded
     }
+
+    /// Snapshot for `/statusz`. Only hostnames are exposed — full upstream URLs
+    /// carry API keys and basic-auth credentials.
+    fn status(&self) -> RouteStatus {
+        let failover = self.route.failover();
+        let threshold = failover.failure_threshold();
+        let window = failover.window();
+
+        let selection = self.select();
+        let active_index = selection.index();
+
+        let upstreams: Vec<UpstreamStatus> = self
+            .route
+            .upstreams()
+            .iter()
+            .zip(self.health.iter())
+            .enumerate()
+            .map(|(index, (upstream, health))| {
+                let recent_failures = health.recent_failures(window);
+                UpstreamStatus {
+                    index,
+                    host: upstream.sni().to_string(),
+                    active: index == active_index,
+                    recent_failures,
+                    degraded: recent_failures >= threshold,
+                }
+            })
+            .collect();
+
+        RouteStatus {
+            prefix: self.route.prefix().as_str().to_owned(),
+            active_index,
+            active_host: upstreams
+                .get(active_index)
+                .map(|u| u.host.clone())
+                .unwrap_or_default(),
+            failed_over: active_index > 0,
+            all_degraded: matches!(selection, Selection::AllDegraded),
+            failure_threshold: threshold,
+            window_secs: window.as_secs(),
+            upstreams,
+        }
+    }
+}
+
+#[derive(Serialize, Debug)]
+struct UpstreamStatus {
+    index: usize,
+    /// Matches the `upstream` label on metrics and failure logs.
+    host: String,
+    active: bool,
+    recent_failures: usize,
+    degraded: bool,
+}
+
+#[derive(Serialize, Debug)]
+struct RouteStatus {
+    prefix: String,
+    active_index: usize,
+    active_host: String,
+    /// Serving from a backup rather than the primary.
+    failed_over: bool,
+    /// Every upstream tripped; the primary is used as a last resort.
+    all_degraded: bool,
+    failure_threshold: usize,
+    window_secs: u64,
+    upstreams: Vec<UpstreamStatus>,
+}
+
+#[derive(Serialize, Debug)]
+struct ProxyStatus {
+    routes_total: usize,
+    routes_failed_over: usize,
+    routes_all_degraded: usize,
+    routes: Vec<RouteStatus>,
+}
+
+async fn respond_json<T: Serialize>(session: &mut Session, status: u16, body: &T) -> Result<()> {
+    let body = serde_json::to_vec_pretty(body)
+        .map_err(|e| Error::because(HTTPStatus(500), "failed to serialize response", e))?;
+    let mut resp = ResponseHeader::build(status, None)?;
+    resp.insert_header("Content-Type", "application/json")?;
+    resp.insert_header("Content-Length", body.len().to_string())?;
+    session.write_response_header(Box::new(resp), false).await?;
+    session
+        .write_response_body(Some(Bytes::from(body)), true)
+        .await?;
+    Ok(())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -277,6 +368,23 @@ impl RpcProxy {
     pub fn routes_handle(&self) -> RoutesHandle {
         RoutesHandle(Arc::clone(&self.routes))
     }
+
+    fn status_snapshot(&self) -> ProxyStatus {
+        let mut routes: Vec<RouteStatus> = self
+            .routes
+            .load()
+            .values()
+            .map(RouteState::status)
+            .collect();
+        routes.sort_by(|a, b| a.prefix.cmp(&b.prefix));
+
+        ProxyStatus {
+            routes_total: routes.len(),
+            routes_failed_over: routes.iter().filter(|r| r.failed_over).count(),
+            routes_all_degraded: routes.iter().filter(|r| r.all_degraded).count(),
+            routes,
+        }
+    }
 }
 
 fn match_route<'a>(routes: &'a HashMap<Prefix, RouteState>, path: &str) -> Option<&'a RouteState> {
@@ -397,16 +505,21 @@ impl ProxyHttp for RpcProxy {
     where
         Self::CTX: Send + Sync,
     {
-        if session.req_header().uri.path() == "/healthz" {
-            let resp = ResponseHeader::build(200, None)?;
-            session.write_response_header(Box::new(resp), false).await?;
-            session
-                .write_response_body(Some(Bytes::from_static(b"ok")), true)
-                .await?;
-            return Ok(true);
+        match session.req_header().uri.path() {
+            HEALTH_PATH => {
+                let resp = ResponseHeader::build(200, None)?;
+                session.write_response_header(Box::new(resp), false).await?;
+                session
+                    .write_response_body(Some(Bytes::from_static(b"ok")), true)
+                    .await?;
+                Ok(true)
+            }
+            STATUS_PATH => {
+                respond_json(session, 200, &self.status_snapshot()).await?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
-
-        Ok(false)
     }
 
     async fn upstream_peer(
@@ -799,6 +912,83 @@ failover = {{ status_codes = [500], failure_threshold = {threshold}, window_secs
         }
         assert_eq!(state.select(), Selection::AllDegraded);
         assert_eq!(state.select().index(), 0); // still routes to the primary
+    }
+
+    #[test]
+    fn test_status_tracks_selection_and_failure_counts() {
+        let proxy = make_proxy(3, 60);
+        let status = proxy.status_snapshot();
+
+        assert_eq!(status.routes_total, 1);
+        assert_eq!(status.routes_failed_over, 0);
+        let route = &status.routes[0];
+        assert_eq!(route.prefix, "/test");
+        assert_eq!(route.active_index, 0);
+        assert_eq!(route.active_host, "primary.example.com");
+        assert_eq!(route.failure_threshold, 3);
+        assert_eq!(route.window_secs, 60);
+        assert!(route.upstreams[0].active && !route.upstreams[1].active);
+
+        {
+            let routes = proxy.routes.load();
+            let state = routes.values().next().unwrap();
+            for _ in 0..3 {
+                state.health[0].record_failure();
+            }
+        }
+
+        let status = proxy.status_snapshot();
+        assert_eq!(status.routes_failed_over, 1);
+        let route = &status.routes[0];
+        assert_eq!(route.active_host, "fallback.example.com");
+        assert!(route.failed_over && !route.all_degraded);
+        assert_eq!(route.upstreams[0].recent_failures, 3);
+        assert!(route.upstreams[0].degraded && !route.upstreams[0].active);
+        assert!(route.upstreams[1].active);
+    }
+
+    #[test]
+    fn test_status_reports_all_degraded() {
+        let proxy = make_proxy(2, 60);
+        {
+            let routes = proxy.routes.load();
+            let state = routes.values().next().unwrap();
+            for h in &state.health {
+                for _ in 0..2 {
+                    h.record_failure();
+                }
+            }
+        }
+
+        let status = proxy.status_snapshot();
+        assert_eq!(status.routes_all_degraded, 1);
+        let route = &status.routes[0];
+        assert!(route.all_degraded);
+        assert!(!route.failed_over); // falls back to the primary
+        assert!(route.upstreams.iter().all(|u| u.degraded));
+    }
+
+    #[test]
+    fn test_status_never_leaks_upstream_credentials() {
+        let config: Config = toml::from_str(
+            r#"
+[[routes]]
+prefix = "/near"
+upstreams = [
+  { url = "https://rpc.example.com?apiKey=supersecret" },
+  { url = "https://x-api-key:topsecret@gateway.example.com/v3/alsosecret" },
+]
+"#,
+        )
+        .unwrap();
+        let proxy = RpcProxy::new(config.routes);
+        let json = serde_json::to_string(&proxy.status_snapshot()).unwrap();
+
+        for secret in ["supersecret", "topsecret", "alsosecret"] {
+            assert!(!json.contains(secret), "{secret} leaked into: {json}");
+        }
+        assert!(json.contains("rpc.example.com"));
+        assert!(json.contains("gateway.example.com"));
     }
 
     #[test]
